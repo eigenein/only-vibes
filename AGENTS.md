@@ -6,11 +6,13 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must use ES2025 standard.
 - Must use best MDN practices.
 - Must format the code.
+- Must assign variables immediately.
 - Must keep all JavaScript in the single `index.js`.
 - Must not depend on local files outside the project.
 - Must document design and gameplay decisions via comments in JavaScript code.
 - May use resources from CDN's.
 - Should keep `index.html` minimal.
+- Should embrace encapsulation.
 
 # Implementation choices
 
