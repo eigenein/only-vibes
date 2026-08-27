@@ -12,6 +12,12 @@ We are building a classic "Asteroids" game.
 - May use resources from CDN's.
 - Should keep `index.html` minimal.
 
+# Implementation choices
+
+- Must use `<canvas>` for rendering.
+- Must use plain HTML and JavaScript.
+- Must not use dependencies like React, Phaser, PixiJS, WebGL, or a physics engine.
+
 # How to verify
 
 - Must verify all changes and bug fixes immediately with `kane-cli` skill.
