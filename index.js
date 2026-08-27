@@ -13,13 +13,23 @@ const PLAYER_TRIANGLE_HALF_ANGLE = Math.PI / 4;
 // A global speed keeps the steering response easy to tune from one place and
 // makes rotation consistent across displays with different refresh rates.
 const ROTATION_SPEED = Math.PI * 2;
+// Movement is deliberately expressed in CSS pixels per second so the game
+// behaves the same at different device pixel ratios and display refresh rates.
+const MAX_SPEED = 360;
+// This is the rate at which the ship gains or loses forward speed while a
+// throttle key is held. Keeping it global makes the handling easy to tune.
+const MOVEMENT_RESPONSIVENESS = 480;
 
 const pressedKeys = new Set();
 let playerAngle = -Math.PI / 2;
+let playerSpeed = 0;
+let playerX;
+let playerY;
 let previousFrameTime;
 
 /**
  * The drawing buffer follows the displayed size and device pixel ratio so
+ * rendering stays crisp without changing the game's CSS-pixel coordinates.
  */
 function resizeCanvas() {
   const { width, height } = canvas.getBoundingClientRect();
@@ -28,18 +38,31 @@ function resizeCanvas() {
   canvas.width = Math.round(width * pixelRatio);
   canvas.height = Math.round(height * pixelRatio);
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+
+  if (playerX === undefined || playerY === undefined) {
+    playerX = width / 2;
+    playerY = height / 2;
+  } else {
+    playerX = Math.min(
+      Math.max(playerX, PLAYER_RADIUS),
+      width - PLAYER_RADIUS,
+    );
+    playerY = Math.min(
+      Math.max(playerY, PLAYER_RADIUS),
+      height - PLAYER_RADIUS,
+    );
+  }
+
   drawGame(width, height);
 }
 
 /**
- * Draw the black space and the player at the centre of the field.
+ * Draw the black space and the player in the bounded field.
  * The triangle points upward and has its tip and base endpoints on the hull's
  * circumference. Its base chord is intentionally shorter than its sides so
  * the tip communicates the ship's direction without extra UI.
  */
 function drawGame(width, height) {
-  const centerX = width / 2;
-  const centerY = height / 2;
   const triangleTipAngle = playerAngle;
   const triangleBaseCenterAngle = triangleTipAngle + Math.PI;
   const baseLeftAngle =
@@ -52,14 +75,14 @@ function drawGame(width, height) {
 
   // The circle remains unfilled so the black space is visible inside the hull.
   context.beginPath();
-  context.arc(centerX, centerY, PLAYER_RADIUS, 0, Math.PI * 2);
+  context.arc(playerX, playerY, PLAYER_RADIUS, 0, Math.PI * 2);
   context.strokeStyle = "#fff";
   context.lineWidth = 2;
   context.stroke();
 
   const pointOnHull = (angle) => ({
-    x: centerX + Math.cos(angle) * PLAYER_RADIUS,
-    y: centerY + Math.sin(angle) * PLAYER_RADIUS,
+    x: playerX + Math.cos(angle) * PLAYER_RADIUS,
+    y: playerY + Math.sin(angle) * PLAYER_RADIUS,
   });
   const tip = pointOnHull(triangleTipAngle);
   const baseLeft = pointOnHull(baseLeftAngle);
@@ -75,8 +98,37 @@ function drawGame(width, height) {
 }
 
 /**
- * Rotate while a steering key is held. Time-based motion prevents the ship
- * from turning faster on high-refresh-rate displays.
+ * Reflect a one-dimensional movement segment between two walls. The loop is
+ * intentionally defensive: even if the playable area is resized to be very
+ * small, an unusually large frame cannot move the ship outside the box.
+ */
+function reflectPosition(position, displacement, minimum, maximum) {
+  if (maximum <= minimum) {
+    return { position: (minimum + maximum) / 2, directionMultiplier: 1 };
+  }
+
+  let nextPosition = position + displacement;
+  let directionMultiplier = 1;
+
+  while (nextPosition < minimum || nextPosition > maximum) {
+    if (nextPosition < minimum) {
+      nextPosition = minimum + (minimum - nextPosition);
+      directionMultiplier *= -1;
+    }
+
+    if (nextPosition > maximum) {
+      nextPosition = maximum - (nextPosition - maximum);
+      directionMultiplier *= -1;
+    }
+  }
+
+  return { position: nextPosition, directionMultiplier };
+}
+
+/**
+ * Rotate and change forward speed while controls are held. The ship owns a
+ * scalar speed, never a reverse velocity: braking bottoms out at zero and
+ * acceleration tops out at MAX_SPEED.
  */
 function updateGame(deltaTime) {
   const turnsCounterClockwise =
@@ -87,6 +139,46 @@ function updateGame(deltaTime) {
     Number(turnsClockwise) - Number(turnsCounterClockwise);
 
   playerAngle += rotationDirection * ROTATION_SPEED * deltaTime;
+
+  const accelerates =
+    pressedKeys.has("ArrowUp") || pressedKeys.has("KeyW");
+  const decelerates =
+    pressedKeys.has("ArrowDown") || pressedKeys.has("KeyS");
+  const speedDirection = Number(accelerates) - Number(decelerates);
+
+  playerSpeed = Math.min(
+    MAX_SPEED,
+    Math.max(
+      0,
+      playerSpeed + speedDirection * MOVEMENT_RESPONSIVENESS * deltaTime,
+    ),
+  );
+
+  const directionX = Math.cos(playerAngle);
+  const directionY = Math.sin(playerAngle);
+  const horizontalBounds = reflectPosition(
+    playerX,
+    directionX * playerSpeed * deltaTime,
+    PLAYER_RADIUS,
+    canvas.clientWidth - PLAYER_RADIUS,
+  );
+  const verticalBounds = reflectPosition(
+    playerY,
+    directionY * playerSpeed * deltaTime,
+    PLAYER_RADIUS,
+    canvas.clientHeight - PLAYER_RADIUS,
+  );
+
+  playerX = horizontalBounds.position;
+  playerY = verticalBounds.position;
+
+  // A bounce reflects the velocity vector. Because this ship's velocity is
+  // always aligned with its nose, mirror the orientation too so it continues
+  // travelling in the direction it points after hitting a wall.
+  const reflectedDirectionX =
+    directionX * horizontalBounds.directionMultiplier;
+  const reflectedDirectionY = directionY * verticalBounds.directionMultiplier;
+  playerAngle = Math.atan2(reflectedDirectionY, reflectedDirectionX);
 }
 
 function animate(frameTime) {
@@ -102,20 +194,35 @@ function animate(frameTime) {
   window.requestAnimationFrame(animate);
 }
 
+function controlKeyForEvent(event) {
+  if (event.key.startsWith("Arrow")) {
+    return ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
+      event.key,
+    )
+      ? event.key
+      : undefined;
+  }
+
+  return ["KeyA", "KeyD", "KeyW", "KeyS"].includes(event.code)
+    ? event.code
+    : undefined;
+}
+
 document.addEventListener("keydown", (event) => {
-  if (
-    event.key === "ArrowLeft" ||
-    event.key === "ArrowRight" ||
-    event.code === "KeyA" ||
-    event.code === "KeyD"
-  ) {
+  const controlKey = controlKeyForEvent(event);
+
+  if (controlKey !== undefined) {
     event.preventDefault();
-    pressedKeys.add(event.key.startsWith("Arrow") ? event.key : event.code);
+    pressedKeys.add(controlKey);
   }
 });
 
 document.addEventListener("keyup", (event) => {
-  pressedKeys.delete(event.key.startsWith("Arrow") ? event.key : event.code);
+  const controlKey = controlKeyForEvent(event);
+
+  if (controlKey !== undefined) {
+    pressedKeys.delete(controlKey);
+  }
 });
 
 window.addEventListener("blur", () => pressedKeys.clear());
