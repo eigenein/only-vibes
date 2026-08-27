@@ -31,6 +31,9 @@ const BULLET_FIRE_INTERVAL = 1 / BULLET_FREQUENCY;
 const BULLET_SPEED = 720;
 const BULLET_HALF_LENGTH = 10;
 const BULLET_LINE_WIDTH = 3;
+// Backquote is an uncommon gameplay key and is separate from the ship's
+// letter-key controls, so it leaves D available for clockwise rotation.
+const DEBUG_TOGGLE_KEY = "Backquote";
 
 // Asteroids are intentionally a small, fixed population for this iteration.
 // Their size, complexity, and speed ranges are global so the game's difficulty
@@ -882,7 +885,7 @@ function updateDebugOutput() {
   const asteroidMass = firstAsteroid?.mass ?? 0;
 
   debugOutput.textContent = [
-    "PHYSICS DEBUG  (D toggles)",
+    `PHYSICS DEBUG  (${DEBUG_TOGGLE_KEY} toggles)`,
     `Game: ${gamePaused ? "paused (P toggles)" : "running"}`,
     `Starship mass: ${STARSHIP_MASS.toFixed(2)}`,
     `Asteroid area: ${asteroidArea.toFixed(2)} (first polygon)`,
@@ -907,7 +910,8 @@ function updateDebugOutput() {
 function updateGame(deltaTime, width, height) {
   const turnsCounterClockwise =
     pressedKeys.has("ArrowLeft") || pressedKeys.has("KeyA");
-  const turnsClockwise = pressedKeys.has("ArrowRight");
+  const turnsClockwise =
+    pressedKeys.has("ArrowRight") || pressedKeys.has("KeyD");
   const rotationDirection =
     Number(turnsClockwise) - Number(turnsCounterClockwise);
 
@@ -989,7 +993,9 @@ function controlKeyForEvent(event) {
       : undefined;
   }
 
-  return ["KeyA", "KeyW", "KeyS"].includes(event.code) ? event.code : undefined;
+  return ["KeyA", "KeyD", "KeyW", "KeyS"].includes(event.code)
+    ? event.code
+    : undefined;
 }
 
 document.addEventListener("keydown", (event) => {
@@ -999,7 +1005,7 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
-  if (event.code === "KeyD" && !event.repeat) {
+  if (event.code === DEBUG_TOGGLE_KEY && !event.repeat) {
     debugEnabled = !debugEnabled;
     debugOutput.hidden = !debugEnabled;
     event.preventDefault();
