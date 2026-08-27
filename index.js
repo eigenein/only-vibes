@@ -24,6 +24,14 @@ const MAX_SPEED = 360;
 // throttle key is held. Keeping it global makes the handling easy to tune.
 const MOVEMENT_RESPONSIVENESS = 480;
 
+// Bullets are intentionally fast and short-lived. The frequency is expressed
+// in shots per second so holding Space feels regular at every frame rate.
+const BULLET_FREQUENCY = 8;
+const BULLET_FIRE_INTERVAL = 1 / BULLET_FREQUENCY;
+const BULLET_SPEED = 720;
+const BULLET_HALF_LENGTH = 10;
+const BULLET_LINE_WIDTH = 3;
+
 // Asteroids are intentionally a small, fixed population for this iteration.
 // Their size, complexity, and speed ranges are global so the game's difficulty
 // can be tuned without changing the object model.
@@ -46,11 +54,14 @@ const COLLISION_EPSILON = 0.000001;
 
 const pressedKeys = new Set();
 const asteroids = [];
+const bullets = [];
 let playerAngle = -Math.PI / 2;
 let playerSpeed = 0;
 let playerX;
 let playerY;
 let previousFrameTime;
+let bulletCooldown = 0;
+let totalBulletsEmitted = 0;
 let asteroidsGenerated = false;
 // Pausing stops simulation time while leaving the render loop alive, so the
 // player can inspect a frozen collision result and resume without a time jump.
@@ -196,6 +207,59 @@ class Asteroid {
   }
 }
 
+class Bullet {
+  constructor({ x, y, angle }) {
+    this.x = x;
+    this.y = y;
+    this.angle = angle;
+  }
+
+  update(deltaTime) {
+    this.x += Math.cos(this.angle) * BULLET_SPEED * deltaTime;
+    this.y += Math.sin(this.angle) * BULLET_SPEED * deltaTime;
+  }
+
+  isOutside(width, height) {
+    return (
+      this.x < -BULLET_HALF_LENGTH ||
+      this.x > width + BULLET_HALF_LENGTH ||
+      this.y < -BULLET_HALF_LENGTH ||
+      this.y > height + BULLET_HALF_LENGTH
+    );
+  }
+
+  draw() {
+    const directionX = Math.cos(this.angle);
+    const directionY = Math.sin(this.angle);
+    const startX = this.x - directionX * BULLET_HALF_LENGTH;
+    const startY = this.y - directionY * BULLET_HALF_LENGTH;
+    const endX = this.x + directionX * BULLET_HALF_LENGTH;
+    const endY = this.y + directionY * BULLET_HALF_LENGTH;
+    const gradient = context.createLinearGradient(
+      startX,
+      startY,
+      endX,
+      endY,
+    );
+
+    // A symmetric gradient makes a bullet read as a luminous moving streak:
+    // both ends fade to black while the midpoint carries the full brightness.
+    gradient.addColorStop(0, "rgba(255, 255, 255, 0)");
+    gradient.addColorStop(0.5, "rgba(255, 255, 255, 1)");
+    gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+
+    context.save();
+    context.beginPath();
+    context.moveTo(startX, startY);
+    context.lineTo(endX, endY);
+    context.strokeStyle = gradient;
+    context.lineWidth = BULLET_LINE_WIDTH;
+    context.lineCap = "butt";
+    context.stroke();
+    context.restore();
+  }
+}
+
 function createAsteroid(width, height) {
   const radius = randomBetween(ASTEROID_MIN_RADIUS, ASTEROID_MAX_RADIUS);
   const vertexCount = randomIntegerBetween(
@@ -226,6 +290,51 @@ function generateAsteroids(width, height) {
     ),
   );
   asteroidsGenerated = true;
+}
+
+function emitBullet() {
+  const directionX = Math.cos(playerAngle);
+  const directionY = Math.sin(playerAngle);
+  const spawnDistance = PLAYER_RADIUS + BULLET_HALF_LENGTH;
+
+  totalBulletsEmitted += 1;
+  bullets.push(
+    new Bullet({
+      x: playerX + directionX * spawnDistance,
+      y: playerY + directionY * spawnDistance,
+      angle: playerAngle,
+    }),
+  );
+}
+
+function updateBullets(deltaTime, width, height) {
+  for (
+    let bulletIndex = bullets.length - 1;
+    bulletIndex >= 0;
+    bulletIndex -= 1
+  ) {
+    const bullet = bullets[bulletIndex];
+    bullet.update(deltaTime);
+
+    // Bullets do not wrap: removing them after they leave the field keeps the
+    // simple projectile model bounded while preserving their visible flight.
+    if (bullet.isOutside(width, height)) {
+      bullets.splice(bulletIndex, 1);
+    }
+  }
+}
+
+function updateBulletFiring(deltaTime) {
+  if (!pressedKeys.has("Space")) {
+    bulletCooldown = 0;
+    return;
+  }
+
+  bulletCooldown -= deltaTime;
+  while (bulletCooldown <= 0) {
+    emitBullet();
+    bulletCooldown += BULLET_FIRE_INTERVAL;
+  }
 }
 
 /**
@@ -284,6 +393,10 @@ function drawGame(width, height) {
   // two shapes overlap. The overlap is resolved by the physics update.
   for (const asteroid of asteroids) {
     asteroid.draw();
+  }
+
+  for (const bullet of bullets) {
+    bullet.draw();
   }
 
   // The circle remains unfilled so the black space is visible inside the hull.
@@ -777,6 +890,8 @@ function updateDebugOutput() {
     `Bounciness: ${BOUNCINESS.toFixed(2)}`,
     `Contacts/frame: ${lastCollisionCount}`,
     `Contacts total: ${totalCollisionCount}`,
+    `Bullets active: ${bullets.length}`,
+    `Bullets fired: ${totalBulletsEmitted}`,
     `Δ momentum at contact: (${lastMomentumDelta.x.toFixed(5)}, ${lastMomentumDelta.y.toFixed(5)})`,
     `Δ kinetic energy at contact: ${lastKineticEnergyDelta.toFixed(5)}`,
     `Total momentum: (${totalPhysics.momentumX.toFixed(2)}, ${totalPhysics.momentumY.toFixed(2)})`,
@@ -839,6 +954,8 @@ function updateGame(deltaTime, width, height) {
   const reflectedDirectionY = directionY * verticalBounds.directionMultiplier;
   playerAngle = Math.atan2(reflectedDirectionY, reflectedDirectionX);
 
+  updateBulletFiring(deltaTime);
+  updateBullets(deltaTime, width, height);
   resolveAsteroidCollisions();
 }
 
@@ -860,6 +977,10 @@ function animate(frameTime) {
 }
 
 function controlKeyForEvent(event) {
+  if (event.code === "Space") {
+    return "Space";
+  }
+
   if (event.key.startsWith("Arrow")) {
     return ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
       event.key,
@@ -889,6 +1010,10 @@ document.addEventListener("keydown", (event) => {
 
   if (controlKey !== undefined) {
     event.preventDefault();
+    if (controlKey === "Space" && !event.repeat) {
+      emitBullet();
+      bulletCooldown = BULLET_FIRE_INTERVAL;
+    }
     pressedKeys.add(controlKey);
   }
 });
