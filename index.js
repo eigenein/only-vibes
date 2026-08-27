@@ -20,12 +20,159 @@ const MAX_SPEED = 360;
 // throttle key is held. Keeping it global makes the handling easy to tune.
 const MOVEMENT_RESPONSIVENESS = 480;
 
+// Asteroids are intentionally a small, fixed population for this iteration.
+// Their size, complexity, and speed ranges are global so the game's difficulty
+// can be tuned without changing the object model.
+const ASTEROID_COUNT = 8;
+const ASTEROID_MIN_RADIUS = 24;
+const ASTEROID_MAX_RADIUS = 52;
+const ASTEROID_MIN_VERTICES = 6;
+const ASTEROID_MAX_VERTICES = 10;
+const ASTEROID_MIN_SPEED = 70;
+const ASTEROID_MAX_SPEED = 170;
+const ASTEROID_FILL_STYLE = "#8f99a6";
+
 const pressedKeys = new Set();
+const asteroids = [];
 let playerAngle = -Math.PI / 2;
 let playerSpeed = 0;
 let playerX;
 let playerY;
 let previousFrameTime;
+let asteroidsGenerated = false;
+
+function randomBetween(minimum, maximum) {
+  return minimum + Math.random() * (maximum - minimum);
+}
+
+function randomIntegerBetween(minimum, maximum) {
+  return Math.floor(randomBetween(minimum, maximum + 1));
+}
+
+/**
+ * A point is sampled inside its circular bound when the viewport is large
+ * enough. On a very small viewport the center is the only safe position.
+ */
+function randomCoordinate(extent, radius) {
+  const minimum = radius;
+  const maximum = extent - radius;
+
+  return maximum <= minimum
+    ? extent / 2
+    : randomBetween(minimum, maximum);
+}
+
+/**
+ * Sorting random angles is the entire shape-generation step: every vertex is
+ * on the asteroid's invisible circle, and walking around that circle produces
+ * an ordered convex polygon without requiring collision or triangulation code.
+ */
+function createOrderedAngles(vertexCount) {
+  const angles = Array.from(
+    { length: vertexCount },
+    () => randomBetween(0, Math.PI * 2),
+  );
+
+  angles.sort((firstAngle, secondAngle) => firstAngle - secondAngle);
+  return Object.freeze(angles);
+}
+
+class Asteroid {
+  constructor({ radius, angles, x, y, velocityX, velocityY }) {
+    this.radius = radius;
+    this.angles = angles;
+    this.x = x;
+    this.y = y;
+    this.velocityX = velocityX;
+    this.velocityY = velocityY;
+  }
+
+  /**
+   * Asteroid velocity is constant while in flight. Only contact with a field
+   * boundary reflects one velocity component; collision logic is deliberately
+   * absent from this iteration.
+   */
+  update(width, height, deltaTime) {
+    const horizontalBounds = reflectPosition(
+      this.x,
+      this.velocityX * deltaTime,
+      this.radius,
+      width - this.radius,
+    );
+    const verticalBounds = reflectPosition(
+      this.y,
+      this.velocityY * deltaTime,
+      this.radius,
+      height - this.radius,
+    );
+
+    this.x = horizontalBounds.position;
+    this.y = verticalBounds.position;
+    this.velocityX *= horizontalBounds.directionMultiplier;
+    this.velocityY *= verticalBounds.directionMultiplier;
+  }
+
+  keepInside(width, height) {
+    this.x = constrainPosition(this.x, this.radius, width);
+    this.y = constrainPosition(this.y, this.radius, height);
+  }
+
+  draw() {
+    const firstAngle = this.angles[0];
+    const firstVertex = this.vertexAt(firstAngle);
+
+    context.beginPath();
+    context.moveTo(firstVertex.x, firstVertex.y);
+
+    for (const angle of this.angles.slice(1)) {
+      const vertex = this.vertexAt(angle);
+      context.lineTo(vertex.x, vertex.y);
+    }
+
+    context.closePath();
+    context.fillStyle = ASTEROID_FILL_STYLE;
+    context.fill();
+  }
+
+  vertexAt(angle) {
+    return {
+      x: this.x + Math.cos(angle) * this.radius,
+      y: this.y + Math.sin(angle) * this.radius,
+    };
+  }
+}
+
+function createAsteroid(width, height) {
+  const radius = randomBetween(ASTEROID_MIN_RADIUS, ASTEROID_MAX_RADIUS);
+  const vertexCount = randomIntegerBetween(
+    ASTEROID_MIN_VERTICES,
+    ASTEROID_MAX_VERTICES,
+  );
+  const direction = randomBetween(0, Math.PI * 2);
+  const speed = randomBetween(ASTEROID_MIN_SPEED, ASTEROID_MAX_SPEED);
+
+  return new Asteroid({
+    radius,
+    angles: createOrderedAngles(vertexCount),
+    x: randomCoordinate(width, radius),
+    y: randomCoordinate(height, radius),
+    velocityX: Math.cos(direction) * speed,
+    velocityY: Math.sin(direction) * speed,
+  });
+}
+
+function generateAsteroids(width, height) {
+  if (asteroidsGenerated || width <= 0 || height <= 0) {
+    return;
+  }
+
+  asteroids.push(
+    ...Array.from({ length: ASTEROID_COUNT }, () =>
+      createAsteroid(width, height),
+    ),
+  );
+  asteroidsGenerated = true;
+}
 
 /**
  * The drawing buffer follows the displayed size and device pixel ratio so
@@ -43,17 +190,25 @@ function resizeCanvas() {
     playerX = width / 2;
     playerY = height / 2;
   } else {
-    playerX = Math.min(
-      Math.max(playerX, PLAYER_RADIUS),
-      width - PLAYER_RADIUS,
-    );
-    playerY = Math.min(
-      Math.max(playerY, PLAYER_RADIUS),
-      height - PLAYER_RADIUS,
-    );
+    playerX = constrainPosition(playerX, PLAYER_RADIUS, width);
+    playerY = constrainPosition(playerY, PLAYER_RADIUS, height);
+  }
+
+  generateAsteroids(width, height);
+  for (const asteroid of asteroids) {
+    asteroid.keepInside(width, height);
   }
 
   drawGame(width, height);
+}
+
+function constrainPosition(position, radius, extent) {
+  const minimum = radius;
+  const maximum = extent - radius;
+
+  return maximum <= minimum
+    ? extent / 2
+    : Math.min(Math.max(position, minimum), maximum);
 }
 
 /**
@@ -72,6 +227,12 @@ function drawGame(width, height) {
 
   context.fillStyle = "#000";
   context.fillRect(0, 0, width, height);
+
+  // Asteroids are drawn first so the player remains visually legible when the
+  // two shapes overlap. Their overlap has no gameplay effect yet.
+  for (const asteroid of asteroids) {
+    asteroid.draw();
+  }
 
   // The circle remains unfilled so the black space is visible inside the hull.
   context.beginPath();
@@ -130,7 +291,7 @@ function reflectPosition(position, displacement, minimum, maximum) {
  * scalar speed, never a reverse velocity: braking bottoms out at zero and
  * acceleration tops out at MAX_SPEED.
  */
-function updateGame(deltaTime) {
+function updateGame(deltaTime, width, height) {
   const turnsCounterClockwise =
     pressedKeys.has("ArrowLeft") || pressedKeys.has("KeyA");
   const turnsClockwise =
@@ -154,19 +315,23 @@ function updateGame(deltaTime) {
     ),
   );
 
+  for (const asteroid of asteroids) {
+    asteroid.update(width, height, deltaTime);
+  }
+
   const directionX = Math.cos(playerAngle);
   const directionY = Math.sin(playerAngle);
   const horizontalBounds = reflectPosition(
     playerX,
     directionX * playerSpeed * deltaTime,
     PLAYER_RADIUS,
-    canvas.clientWidth - PLAYER_RADIUS,
+    width - PLAYER_RADIUS,
   );
   const verticalBounds = reflectPosition(
     playerY,
     directionY * playerSpeed * deltaTime,
     PLAYER_RADIUS,
-    canvas.clientHeight - PLAYER_RADIUS,
+    height - PLAYER_RADIUS,
   );
 
   playerX = horizontalBounds.position;
@@ -188,8 +353,9 @@ function animate(frameTime) {
       : Math.min((frameTime - previousFrameTime) / 1000, 0.1);
   previousFrameTime = frameTime;
 
-  updateGame(deltaTime);
   const { width, height } = canvas.getBoundingClientRect();
+  generateAsteroids(width, height);
+  updateGame(deltaTime, width, height);
   drawGame(width, height);
   window.requestAnimationFrame(animate);
 }
