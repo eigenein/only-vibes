@@ -35,9 +35,8 @@ const ASTEROID_MAX_VERTICES = 10;
 const ASTEROID_MIN_SPEED = 70;
 const ASTEROID_MAX_SPEED = 170;
 const ASTEROID_FILL_STYLE = "#8f99a6";
-// Mass is density times the area of the asteroid's bounding circle. Treating
-// every asteroid as a disk is sufficient for this iteration; the polygon is a
-// visual shape, not a separate collision geometry.
+// Asteroid mass is density times the true area of the convex polygon. The
+// encompassing radius remains useful for safe field-boundary placement.
 const ASTEROID_DENSITY = 0.1;
 // A value of one is a fully elastic collision, which preserves both momentum
 // and kinetic energy. It remains a global coefficient so later iterations can
@@ -53,6 +52,9 @@ let playerX;
 let playerY;
 let previousFrameTime;
 let asteroidsGenerated = false;
+// Pausing stops simulation time while leaving the render loop alive, so the
+// player can inspect a frozen collision result and resume without a time jump.
+let gamePaused = false;
 let debugEnabled = false;
 let lastCollisionCount = 0;
 let totalCollisionCount = 0;
@@ -115,7 +117,24 @@ class Asteroid {
   }
 
   get mass() {
-    return ASTEROID_DENSITY * Math.PI * this.radius ** 2;
+    return ASTEROID_DENSITY * this.surfaceArea;
+  }
+
+  get surfaceArea() {
+    const vertices = this.collisionPolygon();
+    let twiceArea = 0;
+
+    // The shoelace formula gives the exact area enclosed by the asteroid's
+    // convex polygon, so sparse or unevenly spaced vertices produce a lighter
+    // body than their circular bound would imply.
+    for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
+      const firstVertex = vertices[vertexIndex];
+      const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
+      twiceArea +=
+        firstVertex.x * secondVertex.y - secondVertex.x * firstVertex.y;
+    }
+
+    return Math.abs(twiceArea) / 2;
   }
 
   /**
@@ -170,6 +189,10 @@ class Asteroid {
       x: this.x + Math.cos(angle) * this.radius,
       y: this.y + Math.sin(angle) * this.radius,
     };
+  }
+
+  collisionPolygon() {
+    return this.angles.map((angle) => this.vertexAt(angle));
   }
 }
 
@@ -323,6 +346,289 @@ function normalizedVector(x, y, fallbackX = 1, fallbackY = 0) {
     : { x: x / length, y: y / length };
 }
 
+function polygonAxes(vertices) {
+  const axes = [];
+
+  for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
+    const firstVertex = vertices[vertexIndex];
+    const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
+    const edgeX = secondVertex.x - firstVertex.x;
+    const edgeY = secondVertex.y - firstVertex.y;
+    const edgeLength = Math.hypot(edgeX, edgeY);
+
+    if (edgeLength <= COLLISION_EPSILON) {
+      continue;
+    }
+
+    axes.push({ x: -edgeY / edgeLength, y: edgeX / edgeLength });
+  }
+
+  return axes;
+}
+
+function projectPolygon(vertices, axis) {
+  let minimum = vertices[0].x * axis.x + vertices[0].y * axis.y;
+  let maximum = minimum;
+
+  for (const vertex of vertices.slice(1)) {
+    const projection = vertex.x * axis.x + vertex.y * axis.y;
+    minimum = Math.min(minimum, projection);
+    maximum = Math.max(maximum, projection);
+  }
+
+  return { minimum, maximum };
+}
+
+function projectCircle(body, axis) {
+  const centerProjection = body.x * axis.x + body.y * axis.y;
+
+  return {
+    minimum: centerProjection - body.radius,
+    maximum: centerProjection + body.radius,
+  };
+}
+
+/**
+ * Return the translation needed to separate two one-dimensional projections.
+ * The two directional distances matter when one convex shape contains the
+ * other; the ordinary intersection width would under-correct that contact.
+ */
+function projectionOverlap(firstProjection, secondProjection) {
+  const moveFirstNegative =
+    firstProjection.maximum - secondProjection.minimum;
+  const moveFirstPositive =
+    secondProjection.maximum - firstProjection.minimum;
+
+  return Math.min(moveFirstNegative, moveFirstPositive);
+}
+
+function collisionAxis(firstBody, secondBody, axis, firstShape, secondShape) {
+  const firstProjection =
+    firstShape.type === "polygon"
+      ? projectPolygon(firstShape.vertices, axis)
+      : projectCircle(firstBody, axis);
+  const secondProjection =
+    secondShape.type === "polygon"
+      ? projectPolygon(secondShape.vertices, axis)
+      : projectCircle(secondBody, axis);
+  const overlap = projectionOverlap(firstProjection, secondProjection);
+
+  return overlap < -COLLISION_EPSILON ? undefined : overlap;
+}
+
+function orientCollisionAxis(firstBody, secondBody, axis) {
+  const centerOffsetX = secondBody.x - firstBody.x;
+  const centerOffsetY = secondBody.y - firstBody.y;
+  const centerDirection =
+    centerOffsetX * axis.x + centerOffsetY * axis.y;
+
+  if (centerDirection < -COLLISION_EPSILON) {
+    return { x: -axis.x, y: -axis.y };
+  }
+
+  if (Math.abs(centerDirection) <= COLLISION_EPSILON) {
+    // When the selected edge normal is perpendicular to the center offset,
+    // relative motion provides a stable sign. Coincident centers use the same
+    // deterministic first-minus-second fallback as the original solver.
+    const relativeDirection = normalizedVector(
+      firstBody.velocityX - secondBody.velocityX,
+      firstBody.velocityY - secondBody.velocityY,
+    );
+
+    if (
+      relativeDirection.x * axis.x + relativeDirection.y * axis.y < 0
+    ) {
+      return { x: -axis.x, y: -axis.y };
+    }
+  }
+
+  return axis;
+}
+
+function polygonPolygonManifold(
+  firstBody,
+  secondBody,
+  firstVertices,
+  secondVertices,
+) {
+  // For convex polygons, separating axes are perpendicular to every edge of
+  // either polygon. A gap on any one of them proves that the shapes do not
+  // touch; the smallest overlap is the contact penetration used by physics.
+  const axes = [
+    ...polygonAxes(firstVertices),
+    ...polygonAxes(secondVertices),
+  ];
+  let minimumPenetration = Infinity;
+  let minimumAxis = axes[0];
+  const firstShape = { type: "polygon", vertices: firstVertices };
+  const secondShape = { type: "polygon", vertices: secondVertices };
+
+  for (const axis of axes) {
+    const overlap = collisionAxis(
+      firstBody,
+      secondBody,
+      axis,
+      firstShape,
+      secondShape,
+    );
+
+    if (overlap === undefined) {
+      return undefined;
+    }
+
+    if (overlap < minimumPenetration) {
+      minimumPenetration = overlap;
+      minimumAxis = axis;
+    }
+  }
+
+  return {
+    normal: orientCollisionAxis(firstBody, secondBody, minimumAxis),
+    penetration: Math.max(0, minimumPenetration),
+  };
+}
+
+function closestPointOnSegment(point, firstPoint, secondPoint) {
+  const segmentX = secondPoint.x - firstPoint.x;
+  const segmentY = secondPoint.y - firstPoint.y;
+  const segmentLengthSquared = segmentX ** 2 + segmentY ** 2;
+
+  if (segmentLengthSquared <= COLLISION_EPSILON ** 2) {
+    return firstPoint;
+  }
+
+  const pointAlongSegment = Math.min(
+    1,
+    Math.max(
+      0,
+      ((point.x - firstPoint.x) * segmentX +
+        (point.y - firstPoint.y) * segmentY) /
+        segmentLengthSquared,
+    ),
+  );
+
+  return {
+    x: firstPoint.x + segmentX * pointAlongSegment,
+    y: firstPoint.y + segmentY * pointAlongSegment,
+  };
+}
+
+function closestPointOnPolygon(point, vertices) {
+  let closestPoint = vertices[0];
+  let closestDistanceSquared = Infinity;
+
+  for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
+    const firstVertex = vertices[vertexIndex];
+    const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
+    const candidate = closestPointOnSegment(point, firstVertex, secondVertex);
+    const distanceX = candidate.x - point.x;
+    const distanceY = candidate.y - point.y;
+    const distanceSquared = distanceX ** 2 + distanceY ** 2;
+
+    if (distanceSquared < closestDistanceSquared) {
+      closestDistanceSquared = distanceSquared;
+      closestPoint = candidate;
+    }
+  }
+
+  return closestPoint;
+}
+
+function circlePolygonManifold(
+  circleBody,
+  polygonBody,
+  polygonVertices,
+) {
+  const axes = polygonAxes(polygonVertices);
+  const closestPoint = closestPointOnPolygon(
+    { x: circleBody.x, y: circleBody.y },
+    polygonVertices,
+  );
+  const closestPointAxis = normalizedVector(
+    closestPoint.x - circleBody.x,
+    closestPoint.y - circleBody.y,
+    1,
+    0,
+  );
+
+  if (
+    Math.hypot(
+      closestPoint.x - circleBody.x,
+      closestPoint.y - circleBody.y,
+    ) > COLLISION_EPSILON
+  ) {
+    axes.push(closestPointAxis);
+  }
+
+  let minimumPenetration = Infinity;
+  let minimumAxis = axes[0];
+  const circleShape = { type: "circle" };
+  const polygonShape = { type: "polygon", vertices: polygonVertices };
+
+  for (const axis of axes) {
+    const overlap = collisionAxis(
+      circleBody,
+      polygonBody,
+      axis,
+      circleShape,
+      polygonShape,
+    );
+
+    if (overlap === undefined) {
+      return undefined;
+    }
+
+    if (overlap < minimumPenetration) {
+      minimumPenetration = overlap;
+      minimumAxis = axis;
+    }
+  }
+
+  return {
+    normal: orientCollisionAxis(circleBody, polygonBody, minimumAxis),
+    penetration: Math.max(0, minimumPenetration),
+  };
+}
+
+function invertedManifold(manifold) {
+  return {
+    normal: { x: -manifold.normal.x, y: -manifold.normal.y },
+    penetration: manifold.penetration,
+  };
+}
+
+function collisionManifold(firstBody, secondBody) {
+  const firstVertices = firstBody.collisionPolygon?.();
+  const secondVertices = secondBody.collisionPolygon?.();
+  const firstIsPolygon = firstVertices !== undefined;
+  const secondIsPolygon = secondVertices !== undefined;
+
+  if (firstIsPolygon && secondIsPolygon) {
+    return polygonPolygonManifold(
+      firstBody,
+      secondBody,
+      firstVertices,
+      secondVertices,
+    );
+  }
+
+  if (!firstIsPolygon && secondIsPolygon) {
+    return circlePolygonManifold(firstBody, secondBody, secondVertices);
+  }
+
+  if (firstIsPolygon && !secondIsPolygon) {
+    const manifold = circlePolygonManifold(
+      secondBody,
+      firstBody,
+      firstVertices,
+    );
+
+    return manifold === undefined ? undefined : invertedManifold(manifold);
+  }
+
+  return undefined;
+}
+
 function physicsSnapshot(ship) {
   const bodies = [ship, ...asteroids];
   let momentumX = 0;
@@ -340,39 +646,25 @@ function physicsSnapshot(ship) {
 }
 
 /**
- * Resolve a circle-circle contact with an impulse. The impulse is derived from
- * conservation of linear momentum plus the coefficient of restitution. With
- * BOUNCINESS set to one, the normal component is reversed elastically and the
- * collision preserves kinetic energy as well.
+ * Resolve a convex-shape contact with the existing impulse solver. Only the
+ * contact normal and penetration now come from the actual shape geometry; the
+ * conservation-of-momentum and coefficient-of-restitution handling remains
+ * unchanged. With BOUNCINESS set to one, this is an elastic response.
  */
 function resolveCollision(firstBody, secondBody) {
-  let offsetX = secondBody.x - firstBody.x;
-  let offsetY = secondBody.y - firstBody.y;
-  let distance = Math.hypot(offsetX, offsetY);
-  const combinedRadius = firstBody.radius + secondBody.radius;
+  const manifold = collisionManifold(firstBody, secondBody);
 
-  if (distance > combinedRadius) {
+  if (manifold === undefined) {
     return false;
   }
 
-  if (distance <= COLLISION_EPSILON) {
-    // Coincident centers have no geometric normal. The relative motion gives
-    // us a useful deterministic normal for the common head-on case.
-    offsetX = firstBody.velocityX - secondBody.velocityX;
-    offsetY = firstBody.velocityY - secondBody.velocityY;
-    const normal = normalizedVector(offsetX, offsetY);
-    offsetX = normal.x;
-    offsetY = normal.y;
-    distance = 0;
-  } else {
-    offsetX /= distance;
-    offsetY /= distance;
-  }
+  const { normal, penetration } = manifold;
+  const offsetX = normal.x;
+  const offsetY = normal.y;
 
   const inverseFirstMass = 1 / firstBody.mass;
   const inverseSecondMass = 1 / secondBody.mass;
   const inverseMassSum = inverseFirstMass + inverseSecondMass;
-  const penetration = combinedRadius - distance;
 
   // Separate overlap proportionally to inverse mass. This keeps a large
   // asteroid from teleporting the ship while preventing repeated impulses
@@ -473,12 +765,15 @@ function updateDebugOutput() {
   const ship = playerBody();
   const firstAsteroid = asteroids[0];
   const totalPhysics = physicsSnapshot(ship);
+  const asteroidArea = firstAsteroid?.surfaceArea ?? 0;
   const asteroidMass = firstAsteroid?.mass ?? 0;
 
   debugOutput.textContent = [
     "PHYSICS DEBUG  (D toggles)",
+    `Game: ${gamePaused ? "paused (P toggles)" : "running"}`,
     `Starship mass: ${STARSHIP_MASS.toFixed(2)}`,
-    `Asteroid mass: density × πr² = ${asteroidMass.toFixed(2)} (first)`,
+    `Asteroid area: ${asteroidArea.toFixed(2)} (first polygon)`,
+    `Asteroid mass: density × polygon area = ${asteroidMass.toFixed(2)} (first)`,
     `Bounciness: ${BOUNCINESS.toFixed(2)}`,
     `Contacts/frame: ${lastCollisionCount}`,
     `Contacts total: ${totalCollisionCount}`,
@@ -556,7 +851,9 @@ function animate(frameTime) {
 
   const { width, height } = canvas.getBoundingClientRect();
   generateAsteroids(width, height);
-  updateGame(deltaTime, width, height);
+  if (!gamePaused) {
+    updateGame(deltaTime, width, height);
+  }
   updateDebugOutput();
   drawGame(width, height);
   window.requestAnimationFrame(animate);
@@ -575,6 +872,12 @@ function controlKeyForEvent(event) {
 }
 
 document.addEventListener("keydown", (event) => {
+  if (event.code === "KeyP" && !event.repeat) {
+    gamePaused = !gamePaused;
+    event.preventDefault();
+    return;
+  }
+
   if (event.code === "KeyD" && !event.repeat) {
     debugEnabled = !debugEnabled;
     debugOutput.hidden = !debugEnabled;
