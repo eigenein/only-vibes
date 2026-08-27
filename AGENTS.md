@@ -22,6 +22,6 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 
 - Must verify all changes and bug fixes immediately with `kane-cli` skill.
 - Must fix all bugs reported by `kane-cli` skill immediately without prompting.
-- Must invoke `kane-cli` skill in a browser demo.
+- Must invoke `kane-cli` skill in a new visible Google Chrome.
 - Must not spin web server.
 - Must load `index.html` directly in browser.
