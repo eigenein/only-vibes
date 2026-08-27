@@ -1,4 +1,4 @@
-We are building a classic "Asteroids" game.
+We are building a classic single-page "Asteroids" game in pure HTML and JavaScript.
 
 # Code hygiene
 
