@@ -19,6 +19,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must use `<canvas>` for rendering.
 - Must use plain HTML and JavaScript.
 - Must not use dependencies like React, Phaser, PixiJS, WebGL, or a physics engine.
+- Must think of performance.
 
 # How to verify
 
@@ -31,4 +32,4 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - May add elements to the debug interface at own discretion.
 - Must not display any debug elements when the debug UI is off.
 - May add debug console output.
-- Must prefer Kame CLI to Node VM.
+- Must prefer Kane CLI to Node VM.
