@@ -39,3 +39,17 @@ This file must only contain bug reports that have been found by Kane and actione
   silhouettes and phrase visibility through the paused overlay, then confirmed
   a recognizable two-line phrase remnant after 700 ms of resumed play with no
   visible error text.
+
+### Random field restoration
+
+- **Kane finding:** Restoring the historical random asteroid generator caused
+  startup to fail first on `randomIntegerBetween` and then on
+  `createOrderedAngles`; its original random-generation helpers had been
+  removed during the phrase-composition iterations.
+- **Action:** Restored the complete helper set used to choose vertex counts,
+  construct convex silhouettes, and place bodies within the viewport,
+  preserving the original random distributions.
+- **Verification:** The follow-up visible-Chrome run loaded without startup or
+  console errors, reported `Asteroids: 9 (target: 9)` with finite telemetry,
+  and confirmed independent random motion with no coordinated dispersal or
+  corner bundle.

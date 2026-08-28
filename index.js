@@ -36,7 +36,7 @@ canvas.focus({ preventScroll: true });
 
 // The player uses one radius for both the circular hull and the triangle's
 // circumcircle, keeping the silhouette consistent as the game evolves.
-const PLAYER_RADIUS = 28;
+const PLAYER_RADIUS = 24;
 const PLAYER_TRIANGLE_HALF_ANGLE = Math.PI / 4;
 // Collision bodies use a mass rather than a gameplay health value. The ship is
 // intentionally heavier than a small asteroid, while still being light enough
@@ -108,10 +108,9 @@ const PLAY_HELP = Object.freeze([
 const HELP_PANEL_WIDTH = 540;
 const HELP_PANEL_HEIGHT = 446;
 
-// The opening field is a two-line chord font rather than a random cloud. A
-// chord is still a normal convex asteroid polygon, so the existing collision,
-// cutting, density, and motion systems do not need a special gameplay path.
-// Coordinates are in a one-by-one glyph box with y increasing downward.
+// A faint two-line chord font brands the arena behind the original random
+// asteroid field. Coordinates are in a one-by-one glyph box with y increasing
+// downward; every chord is a lightweight physical body.
 const ASTEROID_PHRASE_LINES = Object.freeze([
   "KANE CLI",
   "HACKATHON",
@@ -172,44 +171,35 @@ const ASTEROID_PHRASE_ADVANCE = 1.28;
 const ASTEROID_PHRASE_SPACE_ADVANCE = 0.62;
 const ASTEROID_PHRASE_LINE_GAP = 0.56;
 const ASTEROID_PHRASE_MARGIN = 48;
-const ASTEROID_PHRASE_STROKE_RATIO = 0.22;
-const ASTEROID_PHRASE_SHAPE_JITTER_MIN = 0.84;
-const ASTEROID_PHRASE_SHAPE_JITTER_MAX = 1.08;
-// Repeating the part counts keeps every phrase segment visibly composed while
-// making the exact opening field deterministic: each chord gets 2, 3, or 4
-// separate irregular bodies in turn.
-const ASTEROID_PHRASE_PART_COUNTS = Object.freeze([2, 3, 4]);
-// Opening bodies drift outward slowly enough for the player to read the
-// composition after pressing P. This is only initial velocity; the regular
-// integrator, collision response, and wall handling remain unchanged.
-const ASTEROID_PHRASE_INITIAL_SPEED = 6;
-// Start the phrase without spin as well. Collisions can create angular
-// velocity normally after play begins; zero here avoids an artificial burst
-// from overlapping glyph junctions during the opening beat.
-const ASTEROID_PHRASE_INITIAL_ANGULAR_SPEED = 0;
+// Phrase bodies are narrow, translucent, and much less dense than regular
+// asteroids. They remain cuttable collision bodies while reading as secondary
+// event branding instead of the main obstacle field.
+const ASTEROID_PHRASE_STROKE_WIDTH = 6;
+const ASTEROID_PHRASE_OPACITY = 0.22;
+const ASTEROID_PHRASE_MIN_DENSITY = 0.08;
+const ASTEROID_PHRASE_MAX_DENSITY = 0.16;
+const ASTEROID_PHRASE_MIN_SPEED = 1;
+const ASTEROID_PHRASE_MAX_SPEED = 4;
+const ASTEROID_PHRASE_MAX_ANGULAR_SPEED = 0.04;
 const PAUSE_BACKDROP_ALPHA = 0.44;
 const PAUSE_PANEL_ALPHA = 0.74;
-// Diagonal chords are the longest glyph strokes. Keep their circumradius
-// within the normal asteroid bound so phrase bodies remain safe at the walls.
-const ASTEROID_MAX_RADIUS = 52;
-const ASTEROID_PHRASE_CHORD_RADIUS_LIMIT = ASTEROID_MAX_RADIUS;
-const ASTEROID_SEGMENT_COUNT = ASTEROID_PHRASE_LINES.reduce(
-  (count, phraseLine) =>
-    count + Array.from(phraseLine).reduce(
-      (lineCount, character) =>
-        lineCount +
-        (ASTEROID_PHRASE_GLYPHS[character]?.length ?? 0),
+const RANDOM_ASTEROID_COUNT = 9;
+const ASTEROID_PHRASE_BODY_COUNT = ASTEROID_PHRASE_LINES.reduce(
+  (bodyCount, phraseLine) =>
+    bodyCount + Array.from(phraseLine).reduce(
+      (lineBodyCount, character) =>
+        lineBodyCount + (ASTEROID_PHRASE_GLYPHS[character]?.length ?? 0),
       0,
     ),
   0,
 );
-const ASTEROID_COUNT = Array.from(
-  { length: ASTEROID_SEGMENT_COUNT },
-  (_, segmentIndex) =>
-    ASTEROID_PHRASE_PART_COUNTS[
-      segmentIndex % ASTEROID_PHRASE_PART_COUNTS.length
-    ],
-).reduce((count, partCount) => count + partCount, 0);
+const ASTEROID_COUNT = RANDOM_ASTEROID_COUNT + ASTEROID_PHRASE_BODY_COUNT;
+const ASTEROID_MIN_RADIUS = 24;
+const ASTEROID_MAX_RADIUS = 52;
+const ASTEROID_MIN_VERTICES = 6;
+const ASTEROID_MAX_VERTICES = 10;
+const ASTEROID_MIN_SPEED = 75;
+const ASTEROID_MAX_SPEED = 180;
 const ASTEROID_MIN_ANGULAR_SPEED = -1.8;
 const ASTEROID_MAX_ANGULAR_SPEED = 1.8;
 // A grazing cut can produce a technically valid but visually meaningless
@@ -320,6 +310,44 @@ function randomBetween(minimum, maximum) {
 }
 
 /**
+ * Sample an integer from an inclusive range.
+ * @param {number} minimum Inclusive lower bound.
+ * @param {number} maximum Inclusive upper bound.
+ * @returns {number}
+ */
+function randomIntegerBetween(minimum, maximum) {
+  return Math.floor(randomBetween(minimum, maximum + 1));
+}
+
+/**
+ * Sample a safe body-center coordinate inside one viewport extent.
+ * @param {number} extent Viewport width or height in CSS pixels.
+ * @param {number} radius Body radius in CSS pixels.
+ * @returns {number}
+ */
+function randomCoordinate(extent, radius) {
+  const minimum = radius;
+  const maximum = extent - radius;
+
+  return maximum <= minimum ? extent / 2 : randomBetween(minimum, maximum);
+}
+
+/**
+ * Generate ordered perimeter angles for a random convex asteroid polygon.
+ * @param {number} vertexCount Number of polygon vertices.
+ * @returns {readonly number[]}
+ */
+function createOrderedAngles(vertexCount) {
+  const angles = Array.from(
+    { length: vertexCount },
+    () => randomBetween(0, Math.PI * 2),
+  );
+
+  angles.sort((firstAngle, secondAngle) => firstAngle - secondAngle);
+  return Object.freeze(angles);
+}
+
+/**
  * Convert material density into a readable asteroid color. Lower-density
  * bodies are blue-gray and higher-density bodies become progressively redder.
  * @param {number} density
@@ -359,6 +387,7 @@ class Asteroid {
    * @param {number} [options.rotation]
    * @param {number} [options.angularVelocity]
    * @param {number} [options.additionalMass]
+   * @param {number} [options.opacity]
    */
   constructor({
     radius,
@@ -372,6 +401,7 @@ class Asteroid {
     rotation = 0,
     angularVelocity = 0,
     additionalMass = 0,
+    opacity = 1,
   }) {
     const sourceVertices = localVertices ?? angles.map((angle) => ({
       x: Math.cos(angle) * radius,
@@ -399,6 +429,7 @@ class Asteroid {
     this.density = density;
     this.rotation = rotation;
     this.angularVelocity = angularVelocity;
+    this.opacity = opacity;
     this.worldVertices = this.localVertices.map((vertex) => ({
       x: this.x + vertex.x,
       y: this.y + vertex.y,
@@ -476,6 +507,7 @@ class Asteroid {
     const vertices = this.collisionPolygon();
     const firstVertex = vertices[0];
 
+    context.save();
     context.beginPath();
     context.moveTo(firstVertex.x, firstVertex.y);
 
@@ -486,7 +518,9 @@ class Asteroid {
 
     context.closePath();
     context.fillStyle = asteroidColorForDensity(this.density);
+    context.globalAlpha = this.opacity;
     context.fill();
+    context.restore();
   }
 
   collisionPolygon() {
@@ -595,6 +629,37 @@ class Bullet {
 }
 
 /**
+ * Create one fully randomized asteroid using the original game composition.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @returns {Asteroid}
+ */
+function createAsteroid(width, height) {
+  const radius = randomBetween(ASTEROID_MIN_RADIUS, ASTEROID_MAX_RADIUS);
+  const vertexCount = randomIntegerBetween(
+    ASTEROID_MIN_VERTICES,
+    ASTEROID_MAX_VERTICES,
+  );
+  const direction = randomBetween(0, Math.PI * 2);
+  const speed = randomBetween(ASTEROID_MIN_SPEED, ASTEROID_MAX_SPEED);
+
+  return new Asteroid({
+    radius,
+    angles: createOrderedAngles(vertexCount),
+    density: randomBetween(ASTEROID_MIN_DENSITY, ASTEROID_MAX_DENSITY),
+    x: randomCoordinate(width, radius),
+    y: randomCoordinate(height, radius),
+    velocityX: Math.cos(direction) * speed,
+    velocityY: Math.sin(direction) * speed,
+    rotation: randomBetween(0, Math.PI * 2),
+    angularVelocity: randomBetween(
+      ASTEROID_MIN_ANGULAR_SPEED,
+      ASTEROID_MAX_ANGULAR_SPEED,
+    ),
+  });
+}
+
+/**
  * @param {Vector2[]} vertices
  * @param {number} velocityX
  * @param {number} velocityY
@@ -602,6 +667,7 @@ class Bullet {
  * @param {number} density
  * @param {number} [rotation]
  * @param {number} [angularVelocity]
+ * @param {number} [opacity]
  * @returns {Asteroid}
  */
 function createAsteroidFromPolygon(
@@ -612,6 +678,7 @@ function createAsteroidFromPolygon(
   density,
   rotation = 0,
   angularVelocity = 0,
+  opacity = 1,
 ) {
   const center = polygonCentroid(vertices);
   const cosine = Math.cos(rotation);
@@ -636,73 +703,8 @@ function createAsteroidFromPolygon(
     rotation,
     angularVelocity,
     additionalMass: mass - density * area,
+    opacity,
   });
-}
-
-/**
- * Return the signed turn made by three points.
- * @param {Vector2} firstPoint
- * @param {Vector2} secondPoint
- * @param {Vector2} thirdPoint
- * @returns {number}
- */
-function signedTurn(firstPoint, secondPoint, thirdPoint) {
-  return (secondPoint.x - firstPoint.x) *
-      (thirdPoint.y - firstPoint.y) -
-    (secondPoint.y - firstPoint.y) * (thirdPoint.x - firstPoint.x);
-}
-
-/**
- * Wrap irregular perimeter samples in their convex hull so each phrase body
- * remains compatible with the existing SAT collision solver.
- * @param {Vector2[]} points
- * @returns {Vector2[]}
- */
-function convexHull(points) {
-  const sortedPoints = [...points].sort((firstPoint, secondPoint) =>
-    firstPoint.x - secondPoint.x || firstPoint.y - secondPoint.y
-  );
-  const lowerHull = [];
-
-  for (const point of sortedPoints) {
-    while (
-      lowerHull.length >= 2 &&
-      signedTurn(
-          lowerHull[lowerHull.length - 2],
-          lowerHull[lowerHull.length - 1],
-          point,
-        ) <= COLLISION_EPSILON
-    ) {
-      lowerHull.pop();
-    }
-    lowerHull.push(point);
-  }
-
-  const upperHull = [];
-
-  for (
-    let pointIndex = sortedPoints.length - 1;
-    pointIndex >= 0;
-    pointIndex -= 1
-  ) {
-    const point = sortedPoints[pointIndex];
-
-    while (
-      upperHull.length >= 2 &&
-      signedTurn(
-          upperHull[upperHull.length - 2],
-          upperHull[upperHull.length - 1],
-          point,
-        ) <= COLLISION_EPSILON
-    ) {
-      upperHull.pop();
-    }
-    upperHull.push(point);
-  }
-
-  lowerHull.pop();
-  upperHull.pop();
-  return lowerHull.concat(upperHull);
 }
 
 /**
@@ -722,8 +724,7 @@ function phraseLineWidth(phraseLine) {
 }
 
 /**
- * Choose one scale that keeps the phrase inside the viewport and each
- * diagonal chord inside the normal asteroid radius limit.
+ * Choose one scale that keeps the background phrase inside the viewport.
  * @param {number} width Viewport width in CSS pixels.
  * @param {number} height Viewport height in CSS pixels.
  * @returns {number}
@@ -735,20 +736,14 @@ function phraseScaleForViewport(width, height) {
   const phraseHeight = 2 + ASTEROID_PHRASE_LINE_GAP;
   const availableWidth = Math.max(0, width - ASTEROID_PHRASE_MARGIN * 2);
   const availableHeight = Math.max(0, height - ASTEROID_PHRASE_MARGIN * 2);
-  const maximumChordScale = ASTEROID_PHRASE_CHORD_RADIUS_LIMIT * 2 /
-    Math.sqrt(2 + ASTEROID_PHRASE_STROKE_RATIO ** 2);
-
   return Math.min(
     availableWidth / widestLine,
     availableHeight / phraseHeight,
-    maximumChordScale,
   );
 }
 
 /**
  * Convert the two hard-coded phrase lines into viewport-sized chord endpoints.
- * The cap based on ASTEROID_MAX_RADIUS keeps every initial chord a regular
- * sized physics body even when a wide display would otherwise enlarge it.
  * @param {number} width Viewport width in CSS pixels.
  * @param {number} height Viewport height in CSS pixels.
  * @returns {{ start: Vector2, end: Vector2 }[]}
@@ -801,26 +796,12 @@ function phraseChordsForViewport(width, height) {
 }
 
 /**
- * Create an irregular convex asteroid around one phrase chord. Its density
- * and starting rotation remain random per body. Initial linear and angular
- * momentum are deliberately gentle so the opening composition survives long
- * enough to read without changing the normal physics behavior.
+ * Turn one phrase chord into a narrow, lightweight physical asteroid.
  * @param {Vector2} start Chord start point in viewport coordinates.
  * @param {Vector2} end Chord end point in viewport coordinates.
- * @param {number} strokeWidth Chord thickness in CSS pixels.
- * @param {Vector2} spreadCenter Center of the opening phrase.
- * @param {number} partCount Number of irregular bodies in this chord.
- * @param {number} partIndex Zero-based body index along this chord.
  * @returns {Asteroid | undefined}
  */
-function createAsteroidFromChord(
-  start,
-  end,
-  strokeWidth,
-  spreadCenter,
-  partCount,
-  partIndex,
-) {
+function createPhraseAsteroid(start, end) {
   const directionX = end.x - start.x;
   const directionY = end.y - start.y;
   const chordLength = Math.hypot(directionX, directionY);
@@ -833,73 +814,45 @@ function createAsteroidFromChord(
   const axisY = directionY / chordLength;
   const normalX = -axisY;
   const normalY = axisX;
-  const partGap = Math.min(
-    strokeWidth * 0.18,
-    chordLength / (partCount * 3),
-  );
-  const partLength = (chordLength - partGap * (partCount - 1)) / partCount;
-  const partStartDistance = -chordLength / 2 +
-    partIndex * (partLength + partGap);
-  const partEndDistance = partStartDistance + partLength;
-  const partCenterDistance = (partStartDistance + partEndDistance) / 2;
-  const centerX = (start.x + end.x) / 2 + axisX * partCenterDistance;
-  const centerY = (start.y + end.y) / 2 + axisY * partCenterDistance;
-  const halfPartLength = partLength / 2;
-  const partStrokeWidth = strokeWidth * randomBetween(0.86, 1.12);
-  const halfStrokeWidth = partStrokeWidth / 2;
-  const localToWorld = (along, across) => ({
+  const halfLength = chordLength * 0.46;
+  const halfWidth = ASTEROID_PHRASE_STROKE_WIDTH / 2;
+  const centerX = (start.x + end.x) / 2;
+  const centerY = (start.y + end.y) / 2;
+  const vertex = (along, across) => ({
     x: centerX + axisX * along + normalX * across,
     y: centerY + axisY * along + normalY * across,
   });
-  const perimeterPoints = [];
-  const perimeterPointCount = 10;
-
-  for (let pointIndex = 0; pointIndex < perimeterPointCount; pointIndex += 1) {
-    const perimeterAngle = pointIndex * Math.PI * 2 / perimeterPointCount;
-    const shapeJitter = randomBetween(
-      ASTEROID_PHRASE_SHAPE_JITTER_MIN,
-      ASTEROID_PHRASE_SHAPE_JITTER_MAX,
-    );
-    const along = Math.max(
-      -halfPartLength,
-      Math.min(
-        halfPartLength,
-        Math.cos(perimeterAngle) * halfPartLength * shapeJitter,
-      ),
-    );
-    const across = Math.sin(perimeterAngle) * halfStrokeWidth * shapeJitter;
-    perimeterPoints.push(
-      localToWorld(along, across),
-    );
-  }
-
-  // Preserve this part's endpoints in the hull so the irregular bodies keep
-  // the intended small gaps while still reading as one glyph stroke.
-  perimeterPoints.push(
-    localToWorld(-halfPartLength, 0),
-    localToWorld(halfPartLength, 0),
+  const vertices = [
+    vertex(-halfLength, -halfWidth * 0.72),
+    vertex(-halfLength * 0.84, -halfWidth),
+    vertex(halfLength * 0.88, -halfWidth * 0.82),
+    vertex(halfLength, -halfWidth * 0.3),
+    vertex(halfLength * 0.84, halfWidth),
+    vertex(-halfLength * 0.9, halfWidth * 0.8),
+  ];
+  const density = randomBetween(
+    ASTEROID_PHRASE_MIN_DENSITY,
+    ASTEROID_PHRASE_MAX_DENSITY,
   );
-  const vertices = convexHull(perimeterPoints);
-  const density = randomBetween(ASTEROID_MIN_DENSITY, ASTEROID_MAX_DENSITY);
-  const spreadDirectionX = centerX - spreadCenter.x;
-  const spreadDirectionY = centerY - spreadCenter.y;
-  const spreadDistance = Math.hypot(spreadDirectionX, spreadDirectionY);
-  const velocityX = spreadDistance > COLLISION_EPSILON
-    ? spreadDirectionX / spreadDistance * ASTEROID_PHRASE_INITIAL_SPEED
-    : 0;
-  const velocityY = spreadDistance > COLLISION_EPSILON
-    ? spreadDirectionY / spreadDistance * ASTEROID_PHRASE_INITIAL_SPEED
-    : 0;
+  const speed = randomBetween(
+    ASTEROID_PHRASE_MIN_SPEED,
+    ASTEROID_PHRASE_MAX_SPEED,
+  );
+  const movementDirection = randomBetween(0, Math.PI * 2);
   const area = polygonArea(vertices);
 
   return createAsteroidFromPolygon(
     vertices,
-    velocityX,
-    velocityY,
+    Math.cos(movementDirection) * speed,
+    Math.sin(movementDirection) * speed,
     density * area,
     density,
-    randomBetween(0, Math.PI * 2),
-    ASTEROID_PHRASE_INITIAL_ANGULAR_SPEED,
+    0,
+    randomBetween(
+      -ASTEROID_PHRASE_MAX_ANGULAR_SPEED,
+      ASTEROID_PHRASE_MAX_ANGULAR_SPEED,
+    ),
+    ASTEROID_PHRASE_OPACITY,
   );
 }
 
@@ -908,43 +861,19 @@ function generateAsteroids(width, height) {
     return;
   }
 
-  const phraseChords = phraseChordsForViewport(width, height);
-  const phraseScale = phraseScaleForViewport(width, height);
-  const strokeWidth = Math.max(
-    10,
-    phraseScale * ASTEROID_PHRASE_STROKE_RATIO,
+  const phraseAsteroids = phraseChordsForViewport(width, height)
+    .map(({ start, end }) => createPhraseAsteroid(start, end))
+    .filter((asteroid) => asteroid !== undefined);
+
+  // Phrase bodies are inserted first so regular opaque asteroids remain the
+  // dominant visual layer whenever the two compositions overlap.
+  asteroids.push(
+    ...phraseAsteroids,
+    ...Array.from(
+      { length: RANDOM_ASTEROID_COUNT },
+      () => createAsteroid(width, height),
+    ),
   );
-  const spreadCenter = { x: width / 2, y: height / 2 };
-
-  const phraseAsteroids = [];
-
-  for (
-    let segmentIndex = 0;
-    segmentIndex < phraseChords.length;
-    segmentIndex += 1
-  ) {
-    const { start, end } = phraseChords[segmentIndex];
-    const partCount = ASTEROID_PHRASE_PART_COUNTS[
-      segmentIndex % ASTEROID_PHRASE_PART_COUNTS.length
-    ];
-
-    for (let partIndex = 0; partIndex < partCount; partIndex += 1) {
-      const asteroid = createAsteroidFromChord(
-        start,
-        end,
-        strokeWidth,
-        spreadCenter,
-        partCount,
-        partIndex,
-      );
-
-      if (asteroid !== undefined) {
-        phraseAsteroids.push(asteroid);
-      }
-    }
-  }
-
-  asteroids.push(...phraseAsteroids);
   asteroidsGenerated = true;
 }
 
@@ -1223,7 +1152,6 @@ function drawGame(width, height) {
 
   context.fillStyle = "#000";
   context.fillRect(0, 0, width, height);
-
   // Asteroids are drawn first so the player remains visually legible when the
   // two shapes overlap. The overlap is resolved by the physics update.
   for (const asteroid of asteroids) {
@@ -2039,6 +1967,7 @@ function splitAsteroid(
         asteroid.density,
         asteroid.rotation,
         asteroid.angularVelocity,
+        asteroid.opacity,
       ),
     },
     {
@@ -2051,6 +1980,7 @@ function splitAsteroid(
         asteroid.density,
         asteroid.rotation,
         asteroid.angularVelocity,
+        asteroid.opacity,
       ),
     },
   ]
