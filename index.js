@@ -59,10 +59,10 @@ const ASTEROID_MIN_FRAGMENT_AREA = 500;
 // polygon. The encompassing radius remains useful for safe field-boundary
 // placement; fragments can also carry absorbed bullet mass.
 const ASTEROID_DENSITY = 0.1;
-// A value of one is a fully elastic collision, which preserves both momentum
-// and kinetic energy. It remains a global coefficient so later iterations can
-// intentionally model energy loss without changing the collision solver.
-const BOUNCINESS = 1;
+// A value of one is a fully elastic collision. At 0.8, an impact loses 36% of
+// the kinetic energy in the contact-normal component while preserving tangent
+// motion. The same coefficient is used for asteroid contacts and wall hits.
+const BOUNCINESS = 0.8;
 const COLLISION_EPSILON = 0.000001;
 // A rolling sample smooths display-refresh jitter without hiding sustained
 // frame-time regressions. The debug panel also reports the lowest full-window
@@ -200,7 +200,9 @@ class Asteroid {
   /**
    * Asteroids move freely until they meet a field boundary or another
    * collision body. Collision responses are applied after every body has moved
-   * for the frame, so this method only handles the boundary reflection.
+   * for the frame, so this method only handles the boundary reflection. Walls
+   * damp the normal component through BOUNCINESS instead of being perfectly
+   * elastic.
    */
   update(width, height, deltaTime) {
     advanceAndReflect(
@@ -210,6 +212,7 @@ class Asteroid {
       this.velocityX * deltaTime,
       this.radius,
       width - this.radius,
+      BOUNCINESS,
     );
     advanceAndReflect(
       this,
@@ -218,6 +221,7 @@ class Asteroid {
       this.velocityY * deltaTime,
       this.radius,
       height - this.radius,
+      BOUNCINESS,
     );
   }
 
@@ -571,6 +575,7 @@ function advanceAndReflect(
   displacement,
   minimum,
   maximum,
+  bounceCoefficient = 1,
 ) {
   if (maximum <= minimum) {
     body[positionProperty] = (minimum + maximum) / 2;
@@ -584,11 +589,13 @@ function advanceAndReflect(
     if (nextPosition < minimum) {
       nextPosition = minimum + (minimum - nextPosition);
       directionMultiplier *= -1;
+      body[velocityProperty] *= bounceCoefficient;
     }
 
     if (nextPosition > maximum) {
       nextPosition = maximum - (nextPosition - maximum);
       directionMultiplier *= -1;
+      body[velocityProperty] *= bounceCoefficient;
     }
   }
 
