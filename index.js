@@ -1,6 +1,34 @@
 const canvas = document.querySelector("#game-canvas");
 const context = canvas.getContext("2d");
 
+/** @typedef {{ x: number, y: number }} Vector2 */
+/**
+ * @typedef {Object} PhysicsBody
+ * @property {number} x
+ * @property {number} y
+ * @property {number} velocityX
+ * @property {number} velocityY
+ * @property {number} mass
+ * @property {number} [radius]
+ * @property {number} [momentOfInertia]
+ * @property {number} [angularVelocity]
+ */
+/**
+ * @typedef {Object} CollisionManifold
+ * @property {Vector2} normal
+ * @property {number} penetration
+ * @property {Vector2} contactPoint
+ */
+/**
+ * @typedef {Object} ContactResponse
+ * @property {number} x Impulse x component received by the second body.
+ * @property {number} y Impulse y component received by the second body.
+ * @property {number} normalImpulse
+ * @property {number} tangentImpulse
+ * @property {number} firstAngularImpulse
+ * @property {number} secondAngularImpulse
+ */
+
 // Keep keyboard control available after the player clicks the play field.
 canvas.tabIndex = 0;
 canvas.addEventListener("pointerdown", () => canvas.focus());
@@ -50,6 +78,8 @@ const ASTEROID_MIN_VERTICES = 6;
 const ASTEROID_MAX_VERTICES = 10;
 const ASTEROID_MIN_SPEED = 70;
 const ASTEROID_MAX_SPEED = 170;
+const ASTEROID_MIN_ANGULAR_SPEED = -1.8;
+const ASTEROID_MAX_ANGULAR_SPEED = 1.8;
 const ASTEROID_FILL_STYLE = "#8f99a6";
 // A grazing cut can produce a technically valid but visually meaningless
 // sliver. Discarding fragments below this area keeps the asteroid population
@@ -63,7 +93,18 @@ const ASTEROID_DENSITY = 1.0;
 // the kinetic energy in the contact-normal component while preserving tangent
 // motion. The same coefficient is used for asteroid contacts and wall hits.
 const BOUNCINESS = 0.8;
+// A modest Coulomb friction coefficient lets a shoulder scrape exchange spin
+// instead of making every contact behave like two frictionless billiard balls.
+const FRICTION_COEFFICIENT = 0.35;
 const COLLISION_EPSILON = 0.000001;
+const STATIC_WALL_BODY = Object.freeze({
+  x: 0,
+  y: 0,
+  velocityX: 0,
+  velocityY: 0,
+  mass: Infinity,
+  momentOfInertia: Infinity,
+});
 // A rolling sample smooths display-refresh jitter without hiding sustained
 // frame-time regressions. The debug panel also reports the lowest full-window
 // average observed since the page loaded.
@@ -93,12 +134,18 @@ let lastKineticEnergyDelta = 0;
 let totalBulletCutCount = 0;
 let totalBulletShipCollisionCount = 0;
 let lastBulletMomentumDelta = { x: 0, y: 0 };
+let lastBulletLostMomentum = { x: 0, y: 0 };
 let lastBulletKineticEnergyDelta = 0;
+let lastBulletAngularMomentumDelta = 0;
+let lastBulletShoulder = 0;
+let lastBulletAngularImpulse = 0;
 let lastBulletShipMomentumDelta = { x: 0, y: 0 };
 let lastBulletShipKineticEnergyDelta = 0;
 let lastBulletShipImpulse = { x: 0, y: 0 };
 let lastFiringImpulseDelta = { x: 0, y: 0 };
 let lastFiringRecoilVelocity = { x: 0, y: 0 };
+let lastAngularMomentumDelta = 0;
+let lastAngularKineticEnergyDelta = 0;
 let frameRate = 0;
 let minimumFrameRate = Infinity;
 const frameTimeSamples = new Float64Array(FPS_SAMPLE_COUNT);
@@ -154,51 +201,85 @@ function createOrderedAngles(vertexCount) {
   return Object.freeze(angles);
 }
 
+/**
+ * A convex planar rigid body whose local polygon is centered on its mass
+ * center. Rotation is kept separate from the local vertices so collision axes
+ * and the rendered silhouette always describe the same pose.
+ * @implements {PhysicsBody}
+ */
 class Asteroid {
+  /**
+   * @param {Object} options
+   * @param {number} options.radius
+   * @param {number[]} [options.angles]
+   * @param {Vector2[]} [options.localVertices]
+   * @param {number} options.x
+   * @param {number} options.y
+   * @param {number} options.velocityX
+   * @param {number} options.velocityY
+   * @param {number} [options.rotation]
+   * @param {number} [options.angularVelocity]
+   * @param {number} [options.additionalMass]
+   */
   constructor({
     radius,
-    angles,
+    angles = [],
     localVertices,
     x,
     y,
     velocityX,
     velocityY,
+    rotation = 0,
+    angularVelocity = 0,
     additionalMass = 0,
   }) {
-    const resolvedAngles = angles ??
-      localVertices.map((vertex) => Math.atan2(vertex.y, vertex.x));
-    const generatedVertices = resolvedAngles.map((angle) => ({
+    const sourceVertices = localVertices ?? angles.map((angle) => ({
       x: Math.cos(angle) * radius,
       y: Math.sin(angle) * radius,
     }));
+    const localCenter = polygonCentroid(sourceVertices);
 
-    this.radius = radius;
-    this.localVertices = Object.freeze(
-      (localVertices ?? generatedVertices).map((vertex) =>
-        Object.freeze({ x: vertex.x, y: vertex.y })
+    this.radius = Math.max(
+      ...sourceVertices.map((vertex) =>
+        Math.hypot(vertex.x - localCenter.x, vertex.y - localCenter.y)
       ),
     );
-    this.angles = resolvedAngles;
+    this.localVertices = Object.freeze(
+      sourceVertices.map((vertex) =>
+        Object.freeze({
+          x: vertex.x - localCenter.x,
+          y: vertex.y - localCenter.y,
+        })
+      ),
+    );
     this.x = x;
     this.y = y;
     this.velocityX = velocityX;
     this.velocityY = velocityY;
-    this.additionalMass = additionalMass;
+    this.rotation = rotation;
+    this.angularVelocity = angularVelocity;
     this.worldVertices = this.localVertices.map((vertex) => ({
       x: this.x + vertex.x,
       y: this.y + vertex.y,
     }));
-    // Wall contacts use the polygon's support extents rather than its
-    // enclosing circle. The body does not rotate, so these local extents are
-    // the exact positions at which each polygon edge or vertex reaches a
-    // field wall, including for irregular cut fragments.
-    this.localBounds = polygonBounds(this.localVertices);
     this.surfaceAreaValue = polygonArea(this.localVertices);
-    this.massValue = ASTEROID_DENSITY * this.surfaceAreaValue +
-      this.additionalMass;
+    this.massValue = ASTEROID_DENSITY * this.surfaceAreaValue + additionalMass;
+    // A uniform polygon's mass moment of inertia comes directly from its
+    // vertices. Scaling the unit-density value by mass/area also treats any
+    // absorbed mass as material spread through the fragment, keeping the
+    // parallel-axis relationship exact when a parent asteroid is cut.
+    this.momentOfInertiaValue = this.surfaceAreaValue > COLLISION_EPSILON
+      ? polygonMassMomentOfInertia(this.localVertices) *
+        (this.massValue / this.surfaceAreaValue)
+      : this.massValue * this.radius ** 2 / 2;
     // Translation does not change edge normals, so cache these axes once per
     // asteroid instead of rebuilding them during every SAT collision test.
-    this.collisionAxes = polygonAxes(this.localVertices);
+    // The cached local axes are rotated into world space whenever the body
+    // geometry is refreshed.
+    this.localCollisionAxes = polygonAxes(this.localVertices);
+    this.collisionAxes = this.localCollisionAxes.map((axis) => ({ ...axis }));
+    this.worldBounds = polygonBounds(this.worldVertices);
+    this.collisionPolygon();
   }
 
   get mass() {
@@ -209,50 +290,45 @@ class Asteroid {
     return this.surfaceAreaValue;
   }
 
+  get momentOfInertia() {
+    return this.momentOfInertiaValue;
+  }
+
   /**
    * Asteroids move freely until they meet a field boundary or another
-   * collision body. Collision responses are applied after every body has moved
-   * for the frame, so this method only handles the boundary reflection. Walls
-   * damp the normal component through BOUNCINESS instead of being perfectly
-   * elastic.
+   * collision body. Rotation is integrated before the wall check so a spinning
+   * shoulder can reach a wall even when the center of mass is stationary.
    */
   update(width, height, deltaTime) {
-    const { minimumX, maximumX, minimumY, maximumY } = this.localBounds;
-
-    advanceAndReflect(
-      this,
-      "x",
-      "velocityX",
-      this.velocityX * deltaTime,
-      -minimumX,
-      width - maximumX,
-      BOUNCINESS,
+    this.rotation = wrapAngle(
+      this.rotation + this.angularVelocity * deltaTime,
     );
-    advanceAndReflect(
-      this,
-      "y",
-      "velocityY",
-      this.velocityY * deltaTime,
-      -minimumY,
-      height - maximumY,
-      BOUNCINESS,
-    );
+    this.x += this.velocityX * deltaTime;
+    this.y += this.velocityY * deltaTime;
+    resolveAsteroidWallCollisions(this, width, height);
   }
 
   keepInside(width, height) {
-    const { minimumX, maximumX, minimumY, maximumY } = this.localBounds;
-    this.x = constrainPositionToRange(
-      this.x,
-      -minimumX,
-      width - maximumX,
-      width,
-    );
-    this.y = constrainPositionToRange(
-      this.y,
-      -minimumY,
-      height - maximumY,
-      height,
-    );
+    this.collisionPolygon();
+    const bounds = this.worldBounds;
+    const bodyWidth = bounds.maximumX - bounds.minimumX;
+    const bodyHeight = bounds.maximumY - bounds.minimumY;
+
+    this.x = bodyWidth >= width
+      ? width / 2
+      : this.x + (bounds.minimumX < 0
+        ? -bounds.minimumX
+        : bounds.maximumX > width
+        ? width - bounds.maximumX
+        : 0);
+    this.y = bodyHeight >= height
+      ? height / 2
+      : this.y + (bounds.minimumY < 0
+        ? -bounds.minimumY
+        : bounds.maximumY > height
+        ? height - bounds.maximumY
+        : 0);
+    this.collisionPolygon();
   }
 
   draw() {
@@ -272,14 +348,10 @@ class Asteroid {
     context.fill();
   }
 
-  vertexAt(angle) {
-    return {
-      x: this.x + Math.cos(angle) * this.radius,
-      y: this.y + Math.sin(angle) * this.radius,
-    };
-  }
-
   collisionPolygon() {
+    const cosine = Math.cos(this.rotation);
+    const sine = Math.sin(this.rotation);
+
     for (
       let vertexIndex = 0;
       vertexIndex < this.localVertices.length;
@@ -287,10 +359,22 @@ class Asteroid {
     ) {
       const localVertex = this.localVertices[vertexIndex];
       const worldVertex = this.worldVertices[vertexIndex];
-      worldVertex.x = this.x + localVertex.x;
-      worldVertex.y = this.y + localVertex.y;
+      worldVertex.x = this.x + localVertex.x * cosine - localVertex.y * sine;
+      worldVertex.y = this.y + localVertex.x * sine + localVertex.y * cosine;
     }
 
+    for (
+      let axisIndex = 0;
+      axisIndex < this.localCollisionAxes.length;
+      axisIndex += 1
+    ) {
+      const localAxis = this.localCollisionAxes[axisIndex];
+      const worldAxis = this.collisionAxes[axisIndex];
+      worldAxis.x = localAxis.x * cosine - localAxis.y * sine;
+      worldAxis.y = localAxis.x * sine + localAxis.y * cosine;
+    }
+
+    updatePolygonBounds(this.worldBounds, this.worldVertices);
     return this.worldVertices;
   }
 }
@@ -369,6 +453,11 @@ class Bullet {
   }
 }
 
+/**
+ * @param {number} width
+ * @param {number} height
+ * @returns {Asteroid}
+ */
 function createAsteroid(width, height) {
   const radius = randomBetween(ASTEROID_MIN_RADIUS, ASTEROID_MAX_RADIUS);
   const vertexCount = randomIntegerBetween(
@@ -385,36 +474,52 @@ function createAsteroid(width, height) {
     y: randomCoordinate(height, radius),
     velocityX: Math.cos(direction) * speed,
     velocityY: Math.sin(direction) * speed,
+    rotation: randomBetween(0, Math.PI * 2),
+    angularVelocity: randomBetween(
+      ASTEROID_MIN_ANGULAR_SPEED,
+      ASTEROID_MAX_ANGULAR_SPEED,
+    ),
   });
 }
 
+/**
+ * @param {Vector2[]} vertices
+ * @param {number} velocityX
+ * @param {number} velocityY
+ * @param {number} mass
+ * @param {number} [rotation]
+ * @param {number} [angularVelocity]
+ * @returns {Asteroid}
+ */
 function createAsteroidFromPolygon(
   vertices,
   velocityX,
   velocityY,
   mass,
+  rotation = 0,
+  angularVelocity = 0,
 ) {
   const center = polygonCentroid(vertices);
+  const cosine = Math.cos(rotation);
+  const sine = Math.sin(rotation);
   const localVertices = vertices.map((vertex) => ({
-    x: vertex.x - center.x,
-    y: vertex.y - center.y,
+    x: (vertex.x - center.x) * cosine + (vertex.y - center.y) * sine,
+    y: -(vertex.x - center.x) * sine + (vertex.y - center.y) * cosine,
   }));
   const radius = Math.max(
     ...localVertices.map((vertex) => Math.hypot(vertex.x, vertex.y)),
   );
   const area = polygonArea(vertices);
-  const angles = Object.freeze(
-    localVertices.map((vertex) => Math.atan2(vertex.y, vertex.x)),
-  );
 
   return new Asteroid({
     radius,
-    angles,
     localVertices,
     x: center.x,
     y: center.y,
     velocityX,
     velocityY,
+    rotation,
+    angularVelocity,
     additionalMass: mass - ASTEROID_DENSITY * area,
   });
 }
@@ -630,6 +735,77 @@ function advanceAndReflect(
   body[velocityProperty] *= directionMultiplier;
 }
 
+/**
+ * @param {Asteroid} asteroid
+ * @param {number} width
+ * @param {number} height
+ * @returns {void}
+ */
+function resolveAsteroidWallCollisions(asteroid, width, height) {
+  if (width <= 0 || height <= 0) {
+    return;
+  }
+
+  // Rotation can make a new vertex reach a wall without the center moving.
+  // Rechecking a few times handles a corner contact and a corrective shift
+  // without allowing a large frame to leave the polygon embedded.
+  for (let collisionPass = 0; collisionPass < 4; collisionPass += 1) {
+    asteroid.collisionPolygon();
+    const bounds = asteroid.worldBounds;
+    let changed = false;
+
+    const resolveWall = (normal, penetration) => {
+      if (penetration > 0) {
+        asteroid.x -= normal.x * penetration;
+        asteroid.y -= normal.y * penetration;
+        changed = true;
+      }
+
+      asteroid.collisionPolygon();
+      const contactPoint = supportPoint(asteroid.worldVertices, normal);
+      const response = applyContactImpulse(
+        asteroid,
+        STATIC_WALL_BODY,
+        normal,
+        contactPoint,
+      );
+      changed ||= response.normalImpulse > COLLISION_EPSILON;
+    };
+
+    if (bounds.minimumX <= COLLISION_EPSILON) {
+      resolveWall(
+        { x: -1, y: 0 },
+        Math.max(0, -bounds.minimumX),
+      );
+    }
+
+    if (bounds.maximumX >= width - COLLISION_EPSILON) {
+      resolveWall(
+        { x: 1, y: 0 },
+        Math.max(0, bounds.maximumX - width),
+      );
+    }
+
+    if (bounds.minimumY <= COLLISION_EPSILON) {
+      resolveWall(
+        { x: 0, y: -1 },
+        Math.max(0, -bounds.minimumY),
+      );
+    }
+
+    if (bounds.maximumY >= height - COLLISION_EPSILON) {
+      resolveWall(
+        { x: 0, y: 1 },
+        Math.max(0, bounds.maximumY - height),
+      );
+    }
+
+    if (!changed) {
+      return;
+    }
+  }
+}
+
 function normalizedVector(x, y, fallbackX = 1, fallbackY = 0) {
   const length = Math.hypot(x, y);
 
@@ -640,6 +816,144 @@ function normalizedVector(x, y, fallbackX = 1, fallbackY = 0) {
 
 function cross2D(firstX, firstY, secondX, secondY) {
   return firstX * secondY - firstY * secondX;
+}
+
+function wrapAngle(angle) {
+  const fullTurn = Math.PI * 2;
+  return ((angle % fullTurn) + fullTurn) % fullTurn;
+}
+
+/** @param {PhysicsBody} body @returns {number} */
+function bodyInverseMass(body) {
+  return Number.isFinite(body.mass) && body.mass > COLLISION_EPSILON
+    ? 1 / body.mass
+    : 0;
+}
+
+/** @param {PhysicsBody} body @returns {number} */
+function bodyInverseMomentOfInertia(body) {
+  return Number.isFinite(body.momentOfInertia) &&
+      body.momentOfInertia > COLLISION_EPSILON
+    ? 1 / body.momentOfInertia
+    : 0;
+}
+
+/** @param {PhysicsBody} body @returns {number} */
+function bodyAngularVelocity(body) {
+  return body.angularVelocity ?? 0;
+}
+
+/**
+ * @param {PhysicsBody} body
+ * @param {number} [originX]
+ * @param {number} [originY]
+ * @returns {number}
+ */
+function bodyAngularMomentum(body, originX = 0, originY = 0) {
+  const linearMomentumX = body.mass * body.velocityX;
+  const linearMomentumY = body.mass * body.velocityY;
+  const orbitalMomentum = cross2D(
+    body.x - originX,
+    body.y - originY,
+    linearMomentumX,
+    linearMomentumY,
+  );
+  const spinMomentum = Number.isFinite(body.momentOfInertia)
+    ? body.momentOfInertia * bodyAngularVelocity(body)
+    : 0;
+
+  return orbitalMomentum + spinMomentum;
+}
+
+/** @param {PhysicsBody} body @returns {number} */
+function bodyKineticEnergy(body) {
+  const linearEnergy = 0.5 * body.mass *
+    (body.velocityX ** 2 + body.velocityY ** 2);
+  const rotationalEnergy = Number.isFinite(body.momentOfInertia)
+    ? 0.5 * body.momentOfInertia * bodyAngularVelocity(body) ** 2
+    : 0;
+
+  return linearEnergy + rotationalEnergy;
+}
+
+/** @param {PhysicsBody} body @param {Vector2} point @returns {Vector2} */
+function velocityAtPoint(body, point) {
+  const offsetX = point.x - body.x;
+  const offsetY = point.y - body.y;
+  const angularVelocity = bodyAngularVelocity(body);
+
+  return {
+    x: body.velocityX - angularVelocity * offsetY,
+    y: body.velocityY + angularVelocity * offsetX,
+  };
+}
+
+/**
+ * @param {PhysicsBody} body
+ * @param {number} impulseX
+ * @param {number} impulseY
+ * @param {Vector2} contactPoint
+ * @returns {void}
+ */
+function applyBodyImpulse(body, impulseX, impulseY, contactPoint) {
+  const inverseMass = bodyInverseMass(body);
+  body.velocityX += impulseX * inverseMass;
+  body.velocityY += impulseY * inverseMass;
+
+  const inverseMomentOfInertia = bodyInverseMomentOfInertia(body);
+
+  if (inverseMomentOfInertia > 0 && body.angularVelocity !== undefined) {
+    const offsetX = contactPoint.x - body.x;
+    const offsetY = contactPoint.y - body.y;
+    body.angularVelocity += cross2D(
+      offsetX,
+      offsetY,
+      impulseX,
+      impulseY,
+    ) * inverseMomentOfInertia;
+  }
+}
+
+/**
+ * @param {PhysicsBody} firstBody
+ * @param {PhysicsBody} secondBody
+ * @param {number} angularMomentumBefore
+ * @returns {void}
+ */
+function restoreAngularMomentumAfterPositionCorrection(
+  firstBody,
+  secondBody,
+  angularMomentumBefore,
+) {
+  const angularMomentumAfter = bodyAngularMomentum(firstBody) +
+    bodyAngularMomentum(secondBody);
+  const angularMomentumCorrection = angularMomentumBefore -
+    angularMomentumAfter;
+  const firstMoment = Number.isFinite(firstBody.momentOfInertia)
+    ? firstBody.momentOfInertia
+    : 0;
+  const secondMoment = Number.isFinite(secondBody.momentOfInertia)
+    ? secondBody.momentOfInertia
+    : 0;
+  const totalMoment = firstMoment + secondMoment;
+
+  if (totalMoment <= COLLISION_EPSILON) {
+    return;
+  }
+
+  // Positional overlap correction is a solver convenience rather than a
+  // physical impulse. Give its orbital angular-momentum drift back as spin
+  // before the real contact response, keeping the isolated pair exactly
+  // conservative even when the bodies arrived with tangential momentum.
+  const angularVelocityCorrection = angularMomentumCorrection / totalMoment;
+
+  if (firstBody.angularVelocity !== undefined && firstMoment > 0) {
+    firstBody.angularVelocity += angularVelocityCorrection;
+  }
+
+  if (secondBody.angularVelocity !== undefined && secondMoment > 0) {
+    secondBody.angularVelocity += angularVelocityCorrection;
+  }
 }
 
 function polygonArea(vertices) {
@@ -659,7 +973,54 @@ function polygonArea(vertices) {
   return Math.abs(twiceArea) / 2;
 }
 
+/**
+ * Return the unit-density polar second moment of a polygon about the origin.
+ * Asteroid vertices are centered before this is called, so the result is the
+ * rigid body's mass moment of inertia about its center of mass.
+ */
+/** @param {Vector2[]} vertices @returns {number} */
+function polygonMassMomentOfInertia(vertices) {
+  let signedMoment = 0;
+
+  for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
+    const firstVertex = vertices[vertexIndex];
+    const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
+    const edgeCross = cross2D(
+      firstVertex.x,
+      firstVertex.y,
+      secondVertex.x,
+      secondVertex.y,
+    );
+    const squaredRadiusSum = firstVertex.x ** 2 +
+      firstVertex.x * secondVertex.x +
+      secondVertex.x ** 2 +
+      firstVertex.y ** 2 +
+      firstVertex.y * secondVertex.y +
+      secondVertex.y ** 2;
+
+    signedMoment += edgeCross * squaredRadiusSum;
+  }
+
+  return Math.abs(signedMoment) / 12;
+}
+
 function polygonBounds(vertices) {
+  const bounds = {
+    minimumX: 0,
+    maximumX: 0,
+    minimumY: 0,
+    maximumY: 0,
+  };
+
+  return updatePolygonBounds(bounds, vertices);
+}
+
+/**
+ * @param {{minimumX: number, maximumX: number, minimumY: number, maximumY: number}} bounds
+ * @param {Vector2[]} vertices
+ * @returns {typeof bounds}
+ */
+function updatePolygonBounds(bounds, vertices) {
   let minimumX = Infinity;
   let maximumX = -Infinity;
   let minimumY = Infinity;
@@ -672,7 +1033,11 @@ function polygonBounds(vertices) {
     maximumY = Math.max(maximumY, vertex.y);
   }
 
-  return Object.freeze({ minimumX, maximumX, minimumY, maximumY });
+  bounds.minimumX = minimumX;
+  bounds.maximumX = maximumX;
+  bounds.minimumY = minimumY;
+  bounds.maximumY = maximumY;
+  return bounds;
 }
 
 function polygonCentroid(vertices) {
@@ -920,6 +1285,13 @@ function segmentCircleIntersectionParameter(start, end, circle) {
     : undefined;
 }
 
+/**
+ * @param {Asteroid} asteroid
+ * @param {PhysicsBody} bullet
+ * @param {Vector2} hitPoint
+ * @param {Vector2} [cutDirection]
+ * @returns {Asteroid[]}
+ */
 function splitAsteroid(
   asteroid,
   bullet,
@@ -988,13 +1360,13 @@ function splitAsteroid(
   const totalMass = asteroid.mass;
   const firstMass = (totalMass * firstArea) / totalArea;
   const secondMass = (totalMass * secondArea) / totalArea;
-  const totalMomentumX = asteroid.mass * asteroid.velocityX;
-  const totalMomentumY = asteroid.mass * asteroid.velocityY;
-  const centerVelocityX = totalMomentumX / totalMass;
-  const centerVelocityY = totalMomentumY / totalMass;
-  // The bounce has already accounted for the impact energy. Both pieces start
-  // with the post-impact asteroid velocity, preserving that body's momentum
-  // and energy while the cut itself creates two independent polygons.
+  // Each fragment inherits the parent's rigid velocity field at its own
+  // centroid. Giving both fragments the parent's angular velocity preserves
+  // the parent's spin and the orbital angular momentum around its center.
+  const firstCenter = polygonCentroid(firstPolygon);
+  const secondCenter = polygonCentroid(secondPolygon);
+  const firstVelocity = velocityAtPoint(asteroid, firstCenter);
+  const secondVelocity = velocityAtPoint(asteroid, secondCenter);
 
   // Keep the physics calculation based on the complete cut, then remove any
   // undersized result so a grazing hit cannot leave a permanent sliver.
@@ -1003,18 +1375,22 @@ function splitAsteroid(
       area: firstArea,
       asteroid: createAsteroidFromPolygon(
         firstPolygon,
-        centerVelocityX,
-        centerVelocityY,
+        firstVelocity.x,
+        firstVelocity.y,
         firstMass,
+        asteroid.rotation,
+        asteroid.angularVelocity,
       ),
     },
     {
       area: secondArea,
       asteroid: createAsteroidFromPolygon(
         secondPolygon,
-        centerVelocityX,
-        centerVelocityY,
+        secondVelocity.x,
+        secondVelocity.y,
         secondMass,
+        asteroid.rotation,
+        asteroid.angularVelocity,
       ),
     },
   ]
@@ -1147,39 +1523,136 @@ function circleNormalAtPoint(
 }
 
 /**
- * Apply the shared normal impulse used by every dynamic-body contact. The
- * normal points from the first body toward the second body; the returned
- * vector is the impulse received by the second body. Keeping this calculation
- * in one place means bullets transfer exactly the same momentum as asteroids
- * and the ship.
+ * Apply a rigid-body contact impulse. The normal points from the first body
+ * toward the second body, and the returned vector is the impulse received by
+ * the second body. The same contact point drives linear motion, spin, and
+ * friction, so an off-center shoulder naturally exchanges angular momentum.
  */
-function applyCollisionImpulse(firstBody, secondBody, normal) {
-  const relativeVelocityX = secondBody.velocityX - firstBody.velocityX;
-  const relativeVelocityY = secondBody.velocityY - firstBody.velocityY;
+/**
+ * @param {PhysicsBody} firstBody
+ * @param {PhysicsBody} secondBody
+ * @param {Vector2} normal
+ * @param {Vector2} contactPoint
+ * @returns {ContactResponse}
+ */
+function applyContactImpulse(firstBody, secondBody, normal, contactPoint) {
+  const firstOffsetX = contactPoint.x - firstBody.x;
+  const firstOffsetY = contactPoint.y - firstBody.y;
+  const secondOffsetX = contactPoint.x - secondBody.x;
+  const secondOffsetY = contactPoint.y - secondBody.y;
+  const inverseFirstMass = bodyInverseMass(firstBody);
+  const inverseSecondMass = bodyInverseMass(secondBody);
+  const inverseFirstMoment = bodyInverseMomentOfInertia(firstBody);
+  const inverseSecondMoment = bodyInverseMomentOfInertia(secondBody);
+  const firstNormalLever = cross2D(
+    firstOffsetX,
+    firstOffsetY,
+    normal.x,
+    normal.y,
+  );
+  const secondNormalLever = cross2D(
+    secondOffsetX,
+    secondOffsetY,
+    normal.x,
+    normal.y,
+  );
+  const normalEffectiveMass = inverseFirstMass + inverseSecondMass +
+    firstNormalLever ** 2 * inverseFirstMoment +
+    secondNormalLever ** 2 * inverseSecondMoment;
+  const firstContactVelocity = velocityAtPoint(firstBody, contactPoint);
+  const secondContactVelocity = velocityAtPoint(secondBody, contactPoint);
+  const relativeVelocityX = secondContactVelocity.x -
+    firstContactVelocity.x;
+  const relativeVelocityY = secondContactVelocity.y -
+    firstContactVelocity.y;
   const relativeNormalVelocity = relativeVelocityX * normal.x +
     relativeVelocityY * normal.y;
 
-  // A separating contact needs no impulse. Reflecting only one body here
-  // would change momentum without giving the other body the impulse it should
-  // receive.
-  if (relativeNormalVelocity >= 0) {
-    return { x: 0, y: 0 };
+  // A separating contact needs no impulse. Applying a response to only one
+  // body would change both linear and angular momentum without a counterpart.
+  if (
+    relativeNormalVelocity >= 0 ||
+    normalEffectiveMass <= COLLISION_EPSILON
+  ) {
+    return {
+      x: 0,
+      y: 0,
+      normalImpulse: 0,
+      tangentImpulse: 0,
+      firstAngularImpulse: 0,
+      secondAngularImpulse: 0,
+    };
   }
 
-  const inverseFirstMass = 1 / firstBody.mass;
-  const inverseSecondMass = 1 / secondBody.mass;
-  const inverseMassSum = inverseFirstMass + inverseSecondMass;
-  const impulseMagnitude = -(1 + BOUNCINESS) * relativeNormalVelocity /
-    inverseMassSum;
-  const impulseX = impulseMagnitude * normal.x;
-  const impulseY = impulseMagnitude * normal.y;
+  const normalImpulseMagnitude = -(1 + BOUNCINESS) * relativeNormalVelocity /
+    normalEffectiveMass;
+  const normalImpulseX = normalImpulseMagnitude * normal.x;
+  const normalImpulseY = normalImpulseMagnitude * normal.y;
 
-  firstBody.velocityX -= impulseX * inverseFirstMass;
-  firstBody.velocityY -= impulseY * inverseFirstMass;
-  secondBody.velocityX += impulseX * inverseSecondMass;
-  secondBody.velocityY += impulseY * inverseSecondMass;
+  applyBodyImpulse(firstBody, -normalImpulseX, -normalImpulseY, contactPoint);
+  applyBodyImpulse(secondBody, normalImpulseX, normalImpulseY, contactPoint);
 
-  return { x: impulseX, y: impulseY };
+  // Friction is solved after the normal impulse so the tangent sees the
+  // shoulder's updated angular velocity. Clamping it by Coulomb friction
+  // keeps the contact from manufacturing energy while allowing spin transfer.
+  const tangent = { x: -normal.y, y: normal.x };
+  const firstNormalTangentLever = cross2D(
+    firstOffsetX,
+    firstOffsetY,
+    tangent.x,
+    tangent.y,
+  );
+  const secondNormalTangentLever = cross2D(
+    secondOffsetX,
+    secondOffsetY,
+    tangent.x,
+    tangent.y,
+  );
+  const tangentEffectiveMass = inverseFirstMass + inverseSecondMass +
+    firstNormalTangentLever ** 2 * inverseFirstMoment +
+    secondNormalTangentLever ** 2 * inverseSecondMoment;
+  const firstPostNormalVelocity = velocityAtPoint(firstBody, contactPoint);
+  const secondPostNormalVelocity = velocityAtPoint(secondBody, contactPoint);
+  const relativeTangentVelocity =
+    (secondPostNormalVelocity.x - firstPostNormalVelocity.x) * tangent.x +
+    (secondPostNormalVelocity.y - firstPostNormalVelocity.y) * tangent.y;
+  const unconstrainedTangentImpulse = tangentEffectiveMass >
+      COLLISION_EPSILON
+    ? -relativeTangentVelocity / tangentEffectiveMass
+    : 0;
+  const maximumTangentImpulse = FRICTION_COEFFICIENT *
+    normalImpulseMagnitude;
+  const tangentImpulseMagnitude = Math.min(
+    maximumTangentImpulse,
+    Math.max(-maximumTangentImpulse, unconstrainedTangentImpulse),
+  );
+  const tangentImpulseX = tangentImpulseMagnitude * tangent.x;
+  const tangentImpulseY = tangentImpulseMagnitude * tangent.y;
+
+  applyBodyImpulse(firstBody, -tangentImpulseX, -tangentImpulseY, contactPoint);
+  applyBodyImpulse(secondBody, tangentImpulseX, tangentImpulseY, contactPoint);
+
+  const impulseX = normalImpulseX + tangentImpulseX;
+  const impulseY = normalImpulseY + tangentImpulseY;
+
+  return {
+    x: impulseX,
+    y: impulseY,
+    normalImpulse: normalImpulseMagnitude,
+    tangentImpulse: tangentImpulseMagnitude,
+    firstAngularImpulse: cross2D(
+      firstOffsetX,
+      firstOffsetY,
+      -impulseX,
+      -impulseY,
+    ),
+    secondAngularImpulse: cross2D(
+      secondOffsetX,
+      secondOffsetY,
+      impulseX,
+      impulseY,
+    ),
+  };
 }
 
 function resolveBulletCollisions(width, height) {
@@ -1277,16 +1750,18 @@ function resolveBulletCollisions(width, height) {
 
       if (asteroidIsFirst) {
         const asteroid = asteroids[hitAsteroidIndex];
+        bullet.x = hitPoint.x;
+        bullet.y = hitPoint.y;
         const beforeMomentum = {
           x: asteroid.mass * asteroid.velocityX +
             bullet.mass * bullet.velocityX,
           y: asteroid.mass * asteroid.velocityY +
             bullet.mass * bullet.velocityY,
         };
-        const beforeEnergy = 0.5 * asteroid.mass *
-            (asteroid.velocityX ** 2 + asteroid.velocityY ** 2) +
-          0.5 * bullet.mass *
-            (bullet.velocityX ** 2 + bullet.velocityY ** 2);
+        const beforeAngularMomentum = bodyAngularMomentum(asteroid) +
+          bodyAngularMomentum(bullet);
+        const beforeEnergy = bodyKineticEnergy(asteroid) +
+          bodyKineticEnergy(bullet);
 
         normal = polygonNormalAtPoint(
           asteroid.collisionPolygon(),
@@ -1298,9 +1773,25 @@ function resolveBulletCollisions(width, height) {
           bullet.velocityX,
           bullet.velocityY,
         );
+        const bulletResponse = applyContactImpulse(
+          asteroid,
+          bullet,
+          normal,
+          hitPoint,
+        );
+        lastBulletLostMomentum = {
+          x: -bulletResponse.x,
+          y: -bulletResponse.y,
+        };
+        lastBulletShoulder = cross2D(
+          hitPoint.x - asteroid.x,
+          hitPoint.y - asteroid.y,
+          normal.x,
+          normal.y,
+        );
+        lastBulletAngularImpulse = bulletResponse.firstAngularImpulse;
+        bullet.syncAngle();
         if (canReflect) {
-          applyCollisionImpulse(asteroid, bullet, normal);
-          bullet.syncAngle();
           bullet.recordReflection();
         }
         const fragments = splitAsteroid(
@@ -1327,29 +1818,33 @@ function resolveBulletCollisions(width, height) {
               y: bullet.mass * bullet.velocityY,
             },
           );
+          const afterAngularMomentum = fragments.reduce(
+            (angularMomentum, fragment) =>
+              angularMomentum + bodyAngularMomentum(fragment),
+            bodyAngularMomentum(bullet),
+          );
           const afterEnergy = fragments.reduce(
-            (energy, fragment) =>
-              energy + 0.5 * fragment.mass *
-                (fragment.velocityX ** 2 + fragment.velocityY ** 2),
-            0.5 * bullet.mass *
-              (bullet.velocityX ** 2 + bullet.velocityY ** 2),
+            (energy, fragment) => energy + bodyKineticEnergy(fragment),
+            bodyKineticEnergy(bullet),
           );
 
           lastBulletMomentumDelta = {
             x: afterMomentum.x - beforeMomentum.x,
             y: afterMomentum.y - beforeMomentum.y,
           };
+          lastBulletAngularMomentumDelta = afterAngularMomentum -
+            beforeAngularMomentum;
           lastBulletKineticEnergyDelta = afterEnergy - beforeEnergy;
         }
       } else if (shipIsFirst) {
+        bullet.x = hitPoint.x;
+        bullet.y = hitPoint.y;
         const beforeMomentum = {
           x: ship.mass * ship.velocityX + bullet.mass * bullet.velocityX,
           y: ship.mass * ship.velocityY + bullet.mass * bullet.velocityY,
         };
-        const beforeEnergy = 0.5 * ship.mass *
-            (ship.velocityX ** 2 + ship.velocityY ** 2) +
-          0.5 * bullet.mass *
-            (bullet.velocityX ** 2 + bullet.velocityY ** 2);
+        const beforeEnergy = bodyKineticEnergy(ship) +
+          bodyKineticEnergy(bullet);
 
         normal = circleNormalAtPoint(
           ship,
@@ -1357,13 +1852,22 @@ function resolveBulletCollisions(width, height) {
           bullet.velocityX,
           bullet.velocityY,
         );
-        const bulletImpulse = canReflect
-          ? applyCollisionImpulse(ship, bullet, normal)
-          : { x: 0, y: 0 };
+        const bulletImpulse = applyContactImpulse(
+          ship,
+          bullet,
+          normal,
+          hitPoint,
+        );
         const shipImpulse = {
           x: -bulletImpulse.x,
           y: -bulletImpulse.y,
         };
+        lastBulletLostMomentum = {
+          x: -bulletImpulse.x,
+          y: -bulletImpulse.y,
+        };
+        lastBulletShoulder = 0;
+        lastBulletAngularImpulse = 0;
         bullet.syncAngle();
 
         if (canReflect) {
@@ -1374,10 +1878,8 @@ function resolveBulletCollisions(width, height) {
           x: ship.mass * ship.velocityX + bullet.mass * bullet.velocityX,
           y: ship.mass * ship.velocityY + bullet.mass * bullet.velocityY,
         };
-        const afterEnergy = 0.5 * ship.mass *
-            (ship.velocityX ** 2 + ship.velocityY ** 2) +
-          0.5 * bullet.mass *
-            (bullet.velocityX ** 2 + bullet.velocityY ** 2);
+        const afterEnergy = bodyKineticEnergy(ship) +
+          bodyKineticEnergy(bullet);
 
         totalBulletShipCollisionCount += 1;
         lastBulletShipImpulse = shipImpulse;
@@ -1466,6 +1968,69 @@ function projectCircle(body, axis) {
   };
 }
 
+/** @param {Vector2[]} vertices @param {Vector2} direction @returns {Vector2} */
+function supportPoint(vertices, direction) {
+  const supportTolerance = COLLISION_EPSILON * 100;
+  let greatestProjection = -Infinity;
+  let supportX = 0;
+  let supportY = 0;
+  let supportCount = 0;
+
+  for (const vertex of vertices) {
+    const projection = vertex.x * direction.x + vertex.y * direction.y;
+
+    if (projection > greatestProjection + supportTolerance) {
+      greatestProjection = projection;
+      supportX = vertex.x;
+      supportY = vertex.y;
+      supportCount = 1;
+    } else if (Math.abs(projection - greatestProjection) <= supportTolerance) {
+      supportX += vertex.x;
+      supportY += vertex.y;
+      supportCount += 1;
+    }
+  }
+
+  return {
+    x: supportX / supportCount,
+    y: supportY / supportCount,
+  };
+}
+
+/**
+ * @param {PhysicsBody} firstBody
+ * @param {PhysicsBody} secondBody
+ * @param {Vector2} normal
+ * @param {Vector2[]} [firstVertices]
+ * @param {Vector2[]} [secondVertices]
+ * @returns {Vector2}
+ */
+function contactPointForBodies(
+  firstBody,
+  secondBody,
+  normal,
+  firstVertices,
+  secondVertices,
+) {
+  const firstPoint = firstVertices === undefined
+    ? {
+      x: firstBody.x + normal.x * firstBody.radius,
+      y: firstBody.y + normal.y * firstBody.radius,
+    }
+    : supportPoint(firstVertices, normal);
+  const secondPoint = secondVertices === undefined
+    ? {
+      x: secondBody.x - normal.x * secondBody.radius,
+      y: secondBody.y - normal.y * secondBody.radius,
+    }
+    : supportPoint(secondVertices, { x: -normal.x, y: -normal.y });
+
+  return {
+    x: (firstPoint.x + secondPoint.x) / 2,
+    y: (firstPoint.y + secondPoint.y) / 2,
+  };
+}
+
 /**
  * Return the translation needed to separate two one-dimensional projections.
  * The two directional distances matter when one convex shape contains the
@@ -1518,6 +2083,13 @@ function orientCollisionAxis(firstBody, secondBody, axis) {
   return axis;
 }
 
+/**
+ * @param {PhysicsBody} firstBody
+ * @param {PhysicsBody} secondBody
+ * @param {Vector2[]} firstVertices
+ * @param {Vector2[]} secondVertices
+ * @returns {CollisionManifold | undefined}
+ */
 function polygonPolygonManifold(
   firstBody,
   secondBody,
@@ -1555,9 +2127,18 @@ function polygonPolygonManifold(
     }
   }
 
+  const normal = orientCollisionAxis(firstBody, secondBody, minimumAxis);
+
   return {
-    normal: orientCollisionAxis(firstBody, secondBody, minimumAxis),
+    normal,
     penetration: Math.max(0, minimumPenetration),
+    contactPoint: contactPointForBodies(
+      firstBody,
+      secondBody,
+      normal,
+      firstVertices,
+      secondVertices,
+    ),
   };
 }
 
@@ -1607,6 +2188,12 @@ function closestPointOnPolygon(point, vertices) {
   return closestPoint;
 }
 
+/**
+ * @param {PhysicsBody} circleBody
+ * @param {PhysicsBody} polygonBody
+ * @param {Vector2[]} polygonVertices
+ * @returns {CollisionManifold | undefined}
+ */
 function circlePolygonManifold(
   circleBody,
   polygonBody,
@@ -1659,9 +2246,18 @@ function circlePolygonManifold(
     }
   }
 
+  const normal = orientCollisionAxis(circleBody, polygonBody, minimumAxis);
+
   return {
-    normal: orientCollisionAxis(circleBody, polygonBody, minimumAxis),
+    normal,
     penetration: Math.max(0, minimumPenetration),
+    contactPoint: contactPointForBodies(
+      circleBody,
+      polygonBody,
+      normal,
+      undefined,
+      polygonVertices,
+    ),
   };
 }
 
@@ -1669,6 +2265,7 @@ function invertedManifold(manifold) {
   return {
     normal: { x: -manifold.normal.x, y: -manifold.normal.y },
     penetration: manifold.penetration,
+    contactPoint: manifold.contactPoint,
   };
 }
 
@@ -1704,6 +2301,11 @@ function collisionManifold(firstBody, secondBody) {
   return undefined;
 }
 
+/**
+ * @param {PhysicsBody} ship
+ * @param {boolean} [includeBullets]
+ * @returns {{momentumX: number, momentumY: number, kineticEnergy: number, angularMomentum: number, angularKineticEnergy: number}}
+ */
 function physicsSnapshot(ship, includeBullets = false) {
   const bodies = [
     ship,
@@ -1713,22 +2315,38 @@ function physicsSnapshot(ship, includeBullets = false) {
   let momentumX = 0;
   let momentumY = 0;
   let kineticEnergy = 0;
+  let angularMomentum = 0;
+  let angularKineticEnergy = 0;
 
   for (const body of bodies) {
     momentumX += body.mass * body.velocityX;
     momentumY += body.mass * body.velocityY;
-    kineticEnergy += 0.5 * body.mass *
-      (body.velocityX ** 2 + body.velocityY ** 2);
+    kineticEnergy += bodyKineticEnergy(body);
+    angularMomentum += bodyAngularMomentum(body);
+    angularKineticEnergy += Number.isFinite(body.momentOfInertia)
+      ? 0.5 * body.momentOfInertia * bodyAngularVelocity(body) ** 2
+      : 0;
   }
 
-  return { momentumX, momentumY, kineticEnergy };
+  return {
+    momentumX,
+    momentumY,
+    kineticEnergy,
+    angularMomentum,
+    angularKineticEnergy,
+  };
 }
 
 /**
- * Resolve a convex-shape contact with the existing impulse solver. Only the
- * contact normal and penetration now come from the actual shape geometry; the
- * conservation-of-momentum and coefficient-of-restitution handling remains
- * unchanged. With BOUNCINESS set to one, this is an elastic response.
+ * Resolve a convex-shape contact with a single shared contact point. Equal
+ * and opposite impulses at that point preserve total angular momentum for an
+ * isolated asteroid pair, while the restitution and friction coefficients
+ * account for the energy dissipated by a non-ideal collision.
+ */
+/**
+ * @param {PhysicsBody} firstBody
+ * @param {PhysicsBody} secondBody
+ * @returns {boolean}
  */
 function resolveCollision(firstBody, secondBody) {
   const manifold = collisionManifold(firstBody, secondBody);
@@ -1737,13 +2355,15 @@ function resolveCollision(firstBody, secondBody) {
     return false;
   }
 
-  const { normal, penetration } = manifold;
+  const { normal, penetration, contactPoint } = manifold;
   const offsetX = normal.x;
   const offsetY = normal.y;
 
-  const inverseFirstMass = 1 / firstBody.mass;
-  const inverseSecondMass = 1 / secondBody.mass;
+  const inverseFirstMass = bodyInverseMass(firstBody);
+  const inverseSecondMass = bodyInverseMass(secondBody);
   const inverseMassSum = inverseFirstMass + inverseSecondMass;
+  const angularMomentumBeforeSeparation = bodyAngularMomentum(firstBody) +
+    bodyAngularMomentum(secondBody);
 
   // Separate overlap proportionally to inverse mass. This keeps a large
   // asteroid from teleporting the ship while preventing repeated impulses
@@ -1754,12 +2374,17 @@ function resolveCollision(firstBody, secondBody) {
     firstBody.y -= offsetY * separation * inverseFirstMass;
     secondBody.x += offsetX * separation * inverseSecondMass;
     secondBody.y += offsetY * separation * inverseSecondMass;
+    restoreAngularMomentumAfterPositionCorrection(
+      firstBody,
+      secondBody,
+      angularMomentumBeforeSeparation,
+    );
   }
 
-  applyCollisionImpulse(firstBody, secondBody, {
+  applyContactImpulse(firstBody, secondBody, {
     x: offsetX,
     y: offsetY,
-  });
+  }, contactPoint);
 
   return true;
 }
@@ -1824,6 +2449,10 @@ function resolveAsteroidCollisions() {
   };
   lastKineticEnergyDelta = afterCollision.kineticEnergy -
     beforeCollision.kineticEnergy;
+  lastAngularMomentumDelta = afterCollision.angularMomentum -
+    beforeCollision.angularMomentum;
+  lastAngularKineticEnergyDelta = afterCollision.angularKineticEnergy -
+    beforeCollision.angularKineticEnergy;
   applyPlayerBody(ship);
 }
 
@@ -1883,52 +2512,53 @@ function updateDebugOutput() {
     `Asteroids: ${asteroids.length} (target: ${ASTEROID_COUNT})`,
     `FPS: ${displayedFrameRate} (rolling ${FPS_SAMPLE_COUNT}-frame avg)`,
     `FPS minimum: ${displayedMinimumFrameRate} (rolling window)`,
-    `Starship mass: ${STARSHIP_MASS.toFixed(2)}`,
-    `Asteroid area: ${asteroidArea.toFixed(2)} (first polygon)`,
-    `Asteroid mass (asteroid material only): ${
-      asteroidMass.toFixed(2)
-    } (first)`,
-    `Bounciness: ${BOUNCINESS.toFixed(2)}`,
-    `Contacts/frame: ${lastCollisionCount}`,
-    `Contacts total: ${totalCollisionCount}`,
-    `Bullet mass: ${BULLET_MASS.toFixed(2)}`,
-    `Max bullet reflections: ${MAX_BULLET_REFLECTIONS}`,
-    `Bullet reflections total: ${totalBulletReflectionCount}`,
-    `Active bullet reflection counts: ${
-      bullets.length === 0
-        ? "none"
-        : bullets.map((bullet) => bullet.reflectionCount).join(", ")
+    `Asteroid: ${asteroidMass.toFixed(2)} mass, ${
+      asteroidArea.toFixed(2)
+    } area`,
+    `Spin: ${(firstAsteroid?.angularVelocity ?? 0).toFixed(5)} rad/s, inertia ${
+      (firstAsteroid?.momentOfInertia ?? 0).toFixed(2)
     }`,
-    `Bullet cuts: ${totalBulletCutCount}`,
-    `Bullet ↔ ship contacts: ${totalBulletShipCollisionCount}`,
-    `Bullets active: ${bullets.length}`,
-    `Bullets fired: ${totalBulletsEmitted}`,
-    `Last cut Δ momentum: (${lastBulletMomentumDelta.x.toFixed(5)}, ${
+    `Collision: ${lastCollisionCount}/frame, ${totalCollisionCount} total`,
+    `Material: e=${BOUNCINESS.toFixed(2)}, friction=${
+      FRICTION_COEFFICIENT.toFixed(2)
+    }`,
+    `Bullets: ${totalBulletsEmitted} fired, ${bullets.length} active, ${totalBulletCutCount} cuts`,
+    `Bullet mass/reflections: ${
+      BULLET_MASS.toFixed(2)
+    }/${totalBulletReflectionCount}`,
+    `Bullet lost Δp: (${lastBulletLostMomentum.x.toFixed(5)}, ${
+      lastBulletLostMomentum.y.toFixed(5)
+    })`,
+    `Bullet shoulder/ΔL: ${lastBulletShoulder.toFixed(5)}/${
+      lastBulletAngularImpulse.toFixed(5)
+    }`,
+    `Last cut Δp: (${lastBulletMomentumDelta.x.toFixed(5)}, ${
       lastBulletMomentumDelta.y.toFixed(5)
     })`,
-    `Last cut Δ kinetic energy: ${lastBulletKineticEnergyDelta.toFixed(5)}`,
-    `Last bullet→ship impulse: (${lastBulletShipImpulse.x.toFixed(5)}, ${
-      lastBulletShipImpulse.y.toFixed(5)
-    })`,
-    `Last bullet↔ship Δ momentum: (${
-      lastBulletShipMomentumDelta.x.toFixed(5)
-    }, ${lastBulletShipMomentumDelta.y.toFixed(5)})`,
-    `Last bullet↔ship Δ kinetic energy: ${
-      lastBulletShipKineticEnergyDelta.toFixed(5)
+    `Last cut ΔL/ΔE: ${lastBulletAngularMomentumDelta.toFixed(5)}/${
+      lastBulletKineticEnergyDelta.toFixed(5)
     }`,
-    `Last firing Δ impulse: (${lastFiringImpulseDelta.x.toFixed(5)}, ${
+    `Ship contacts: ${totalBulletShipCollisionCount}, last impulse (${
+      lastBulletShipImpulse.x.toFixed(5)
+    }, ${lastBulletShipImpulse.y.toFixed(5)})`,
+    `Ship Δp/ΔE: (${lastBulletShipMomentumDelta.x.toFixed(5)}, ${
+      lastBulletShipMomentumDelta.y.toFixed(5)
+    })/${lastBulletShipKineticEnergyDelta.toFixed(5)}`,
+    `Firing Δp/recoil: (${lastFiringImpulseDelta.x.toFixed(5)}, ${
       lastFiringImpulseDelta.y.toFixed(5)
+    })/(${lastFiringRecoilVelocity.x.toFixed(5)}, ${
+      lastFiringRecoilVelocity.y.toFixed(5)
     })`,
-    `Last firing recoil Δ velocity: (${
-      lastFiringRecoilVelocity.x.toFixed(5)
-    }, ${lastFiringRecoilVelocity.y.toFixed(5)})`,
-    `Δ momentum at contact: (${lastMomentumDelta.x.toFixed(5)}, ${
+    `Contact Δp: (${lastMomentumDelta.x.toFixed(5)}, ${
       lastMomentumDelta.y.toFixed(5)
     })`,
-    `Δ kinetic energy at contact: ${lastKineticEnergyDelta.toFixed(5)}`,
-    `Total momentum: (${totalPhysics.momentumX.toFixed(2)}, ${
+    `Contact ΔL/ΔE: ${lastAngularMomentumDelta.toFixed(5)}/${
+      lastKineticEnergyDelta.toFixed(5)
+    }`,
+    `Total p: (${totalPhysics.momentumX.toFixed(2)}, ${
       totalPhysics.momentumY.toFixed(2)
     })`,
+    `Total angular momentum: ${totalPhysics.angularMomentum.toFixed(2)}`,
     `Total kinetic energy: ${totalPhysics.kineticEnergy.toFixed(2)}`,
   ].join("\n");
 }

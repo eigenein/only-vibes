@@ -15,6 +15,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Should embrace encapsulation.
 - Should continuously clean up dead code.
 - Should not repeat itself.
+- Must use JSDoc to annotate type and purpose of the parameters.
 
 # Implementation choices
 
@@ -22,6 +23,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must use plain HTML and JavaScript.
 - Must not use dependencies like React, Phaser, PixiJS, WebGL, or a physics engine.
 - Must care about performance and ensure the minimum of 60 FPS.
+- Should consult with Wikipedia for physics concepts.
 
 # How to verify
 
@@ -32,10 +34,10 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must load `index.html` directly in browser.
 - May toggle the debug interface at own discretion.
 - May pause and resume the game at own discretion.
-- Must continuously declutter the debug interface.
+- Must declutter the debug interface before adding new items.
 - Must not display any debug elements when the debug UI is off.
 - May add debug console output.
-- Must prefer Kane CLI to Node VM.
+- Must prefer Kane CLI to Node VM or `deno eval`.
 - Must document actionable Kane bug findings that resulted in code changes in `AUDIT.md`.
 - Must not rely merely on code analysis.
 - Must use W/A/S/D keys instead of the arrow keys when the spaceship control is needed.
