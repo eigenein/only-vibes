@@ -50,6 +50,10 @@ const ASTEROID_MAX_VERTICES = 10;
 const ASTEROID_MIN_SPEED = 70;
 const ASTEROID_MAX_SPEED = 170;
 const ASTEROID_FILL_STYLE = "#8f99a6";
+// A grazing cut can produce a technically valid but visually meaningless
+// sliver. Discarding fragments below this area keeps the asteroid population
+// useful while leaving the cutoff easy to tune for the game's scale.
+const ASTEROID_MIN_FRAGMENT_AREA = 100;
 // Geometric asteroid mass is density times the true area of the convex
 // polygon. The encompassing radius remains useful for safe field-boundary
 // placement; fragments can also carry absorbed bullet mass.
@@ -866,20 +870,30 @@ function splitAsteroid(asteroid, bullet, hitPoint) {
   const secondVelocityY = centerVelocityY +
     (firstMass / totalMass) * relativeVelocityY;
 
+  // Keep the physics calculation based on the complete cut, then remove any
+  // undersized result so a grazing hit cannot leave a permanent sliver.
   return [
-    createAsteroidFromPolygon(
-      firstPolygon,
-      firstVelocityX,
-      firstVelocityY,
-      firstMass,
-    ),
-    createAsteroidFromPolygon(
-      secondPolygon,
-      secondVelocityX,
-      secondVelocityY,
-      secondMass,
-    ),
-  ];
+    {
+      area: firstArea,
+      asteroid: createAsteroidFromPolygon(
+        firstPolygon,
+        firstVelocityX,
+        firstVelocityY,
+        firstMass,
+      ),
+    },
+    {
+      area: secondArea,
+      asteroid: createAsteroidFromPolygon(
+        secondPolygon,
+        secondVelocityX,
+        secondVelocityY,
+        secondMass,
+      ),
+    },
+  ]
+    .filter(({ area }) => area >= ASTEROID_MIN_FRAGMENT_AREA)
+    .map(({ asteroid: fragment }) => fragment);
 }
 
 function resolveBulletCollisions() {
