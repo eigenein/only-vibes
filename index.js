@@ -53,7 +53,7 @@ const ASTEROID_FILL_STYLE = "#8f99a6";
 // A grazing cut can produce a technically valid but visually meaningless
 // sliver. Discarding fragments below this area keeps the asteroid population
 // useful while leaving the cutoff easy to tune for the game's scale.
-const ASTEROID_MIN_FRAGMENT_AREA = 100;
+const ASTEROID_MIN_FRAGMENT_AREA = 1000;
 // Geometric asteroid mass is density times the true area of the convex
 // polygon. The encompassing radius remains useful for safe field-boundary
 // placement; fragments can also carry absorbed bullet mass.

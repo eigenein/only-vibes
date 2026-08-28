@@ -28,8 +28,9 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must invoke `kane-cli` skill in a new visible Google Chrome.
 - Must not spin web server.
 - Must load `index.html` directly in browser.
-- May listen to the D key to toggle the debug interface.
-- May add elements to the debug interface at own discretion.
+- May toggle the debug interface at own discretion.
+- May pause and resume the game at own discretion.
+- Should remove obsolete items from the debug interface.
 - Must not display any debug elements when the debug UI is off.
 - May add debug console output.
 - Must prefer Kane CLI to Node VM.
