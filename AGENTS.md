@@ -28,6 +28,8 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must care about performance and ensure the minimum of 60 FPS.
 - Should consult with Wikipedia for physics concepts.
 - Must keep the paused-game help screen up-to-date at all times.
+- Must keep the game user-friendly.
+- Must not tolerate any visual bugs.
 
 # How to verify
 

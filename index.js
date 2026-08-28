@@ -813,10 +813,21 @@ function drawStatusBars(width) {
       STATUS_BAR_HEIGHT - 1,
     );
 
-    context.fillStyle = bar.label === "SHIP" ? "#000" : "#00131c";
+    // Outline the light text so labels remain readable when a bar is nearly
+    // empty (dark track) as well as when the fill passes underneath them.
+    context.strokeStyle = "rgba(0, 0, 0, 0.9)";
+    context.lineWidth = 3;
+    context.lineJoin = "round";
+    context.fillStyle = "#fff";
     context.textAlign = "left";
+    context.strokeText(bar.label, barX + 8, barY + STATUS_BAR_HEIGHT / 2);
     context.fillText(bar.label, barX + 8, barY + STATUS_BAR_HEIGHT / 2);
     context.textAlign = "right";
+    context.strokeText(
+      `${Math.round(bar.state)}%`,
+      barX + barWidth - 8,
+      barY + STATUS_BAR_HEIGHT / 2,
+    );
     context.fillText(
       `${Math.round(bar.state)}%`,
       barX + barWidth - 8,
