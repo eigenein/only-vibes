@@ -70,6 +70,24 @@ const BULLET_COLLISION_OFFSET = 0.01;
 // Backquote is an uncommon gameplay key and is separate from the ship's
 // letter-key controls, so it leaves D available for clockwise rotation.
 const DEBUG_TOGGLE_KEY = "Backquote";
+const PAUSE_KEY = "KeyP";
+const PAUSE_KEY_LABEL = "P";
+const FIRE_KEY = "Space";
+const FIRE_KEY_LABEL = "SPACE";
+
+// Keep the help screen's controls in one compact table so every paused frame
+// describes the same W/A/S/D and firing semantics that the game consumes.
+const PLAY_HELP = Object.freeze([
+  Object.freeze({ label: "W / S", description: "thrust / brake" }),
+  Object.freeze({
+    label: "A / D",
+    description: "turn counter-clockwise / clockwise",
+  }),
+  Object.freeze({ label: FIRE_KEY_LABEL, description: "fire" }),
+  Object.freeze({ label: PAUSE_KEY_LABEL, description: "pause / resume" }),
+]);
+const HELP_PANEL_WIDTH = 540;
+const HELP_PANEL_HEIGHT = 400;
 
 const ASTEROID_COUNT = 8;
 const ASTEROID_MIN_RADIUS = 24;
@@ -125,7 +143,8 @@ let totalBulletReflectionCount = 0;
 let asteroidsGenerated = false;
 // Pausing stops simulation time while leaving the render loop alive, so the
 // player can inspect a frozen collision result and resume without a time jump.
-let gamePaused = false;
+// Starting paused gives the player the controls before any movement begins.
+let gamePaused = true;
 let debugEnabled = false;
 let lastCollisionCount = 0;
 let totalCollisionCount = 0;
@@ -593,7 +612,7 @@ function updateBulletFiring(deltaTime) {
   // Keep firing paused even if the key was held before the game was paused.
   // The simulation normally skips this function while paused, but this guard
   // keeps the firing rule local and prevents future callers from bypassing it.
-  if (gamePaused || !pressedKeys.has("Space")) {
+  if (gamePaused || !pressedKeys.has(FIRE_KEY)) {
     bulletCooldown = 0;
     return;
   }
@@ -693,6 +712,89 @@ function drawGame(width, height) {
   context.closePath();
   context.fillStyle = "#fff";
   context.fill();
+
+  if (gamePaused) {
+    drawPauseHelp(width, height);
+  }
+}
+
+/**
+ * Draw a responsive pause screen over the frozen game and list every key
+ * needed to play. The render loop keeps calling this while paused, so the
+ * help remains visible after resize and for every later pause.
+ * @param {number} width The viewport width in CSS pixels.
+ * @param {number} height The viewport height in CSS pixels.
+ * @returns {void}
+ */
+function drawPauseHelp(width, height) {
+  const helpScale = Math.max(
+    0,
+    Math.min(
+      1,
+      (width - 32) / HELP_PANEL_WIDTH,
+      (height - 32) / HELP_PANEL_HEIGHT,
+    ),
+  );
+  const panelWidth = HELP_PANEL_WIDTH * helpScale;
+  const panelHeight = HELP_PANEL_HEIGHT * helpScale;
+  const panelX = (width - panelWidth) / 2;
+  const panelY = (height - panelHeight) / 2;
+
+  context.save();
+  context.fillStyle = "rgba(0, 0, 0, 0.78)";
+  context.fillRect(0, 0, width, height);
+
+  if (helpScale === 0) {
+    context.restore();
+    return;
+  }
+
+  context.translate(panelX, panelY);
+  context.scale(helpScale, helpScale);
+  context.beginPath();
+  context.roundRect(0, 0, HELP_PANEL_WIDTH, HELP_PANEL_HEIGHT, 18);
+  context.fillStyle = "rgba(14, 22, 34, 0.97)";
+  context.fill();
+  context.strokeStyle = "rgba(159, 220, 255, 0.8)";
+  context.lineWidth = 2;
+  context.stroke();
+
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#fff";
+  context.font = "700 32px system-ui, sans-serif";
+  context.fillText("PAUSED", HELP_PANEL_WIDTH / 2, 58);
+  context.fillStyle = "#9fdcff";
+  context.font = "500 18px system-ui, sans-serif";
+  context.fillText(
+    `Press ${PAUSE_KEY_LABEL} to resume`,
+    HELP_PANEL_WIDTH / 2,
+    94,
+  );
+
+  context.textAlign = "left";
+  context.font = "600 18px system-ui, sans-serif";
+  for (let helpIndex = 0; helpIndex < PLAY_HELP.length; helpIndex += 1) {
+    const helpItem = PLAY_HELP[helpIndex];
+    const rowY = 154 + helpIndex * 46;
+
+    context.fillStyle = "#9fdcff";
+    context.fillText(helpItem.label, 88, rowY);
+    context.fillStyle = "#fff";
+    context.font = "400 18px system-ui, sans-serif";
+    context.fillText(helpItem.description, 218, rowY);
+    context.font = "600 18px system-ui, sans-serif";
+  }
+
+  context.textAlign = "center";
+  context.fillStyle = "#9aa8b8";
+  context.font = "400 15px system-ui, sans-serif";
+  context.fillText(
+    "Navigate the field, cut asteroids, stay alive.",
+    HELP_PANEL_WIDTH / 2,
+    350,
+  );
+  context.restore();
 }
 
 /**
@@ -2508,7 +2610,7 @@ function updateDebugOutput() {
 
   debugOutput.textContent = [
     `PHYSICS DEBUG  (${DEBUG_TOGGLE_KEY} toggles)`,
-    `Game: ${gamePaused ? "paused (P toggles)" : "running"}`,
+    `Game: ${gamePaused ? `${PAUSE_KEY_LABEL} toggles` : "running"}`,
     `Asteroids: ${asteroids.length} (target: ${ASTEROID_COUNT})`,
     `FPS: ${displayedFrameRate} (rolling ${FPS_SAMPLE_COUNT}-frame avg)`,
     `FPS minimum: ${displayedMinimumFrameRate} (rolling window)`,
@@ -2666,8 +2768,8 @@ function animate(frameTime) {
 }
 
 function controlKeyForEvent(event) {
-  if (event.code === "Space") {
-    return "Space";
+  if (event.code === FIRE_KEY) {
+    return FIRE_KEY;
   }
 
   if (event.key.startsWith("Arrow")) {
@@ -2684,13 +2786,13 @@ function controlKeyForEvent(event) {
 }
 
 document.addEventListener("keydown", (event) => {
-  if (event.code === "KeyP" && !event.repeat) {
+  if (event.code === PAUSE_KEY && !event.repeat) {
     gamePaused = !gamePaused;
 
     if (gamePaused) {
       // A pause freezes gameplay input as well as simulation time. Requiring a
       // fresh Space press after resuming avoids a held key firing unexpectedly.
-      pressedKeys.delete("Space");
+      pressedKeys.clear();
       bulletCooldown = 0;
     }
 
@@ -2710,11 +2812,11 @@ document.addEventListener("keydown", (event) => {
   if (controlKey !== undefined) {
     event.preventDefault();
 
-    if (gamePaused && controlKey === "Space") {
+    if (gamePaused) {
       return;
     }
 
-    if (controlKey === "Space" && !event.repeat) {
+    if (controlKey === FIRE_KEY && !event.repeat) {
       emitBullet();
       bulletCooldown = BULLET_FIRE_INTERVAL;
     }

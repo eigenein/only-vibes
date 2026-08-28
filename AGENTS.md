@@ -4,6 +4,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 
 - Must use HTML5 standard.
 - Must use ES2025 standard.
+- Must use the "widely available" [baseline](https://web.dev/baseline).
 - Must use best MDN practices.
 - Must format the code.
 - Must assign variables immediately.
@@ -17,13 +18,14 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Should not repeat itself.
 - Must use JSDoc to annotate type and purpose of the parameters.
 
-# Implementation choices
+# Implementation instructions
 
 - Must use `<canvas>` for rendering.
 - Must use plain HTML and JavaScript.
 - Must not use dependencies like React, Phaser, PixiJS, WebGL, or a physics engine.
 - Must care about performance and ensure the minimum of 60 FPS.
 - Should consult with Wikipedia for physics concepts.
+- Must keep the paused-game help screen up-to-date at all times.
 
 # How to verify
 
