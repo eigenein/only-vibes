@@ -52,6 +52,21 @@ const MAX_SPEED = 360;
 // is held. Keeping it global makes the handling easy to tune.
 const MOVEMENT_RESPONSIVENESS = 480;
 
+// The shield and hull are intentionally separate gameplay states. Collision
+// impulse is scaled into readable percentage points, while the different
+// coefficients make the shield absorb slightly more of every impact than the
+// unprotected hull would receive.
+const SHIELD_MAX_STATE = 100;
+const SHIP_MAX_STATE = 100;
+const SHIELD_REGENERATION_RATE = 7.5;
+const COLLISION_DAMAGE_SCALE = 1 / 10000;
+const SHIELD_DAMAGE_COEFFICIENT = 1.1;
+const SHIP_DAMAGE_COEFFICIENT = 1.0;
+const STATUS_BAR_WIDTH = 220;
+const STATUS_BAR_HEIGHT = 22;
+const STATUS_BAR_GAP = 12;
+const STATUS_BAR_MARGIN = 16;
+
 // Bullets are intentionally fast and short-lived. The frequency is expressed
 // in shots per second so holding Space feels regular at every frame rate.
 const BULLET_FREQUENCY = 8;
@@ -136,6 +151,13 @@ let playerVelocityX = 0;
 let playerVelocityY = 0;
 let playerX;
 let playerY;
+let shieldState = SHIELD_MAX_STATE;
+let shipState = SHIP_MAX_STATE;
+let restartRequested = false;
+let totalShipRestartCount = 0;
+let lastCollisionMomentum = 0;
+let lastShieldDamage = 0;
+let lastShipDamage = 0;
 let previousFrameTime;
 let bulletCooldown = 0;
 let totalBulletsEmitted = 0;
@@ -648,6 +670,7 @@ function resizeCanvas() {
   }
 
   generateAsteroids(width, height);
+
   for (const asteroid of asteroids) {
     asteroid.keepInside(width, height);
   }
@@ -663,6 +686,145 @@ function constrainPositionToRange(position, minimum, maximum, extent) {
   return maximum <= minimum
     ? extent / 2
     : Math.min(Math.max(position, minimum), maximum);
+}
+
+/**
+ * Restore a portion of the shield each simulation step. Hull damage is never
+ * included here: a damaged ship remains damaged until its life ends.
+ * @param {number} deltaTime Elapsed simulation time in seconds.
+ * @returns {void}
+ */
+function regenerateShield(deltaTime) {
+  if (!Number.isFinite(deltaTime)) {
+    return;
+  }
+
+  shieldState = Math.min(
+    SHIELD_MAX_STATE,
+    shieldState + SHIELD_REGENERATION_RATE * deltaTime,
+  );
+}
+
+/**
+ * Convert contact impulse into damage for both layers of the ship. The
+ * transmission fraction is sampled before the impact so a 30% shield sends
+ * exactly 70% of the original impact damage toward the hull.
+ * @param {number} collisionMomentum Magnitude of the contact impulse.
+ * @returns {void}
+ */
+function applyCollisionDamage(collisionMomentum) {
+  const safeCollisionMomentum = Number.isFinite(collisionMomentum)
+    ? Math.max(0, collisionMomentum)
+    : 0;
+  const impactDamage = safeCollisionMomentum *
+    COLLISION_DAMAGE_SCALE;
+  const shieldFraction = shieldState / SHIELD_MAX_STATE;
+  const transmittedFraction = 1 - shieldFraction;
+  const shieldDamage = Math.min(
+    shieldState,
+    impactDamage * SHIELD_DAMAGE_COEFFICIENT,
+  );
+  const shipDamage = Math.min(
+    shipState,
+    impactDamage * transmittedFraction * SHIP_DAMAGE_COEFFICIENT,
+  );
+
+  shieldState = Math.max(0, shieldState - shieldDamage);
+  shipState = Math.max(0, shipState - shipDamage);
+  lastCollisionMomentum = safeCollisionMomentum;
+  lastShieldDamage = shieldDamage;
+  lastShipDamage = shipDamage;
+
+  if (shipState <= COLLISION_EPSILON) {
+    shipState = 0;
+    restartRequested = true;
+  }
+}
+
+/**
+ * Begin a fresh life after hull destruction. Rebuilding the asteroid field
+ * makes the restart a real game restart instead of leaving the player inside
+ * the collision that ended the previous life.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @returns {void}
+ */
+function restartGame(width, height) {
+  playerX = width / 2;
+  playerY = height / 2;
+  playerAngle = -Math.PI / 2;
+  playerVelocityX = 0;
+  playerVelocityY = 0;
+  shieldState = SHIELD_MAX_STATE;
+  shipState = SHIP_MAX_STATE;
+  restartRequested = false;
+  totalShipRestartCount += 1;
+  bulletCooldown = 0;
+  bullets.length = 0;
+  pressedKeys.clear();
+  asteroids.length = 0;
+  asteroidsGenerated = false;
+  generateAsteroids(width, height);
+}
+
+/**
+ * Draw the two persistent ship-life indicators in the upper-right corner.
+ * These are game UI, not debug output, so they remain visible when debugging
+ * is disabled and while the paused help screen is open.
+ * @param {number} width Viewport width in CSS pixels.
+ * @returns {void}
+ */
+function drawStatusBars(width) {
+  const barWidth = Math.min(
+    STATUS_BAR_WIDTH,
+    Math.max(0, width - STATUS_BAR_MARGIN * 2),
+  );
+
+  if (barWidth <= 0) {
+    return;
+  }
+
+  const barX = width - barWidth - STATUS_BAR_MARGIN;
+  const bars = [
+    { label: "SHIELD", state: shieldState, color: "#65d8ff" },
+    { label: "SHIP", state: shipState, color: "#ffffff" },
+  ];
+
+  context.save();
+  context.font = "600 12px system-ui, sans-serif";
+  context.textBaseline = "middle";
+
+  for (let barIndex = 0; barIndex < bars.length; barIndex += 1) {
+    const bar = bars[barIndex];
+    const barY = STATUS_BAR_MARGIN + barIndex *
+        (STATUS_BAR_HEIGHT + STATUS_BAR_GAP);
+    const fillWidth = barWidth * (bar.state / SHIELD_MAX_STATE);
+
+    context.fillStyle = "rgba(14, 22, 34, 0.88)";
+    context.fillRect(barX, barY, barWidth, STATUS_BAR_HEIGHT);
+    context.fillStyle = bar.color;
+    context.fillRect(barX, barY, fillWidth, STATUS_BAR_HEIGHT);
+    context.strokeStyle = "rgba(255, 255, 255, 0.75)";
+    context.lineWidth = 1;
+    context.strokeRect(
+      barX + 0.5,
+      barY + 0.5,
+      barWidth - 1,
+      STATUS_BAR_HEIGHT - 1,
+    );
+
+    context.fillStyle = bar.label === "SHIP" ? "#000" : "#00131c";
+    context.textAlign = "left";
+    context.fillText(bar.label, barX + 8, barY + STATUS_BAR_HEIGHT / 2);
+    context.textAlign = "right";
+    context.fillText(
+      `${Math.round(bar.state)}%`,
+      barX + barWidth - 8,
+      barY + STATUS_BAR_HEIGHT / 2,
+    );
+  }
+
+  context.restore();
 }
 
 /**
@@ -693,7 +855,9 @@ function drawGame(width, height) {
   // The circle remains unfilled so the black space is visible inside the hull.
   context.beginPath();
   context.arc(playerX, playerY, PLAYER_RADIUS, 0, Math.PI * 2);
-  context.strokeStyle = "#fff";
+  context.strokeStyle = shieldState > 0
+    ? "#65d8ff"
+    : "rgba(101, 216, 255, 0.35)";
   context.lineWidth = 2;
   context.stroke();
 
@@ -716,6 +880,8 @@ function drawGame(width, height) {
   if (gamePaused) {
     drawPauseHelp(width, height);
   }
+
+  drawStatusBars(width);
 }
 
 /**
@@ -790,9 +956,14 @@ function drawPauseHelp(width, height) {
   context.fillStyle = "#9aa8b8";
   context.font = "400 15px system-ui, sans-serif";
   context.fillText(
-    "Navigate the field, cut asteroids, stay alive.",
+    "Shield regenerates; hull damage persists.",
     HELP_PANEL_WIDTH / 2,
-    350,
+    344,
+  );
+  context.fillText(
+    "Walls are harmless. Navigate, cut, survive.",
+    HELP_PANEL_WIDTH / 2,
+    372,
   );
   context.restore();
 }
@@ -1757,6 +1928,16 @@ function applyContactImpulse(firstBody, secondBody, normal, contactPoint) {
   };
 }
 
+/**
+ * Use the total impulse exchanged at a contact as the collision's momentum
+ * measure. Friction is included because it is part of the same interaction.
+ * @param {ContactResponse} response Contact impulse response from the solver.
+ * @returns {number} Momentum transferred during the contact.
+ */
+function contactImpulseMagnitude(response) {
+  return Math.hypot(response.x, response.y);
+}
+
 function resolveBulletCollisions(width, height) {
   const ship = playerBody();
 
@@ -1964,6 +2145,7 @@ function resolveBulletCollisions(width, height) {
           x: -bulletImpulse.x,
           y: -bulletImpulse.y,
         };
+        applyCollisionDamage(contactImpulseMagnitude(bulletImpulse));
         lastBulletLostMomentum = {
           x: -bulletImpulse.x,
           y: -bulletImpulse.y,
@@ -2448,13 +2630,14 @@ function physicsSnapshot(ship, includeBullets = false) {
 /**
  * @param {PhysicsBody} firstBody
  * @param {PhysicsBody} secondBody
- * @returns {boolean}
+ * @returns {ContactResponse | undefined} Contact response, or undefined when
+ *   the bodies do not overlap.
  */
 function resolveCollision(firstBody, secondBody) {
   const manifold = collisionManifold(firstBody, secondBody);
 
   if (manifold === undefined) {
-    return false;
+    return undefined;
   }
 
   const { normal, penetration, contactPoint } = manifold;
@@ -2483,12 +2666,12 @@ function resolveCollision(firstBody, secondBody) {
     );
   }
 
-  applyContactImpulse(firstBody, secondBody, {
+  const response = applyContactImpulse(firstBody, secondBody, {
     x: offsetX,
     y: offsetY,
   }, contactPoint);
 
-  return true;
+  return response;
 }
 
 function playerBody() {
@@ -2529,7 +2712,7 @@ function resolveAsteroidCollisions() {
       }
 
       collisionCount += Number(
-        resolveCollision(firstAsteroid, secondAsteroid),
+        resolveCollision(firstAsteroid, secondAsteroid) !== undefined,
       );
     }
   }
@@ -2539,7 +2722,12 @@ function resolveAsteroidCollisions() {
       continue;
     }
 
-    collisionCount += Number(resolveCollision(ship, asteroid));
+    const response = resolveCollision(ship, asteroid);
+    collisionCount += Number(response !== undefined);
+
+    if (response !== undefined) {
+      applyCollisionDamage(contactImpulseMagnitude(response));
+    }
   }
 
   const afterCollision = physicsSnapshot(ship);
@@ -2611,6 +2799,16 @@ function updateDebugOutput() {
   debugOutput.textContent = [
     `PHYSICS DEBUG  (${DEBUG_TOGGLE_KEY} toggles)`,
     `Game: ${gamePaused ? `${PAUSE_KEY_LABEL} toggles` : "running"}`,
+    `Shield/ship: ${shieldState.toFixed(2)}%/${shipState.toFixed(2)}% (regen ${
+      SHIELD_REGENERATION_RATE.toFixed(1)
+    }/s)`,
+    `Damage: momentum ${lastCollisionMomentum.toFixed(2)}, shield ${
+      lastShieldDamage.toFixed(2)
+    }, ship ${lastShipDamage.toFixed(2)}`,
+    `Damage coefficients: shield ${
+      SHIELD_DAMAGE_COEFFICIENT.toFixed(2)
+    }, ship ${SHIP_DAMAGE_COEFFICIENT.toFixed(2)}`,
+    `Ship restarts: ${totalShipRestartCount}`,
     `Asteroids: ${asteroids.length} (target: ${ASTEROID_COUNT})`,
     `FPS: ${displayedFrameRate} (rolling ${FPS_SAMPLE_COUNT}-frame avg)`,
     `FPS minimum: ${displayedMinimumFrameRate} (rolling window)`,
@@ -2672,6 +2870,8 @@ function updateDebugOutput() {
  * steering the ship toward its nose.
  */
 function updateGame(deltaTime, width, height) {
+  regenerateShield(deltaTime);
+
   const turnsCounterClockwise = pressedKeys.has("ArrowLeft") ||
     pressedKeys.has("KeyA");
   const turnsClockwise = pressedKeys.has("ArrowRight") ||
@@ -2747,6 +2947,10 @@ function updateGame(deltaTime, width, height) {
   updateBullets(deltaTime);
   resolveBulletCollisions(width, height);
   resolveAsteroidCollisions();
+
+  if (restartRequested) {
+    restartGame(width, height);
+  }
 }
 
 function animate(frameTime) {

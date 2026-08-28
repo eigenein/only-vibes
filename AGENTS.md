@@ -16,7 +16,9 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Should embrace encapsulation.
 - Should continuously clean up dead code.
 - Should not repeat itself.
-- Must use JSDoc to annotate type and purpose of the parameters.
+- Must use JSDoc to annotate type and purpose of the parameters; must respect them.
+- Must document all world constants.
+- Must group all world constants.
 
 # Implementation instructions
 
