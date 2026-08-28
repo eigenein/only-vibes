@@ -39,9 +39,6 @@ const BULLET_LINE_WIDTH = 3;
 // letter-key controls, so it leaves D available for clockwise rotation.
 const DEBUG_TOGGLE_KEY = "Backquote";
 
-// Asteroids are intentionally a small, fixed population for this iteration.
-// Their size, complexity, and speed ranges are global so the game's difficulty
-// can be tuned without changing the object model.
 const ASTEROID_COUNT = 8;
 const ASTEROID_MIN_RADIUS = 24;
 const ASTEROID_MAX_RADIUS = 52;
@@ -63,6 +60,10 @@ const ASTEROID_DENSITY = 0.1;
 // intentionally model energy loss without changing the collision solver.
 const BOUNCINESS = 1;
 const COLLISION_EPSILON = 0.000001;
+// A rolling sample smooths display-refresh jitter without hiding sustained
+// frame-time regressions. The debug panel also reports the lowest full-window
+// average observed since the page loaded.
+const FPS_SAMPLE_COUNT = 60;
 
 const pressedKeys = new Set();
 const asteroids = [];
@@ -86,6 +87,14 @@ let lastKineticEnergyDelta = 0;
 let totalBulletCutCount = 0;
 let lastBulletMomentumDelta = { x: 0, y: 0 };
 let lastBulletKineticEnergyDelta = 0;
+let frameRate = 0;
+let minimumFrameRate = Infinity;
+const frameTimeSamples = new Float64Array(FPS_SAMPLE_COUNT);
+let frameTimeSampleIndex = 0;
+let frameTimeSampleCount = 0;
+let frameTimeSampleTotal = 0;
+let viewportWidth = 0;
+let viewportHeight = 0;
 
 // The debug panel is created only in JavaScript so index.html stays a minimal
 // canvas host. It is hidden by default and reports collision telemetry without
@@ -163,27 +172,24 @@ class Asteroid {
     this.velocityX = velocityX;
     this.velocityY = velocityY;
     this.additionalMass = additionalMass;
+    this.worldVertices = this.localVertices.map((vertex) => ({
+      x: this.x + vertex.x,
+      y: this.y + vertex.y,
+    }));
+    this.surfaceAreaValue = polygonArea(this.localVertices);
+    this.massValue = ASTEROID_DENSITY * this.surfaceAreaValue +
+      this.additionalMass;
+    // Translation does not change edge normals, so cache these axes once per
+    // asteroid instead of rebuilding them during every SAT collision test.
+    this.collisionAxes = polygonAxes(this.localVertices);
   }
 
   get mass() {
-    return ASTEROID_DENSITY * this.surfaceArea + this.additionalMass;
+    return this.massValue;
   }
 
   get surfaceArea() {
-    const vertices = this.collisionPolygon();
-    let twiceArea = 0;
-
-    // The shoelace formula gives the exact area enclosed by the asteroid's
-    // convex polygon, so sparse or unevenly spaced vertices produce a lighter
-    // body than their circular bound would imply.
-    for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
-      const firstVertex = vertices[vertexIndex];
-      const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
-      twiceArea += firstVertex.x * secondVertex.y -
-        secondVertex.x * firstVertex.y;
-    }
-
-    return Math.abs(twiceArea) / 2;
+    return this.surfaceAreaValue;
   }
 
   /**
@@ -192,23 +198,22 @@ class Asteroid {
    * for the frame, so this method only handles the boundary reflection.
    */
   update(width, height, deltaTime) {
-    const horizontalBounds = reflectPosition(
-      this.x,
+    advanceAndReflect(
+      this,
+      "x",
+      "velocityX",
       this.velocityX * deltaTime,
       this.radius,
       width - this.radius,
     );
-    const verticalBounds = reflectPosition(
-      this.y,
+    advanceAndReflect(
+      this,
+      "y",
+      "velocityY",
       this.velocityY * deltaTime,
       this.radius,
       height - this.radius,
     );
-
-    this.x = horizontalBounds.position;
-    this.y = verticalBounds.position;
-    this.velocityX *= horizontalBounds.directionMultiplier;
-    this.velocityY *= verticalBounds.directionMultiplier;
   }
 
   keepInside(width, height) {
@@ -223,7 +228,8 @@ class Asteroid {
     context.beginPath();
     context.moveTo(firstVertex.x, firstVertex.y);
 
-    for (const vertex of vertices.slice(1)) {
+    for (let vertexIndex = 1; vertexIndex < vertices.length; vertexIndex += 1) {
+      const vertex = vertices[vertexIndex];
       context.lineTo(vertex.x, vertex.y);
     }
 
@@ -240,10 +246,18 @@ class Asteroid {
   }
 
   collisionPolygon() {
-    return this.localVertices.map((vertex) => ({
-      x: this.x + vertex.x,
-      y: this.y + vertex.y,
-    }));
+    for (
+      let vertexIndex = 0;
+      vertexIndex < this.localVertices.length;
+      vertexIndex += 1
+    ) {
+      const localVertex = this.localVertices[vertexIndex];
+      const worldVertex = this.worldVertices[vertexIndex];
+      worldVertex.x = this.x + localVertex.x;
+      worldVertex.y = this.y + localVertex.y;
+    }
+
+    return this.worldVertices;
   }
 }
 
@@ -430,6 +444,9 @@ function resizeCanvas() {
   const { width, height } = canvas.getBoundingClientRect();
   const pixelRatio = window.devicePixelRatio || 1;
 
+  viewportWidth = width;
+  viewportHeight = height;
+
   canvas.width = Math.round(width * pixelRatio);
   canvas.height = Math.round(height * pixelRatio);
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
@@ -534,6 +551,43 @@ function reflectPosition(position, displacement, minimum, maximum) {
   }
 
   return { position: nextPosition, directionMultiplier };
+}
+
+/**
+ * Move one scalar body coordinate without allocating a result object. This is
+ * the hot path used by every asteroid on every frame; the loop retains the
+ * defensive multi-bounce behavior of reflectPosition for tiny viewports.
+ */
+function advanceAndReflect(
+  body,
+  positionProperty,
+  velocityProperty,
+  displacement,
+  minimum,
+  maximum,
+) {
+  if (maximum <= minimum) {
+    body[positionProperty] = (minimum + maximum) / 2;
+    return;
+  }
+
+  let nextPosition = body[positionProperty] + displacement;
+  let directionMultiplier = 1;
+
+  while (nextPosition < minimum || nextPosition > maximum) {
+    if (nextPosition < minimum) {
+      nextPosition = minimum + (minimum - nextPosition);
+      directionMultiplier *= -1;
+    }
+
+    if (nextPosition > maximum) {
+      nextPosition = maximum - (nextPosition - maximum);
+      directionMultiplier *= -1;
+    }
+  }
+
+  body[positionProperty] = nextPosition;
+  body[velocityProperty] *= directionMultiplier;
 }
 
 function normalizedVector(x, y, fallbackX = 1, fallbackY = 0) {
@@ -905,6 +959,10 @@ function resolveBulletCollisions() {
     const bullet = bullets[bulletIndex];
     const bulletStart = { x: bullet.previousX, y: bullet.previousY };
     const bulletEnd = { x: bullet.x, y: bullet.y };
+    const bulletMinimumX = Math.min(bulletStart.x, bulletEnd.x);
+    const bulletMaximumX = Math.max(bulletStart.x, bulletEnd.x);
+    const bulletMinimumY = Math.min(bulletStart.y, bulletEnd.y);
+    const bulletMaximumY = Math.max(bulletStart.y, bulletEnd.y);
     let hitAsteroidIndex = -1;
     let nearestHitParameter = Infinity;
 
@@ -913,10 +971,24 @@ function resolveBulletCollisions() {
       asteroidIndex < asteroids.length;
       asteroidIndex += 1
     ) {
+      const asteroid = asteroids[asteroidIndex];
+
+      // The swept segment's bounding box is a cheap conservative broad phase.
+      // Only bullets whose path can reach an asteroid's circular bound need the
+      // more expensive convex-polygon intersection test.
+      if (
+        bulletMaximumX < asteroid.x - asteroid.radius ||
+        bulletMinimumX > asteroid.x + asteroid.radius ||
+        bulletMaximumY < asteroid.y - asteroid.radius ||
+        bulletMinimumY > asteroid.y + asteroid.radius
+      ) {
+        continue;
+      }
+
       const hitParameter = segmentPolygonIntersectionParameter(
         bulletStart,
         bulletEnd,
-        asteroids[asteroidIndex].collisionPolygon(),
+        asteroid.collisionPolygon(),
       );
 
       if (
@@ -1009,7 +1081,8 @@ function projectPolygon(vertices, axis) {
   let minimum = vertices[0].x * axis.x + vertices[0].y * axis.y;
   let maximum = minimum;
 
-  for (const vertex of vertices.slice(1)) {
+  for (let vertexIndex = 1; vertexIndex < vertices.length; vertexIndex += 1) {
+    const vertex = vertices[vertexIndex];
     const projection = vertex.x * axis.x + vertex.y * axis.y;
     minimum = Math.min(minimum, projection);
     maximum = Math.max(maximum, projection);
@@ -1089,8 +1162,8 @@ function polygonPolygonManifold(
   // either polygon. A gap on any one of them proves that the shapes do not
   // touch; the smallest overlap is the contact penetration used by physics.
   const axes = [
-    ...polygonAxes(firstVertices),
-    ...polygonAxes(secondVertices),
+    ...(firstBody.collisionAxes ?? polygonAxes(firstVertices)),
+    ...(secondBody.collisionAxes ?? polygonAxes(secondVertices)),
   ];
   let minimumPenetration = Infinity;
   let minimumAxis = axes[0];
@@ -1173,7 +1246,9 @@ function circlePolygonManifold(
   polygonBody,
   polygonVertices,
 ) {
-  const axes = polygonAxes(polygonVertices);
+  const axes = [
+    ...(polygonBody.collisionAxes ?? polygonAxes(polygonVertices)),
+  ];
   const closestPoint = closestPointOnPolygon(
     { x: circleBody.x, y: circleBody.y },
     polygonVertices,
@@ -1373,13 +1448,23 @@ function resolveAsteroidCollisions() {
       secondIndex < asteroids.length;
       secondIndex += 1
     ) {
+      const secondAsteroid = asteroids[secondIndex];
+
+      if (!bodiesMayOverlap(firstAsteroid, secondAsteroid)) {
+        continue;
+      }
+
       collisionCount += Number(
-        resolveCollision(firstAsteroid, asteroids[secondIndex]),
+        resolveCollision(firstAsteroid, secondAsteroid),
       );
     }
   }
 
   for (const asteroid of asteroids) {
+    if (!bodiesMayOverlap(ship, asteroid)) {
+      continue;
+    }
+
     collisionCount += Number(resolveCollision(ship, asteroid));
   }
 
@@ -1395,6 +1480,41 @@ function resolveAsteroidCollisions() {
   applyPlayerBody(ship);
 }
 
+function bodiesMayOverlap(firstBody, secondBody) {
+  const distanceX = secondBody.x - firstBody.x;
+  const distanceY = secondBody.y - firstBody.y;
+  const radiusSum = firstBody.radius + secondBody.radius;
+
+  return distanceX ** 2 + distanceY ** 2 <= radiusSum ** 2;
+}
+
+function updateFrameRate(frameTime) {
+  if (previousFrameTime === undefined) {
+    return;
+  }
+
+  const frameDuration = frameTime - previousFrameTime;
+
+  if (frameDuration <= 0) {
+    return;
+  }
+
+  if (frameTimeSampleCount === FPS_SAMPLE_COUNT) {
+    frameTimeSampleTotal -= frameTimeSamples[frameTimeSampleIndex];
+  } else {
+    frameTimeSampleCount += 1;
+  }
+
+  frameTimeSamples[frameTimeSampleIndex] = frameDuration;
+  frameTimeSampleTotal += frameDuration;
+  frameTimeSampleIndex = (frameTimeSampleIndex + 1) % FPS_SAMPLE_COUNT;
+  frameRate = 1000 / (frameTimeSampleTotal / frameTimeSampleCount);
+
+  if (frameTimeSampleCount === FPS_SAMPLE_COUNT) {
+    minimumFrameRate = Math.min(minimumFrameRate, frameRate);
+  }
+}
+
 function updateDebugOutput() {
   if (!debugEnabled) {
     return;
@@ -1405,10 +1525,17 @@ function updateDebugOutput() {
   const totalPhysics = physicsSnapshot(ship, true);
   const asteroidArea = firstAsteroid?.surfaceArea ?? 0;
   const asteroidMass = firstAsteroid?.mass ?? 0;
+  const displayedFrameRate = frameRate > 0 ? frameRate.toFixed(1) : "--";
+  const displayedMinimumFrameRate = Number.isFinite(minimumFrameRate)
+    ? minimumFrameRate.toFixed(1)
+    : "--";
 
   debugOutput.textContent = [
     `PHYSICS DEBUG  (${DEBUG_TOGGLE_KEY} toggles)`,
     `Game: ${gamePaused ? "paused (P toggles)" : "running"}`,
+    `Asteroids: ${asteroids.length} (target: ${ASTEROID_COUNT})`,
+    `FPS: ${displayedFrameRate} (rolling ${FPS_SAMPLE_COUNT}-frame avg)`,
+    `FPS minimum: ${displayedMinimumFrameRate} (rolling window)`,
     `Starship mass: ${STARSHIP_MASS.toFixed(2)}`,
     `Asteroid area: ${asteroidArea.toFixed(2)} (first polygon)`,
     `Asteroid mass (including absorbed bullet mass): ${
@@ -1499,12 +1626,14 @@ function updateGame(deltaTime, width, height) {
 }
 
 function animate(frameTime) {
+  updateFrameRate(frameTime);
   const deltaTime = previousFrameTime === undefined
     ? 0
     : Math.min((frameTime - previousFrameTime) / 1000, 0.1);
   previousFrameTime = frameTime;
 
-  const { width, height } = canvas.getBoundingClientRect();
+  const width = viewportWidth;
+  const height = viewportHeight;
   generateAsteroids(width, height);
   if (!gamePaused) {
     updateGame(deltaTime, width, height);

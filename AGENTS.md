@@ -30,7 +30,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must load `index.html` directly in browser.
 - May toggle the debug interface at own discretion.
 - May pause and resume the game at own discretion.
-- Should remove obsolete items from the debug interface.
+- Should continuously declutter the debug interface.
 - Must not display any debug elements when the debug UI is off.
 - May add debug console output.
 - Must prefer Kane CLI to Node VM.
