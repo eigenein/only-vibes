@@ -188,6 +188,11 @@ class Asteroid {
       x: this.x + vertex.x,
       y: this.y + vertex.y,
     }));
+    // Wall contacts use the polygon's support extents rather than its
+    // enclosing circle. The body does not rotate, so these local extents are
+    // the exact positions at which each polygon edge or vertex reaches a
+    // field wall, including for irregular cut fragments.
+    this.localBounds = polygonBounds(this.localVertices);
     this.surfaceAreaValue = polygonArea(this.localVertices);
     this.massValue = ASTEROID_DENSITY * this.surfaceAreaValue +
       this.additionalMass;
@@ -212,13 +217,15 @@ class Asteroid {
    * elastic.
    */
   update(width, height, deltaTime) {
+    const { minimumX, maximumX, minimumY, maximumY } = this.localBounds;
+
     advanceAndReflect(
       this,
       "x",
       "velocityX",
       this.velocityX * deltaTime,
-      this.radius,
-      width - this.radius,
+      -minimumX,
+      width - maximumX,
       BOUNCINESS,
     );
     advanceAndReflect(
@@ -226,15 +233,26 @@ class Asteroid {
       "y",
       "velocityY",
       this.velocityY * deltaTime,
-      this.radius,
-      height - this.radius,
+      -minimumY,
+      height - maximumY,
       BOUNCINESS,
     );
   }
 
   keepInside(width, height) {
-    this.x = constrainPosition(this.x, this.radius, width);
-    this.y = constrainPosition(this.y, this.radius, height);
+    const { minimumX, maximumX, minimumY, maximumY } = this.localBounds;
+    this.x = constrainPositionToRange(
+      this.x,
+      -minimumX,
+      width - maximumX,
+      width,
+    );
+    this.y = constrainPositionToRange(
+      this.y,
+      -minimumY,
+      height - maximumY,
+      height,
+    );
   }
 
   draw() {
@@ -514,9 +532,10 @@ function resizeCanvas() {
 }
 
 function constrainPosition(position, radius, extent) {
-  const minimum = radius;
-  const maximum = extent - radius;
+  return constrainPositionToRange(position, radius, extent - radius, extent);
+}
 
+function constrainPositionToRange(position, minimum, maximum, extent) {
   return maximum <= minimum
     ? extent / 2
     : Math.min(Math.max(position, minimum), maximum);
@@ -638,6 +657,22 @@ function polygonArea(vertices) {
   }
 
   return Math.abs(twiceArea) / 2;
+}
+
+function polygonBounds(vertices) {
+  let minimumX = Infinity;
+  let maximumX = -Infinity;
+  let minimumY = Infinity;
+  let maximumY = -Infinity;
+
+  for (const vertex of vertices) {
+    minimumX = Math.min(minimumX, vertex.x);
+    maximumX = Math.max(maximumX, vertex.x);
+    minimumY = Math.min(minimumY, vertex.y);
+    maximumY = Math.max(maximumY, vertex.y);
+  }
+
+  return Object.freeze({ minimumX, maximumX, minimumY, maximumY });
 }
 
 function polygonCentroid(vertices) {
