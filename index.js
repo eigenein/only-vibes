@@ -20,8 +20,8 @@ const ROTATION_SPEED = Math.PI * 2;
 // Movement is deliberately expressed in CSS pixels per second so the game
 // behaves the same at different device pixel ratios and display refresh rates.
 const MAX_SPEED = 360;
-// This is the rate at which the ship gains or loses forward speed while a
-// throttle key is held. Keeping it global makes the handling easy to tune.
+// This is the rate at which the ship gains or loses speed while a throttle key
+// is held. Keeping it global makes the handling easy to tune.
 const MOVEMENT_RESPONSIVENESS = 480;
 
 // Bullets are intentionally fast and short-lived. The frequency is expressed
@@ -73,7 +73,8 @@ const pressedKeys = new Set();
 const asteroids = [];
 const bullets = [];
 let playerAngle = -Math.PI / 2;
-let playerSpeed = 0;
+let playerVelocityX = 0;
+let playerVelocityY = 0;
 let playerX;
 let playerY;
 let previousFrameTime;
@@ -536,37 +537,9 @@ function drawGame(width, height) {
 }
 
 /**
- * Reflect a one-dimensional movement segment between two walls. The loop is
- * intentionally defensive: even if the playable area is resized to be very
- * small, an unusually large frame cannot move the ship outside the box.
- */
-function reflectPosition(position, displacement, minimum, maximum) {
-  if (maximum <= minimum) {
-    return { position: (minimum + maximum) / 2, directionMultiplier: 1 };
-  }
-
-  let nextPosition = position + displacement;
-  let directionMultiplier = 1;
-
-  while (nextPosition < minimum || nextPosition > maximum) {
-    if (nextPosition < minimum) {
-      nextPosition = minimum + (minimum - nextPosition);
-      directionMultiplier *= -1;
-    }
-
-    if (nextPosition > maximum) {
-      nextPosition = maximum - (nextPosition - maximum);
-      directionMultiplier *= -1;
-    }
-  }
-
-  return { position: nextPosition, directionMultiplier };
-}
-
-/**
  * Move one scalar body coordinate without allocating a result object. This is
- * the hot path used by every asteroid on every frame; the loop retains the
- * defensive multi-bounce behavior of reflectPosition for tiny viewports.
+ * the hot path used by every moving body on every frame; the loop retains the
+ * defensive multi-bounce behavior for tiny viewports.
  */
 function advanceAndReflect(
   body,
@@ -1605,19 +1578,16 @@ function playerBody() {
     y: playerY,
     radius: PLAYER_RADIUS,
     mass: STARSHIP_MASS,
-    velocityX: Math.cos(playerAngle) * playerSpeed,
-    velocityY: Math.sin(playerAngle) * playerSpeed,
+    velocityX: playerVelocityX,
+    velocityY: playerVelocityY,
   };
 }
 
 function applyPlayerBody(body) {
   playerX = body.x;
   playerY = body.y;
-  playerSpeed = Math.hypot(body.velocityX, body.velocityY);
-
-  if (playerSpeed > COLLISION_EPSILON) {
-    playerAngle = Math.atan2(body.velocityY, body.velocityX);
-  }
+  playerVelocityX = body.velocityX;
+  playerVelocityY = body.velocityY;
 }
 
 function resolveAsteroidCollisions() {
@@ -1756,9 +1726,10 @@ function updateDebugOutput() {
 }
 
 /**
- * Rotate and change forward speed while controls are held. The ship owns a
- * scalar speed, never a reverse velocity: braking bottoms out at zero and
- * acceleration tops out at MAX_SPEED.
+ * Rotation changes the ship's facing only. The velocity vector remains free,
+ * so a ship can drift sideways or backwards while its nose controls firing
+ * and thrust. Down decelerates along the current travel vector rather than
+ * steering the ship toward its nose.
  */
 function updateGame(deltaTime, width, height) {
   const turnsCounterClockwise = pressedKeys.has("ArrowLeft") ||
@@ -1772,44 +1743,65 @@ function updateGame(deltaTime, width, height) {
 
   const accelerates = pressedKeys.has("ArrowUp") || pressedKeys.has("KeyW");
   const decelerates = pressedKeys.has("ArrowDown") || pressedKeys.has("KeyS");
-  const speedDirection = Number(accelerates) - Number(decelerates);
 
-  playerSpeed = Math.min(
-    MAX_SPEED,
-    Math.max(
-      0,
-      playerSpeed + speedDirection * MOVEMENT_RESPONSIVENESS * deltaTime,
-    ),
-  );
+  if (accelerates !== decelerates) {
+    if (accelerates) {
+      const acceleration = MOVEMENT_RESPONSIVENESS * deltaTime;
+      playerVelocityX += Math.cos(playerAngle) * acceleration;
+      playerVelocityY += Math.sin(playerAngle) * acceleration;
+
+      const acceleratedSpeed = Math.hypot(
+        playerVelocityX,
+        playerVelocityY,
+      );
+
+      if (acceleratedSpeed > MAX_SPEED) {
+        const speedRatio = MAX_SPEED / acceleratedSpeed;
+        playerVelocityX *= speedRatio;
+        playerVelocityY *= speedRatio;
+      }
+    } else {
+      const currentSpeed = Math.hypot(playerVelocityX, playerVelocityY);
+
+      if (currentSpeed > COLLISION_EPSILON) {
+        const deceleration = Math.min(
+          currentSpeed,
+          MOVEMENT_RESPONSIVENESS * deltaTime,
+        );
+        const speedRatio = (currentSpeed - deceleration) / currentSpeed;
+        playerVelocityX *= speedRatio;
+        playerVelocityY *= speedRatio;
+      }
+    }
+  }
 
   for (const asteroid of asteroids) {
     asteroid.update(width, height, deltaTime);
   }
 
-  const directionX = Math.cos(playerAngle);
-  const directionY = Math.sin(playerAngle);
-  const horizontalBounds = reflectPosition(
-    playerX,
-    directionX * playerSpeed * deltaTime,
+  // The ship is a dynamic body just like an asteroid. In particular, walls
+  // damp its normal velocity through BOUNCINESS instead of merely changing
+  // its position, so wall collisions remove kinetic energy consistently.
+  const ship = playerBody();
+  advanceAndReflect(
+    ship,
+    "x",
+    "velocityX",
+    ship.velocityX * deltaTime,
     PLAYER_RADIUS,
     width - PLAYER_RADIUS,
+    BOUNCINESS,
   );
-  const verticalBounds = reflectPosition(
-    playerY,
-    directionY * playerSpeed * deltaTime,
+  advanceAndReflect(
+    ship,
+    "y",
+    "velocityY",
+    ship.velocityY * deltaTime,
     PLAYER_RADIUS,
     height - PLAYER_RADIUS,
+    BOUNCINESS,
   );
-
-  playerX = horizontalBounds.position;
-  playerY = verticalBounds.position;
-
-  // A bounce reflects the velocity vector. Because this ship's velocity is
-  // always aligned with its nose, mirror the orientation too so it continues
-  // travelling in the direction it points after hitting a wall.
-  const reflectedDirectionX = directionX * horizontalBounds.directionMultiplier;
-  const reflectedDirectionY = directionY * verticalBounds.directionMultiplier;
-  playerAngle = Math.atan2(reflectedDirectionY, reflectedDirectionX);
+  applyPlayerBody(ship);
 
   updateBulletFiring(deltaTime);
   updateBullets(deltaTime);

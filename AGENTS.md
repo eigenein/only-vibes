@@ -35,3 +35,6 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must not display any debug elements when the debug UI is off.
 - May add debug console output.
 - Must prefer Kane CLI to Node VM.
+- Must document Kane findings and brief fix descriptions in `AUDIT.md`.
+- Must not rely merely on code analysis.
+- Must use W/A/S/D keys instead of the arrow keys when the spaceship control is needed.
