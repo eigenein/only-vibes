@@ -31,7 +31,7 @@ const BULLET_FIRE_INTERVAL = 1 / BULLET_FREQUENCY;
 // A bullet's mass is deliberately independent of its visual length. The
 // collision response uses this value for both bullet momentum and bullet
 // kinetic energy while the projectile remains an independent body.
-const BULLET_MASS = 1;
+const BULLET_MASS = 10;
 const BULLET_SPEED = 720;
 const BULLET_HALF_LENGTH = 10;
 const BULLET_LINE_WIDTH = 3;
@@ -58,7 +58,7 @@ const ASTEROID_MIN_FRAGMENT_AREA = 500;
 // Geometric asteroid mass is density times the true area of the convex
 // polygon. The encompassing radius remains useful for safe field-boundary
 // placement; fragments can also carry absorbed bullet mass.
-const ASTEROID_DENSITY = 0.1;
+const ASTEROID_DENSITY = 1.0;
 // A value of one is a fully elastic collision. At 0.8, an impact loses 36% of
 // the kinetic energy in the contact-normal component while preserving tangent
 // motion. The same coefficient is used for asteroid contacts and wall hits.
