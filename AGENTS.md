@@ -13,6 +13,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - May use resources from CDN's.
 - Should keep `index.html` minimal.
 - Should embrace encapsulation.
+- Should continuously clean up dead code.
 
 # Implementation choices
 
@@ -30,7 +31,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must load `index.html` directly in browser.
 - May toggle the debug interface at own discretion.
 - May pause and resume the game at own discretion.
-- Should continuously declutter the debug interface.
+- Must continuously declutter the debug interface.
 - Must not display any debug elements when the debug UI is off.
 - May add debug console output.
 - Must prefer Kane CLI to Node VM.
