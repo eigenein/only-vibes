@@ -23,3 +23,19 @@ This file must only contain bug reports that have been found by Kane and actione
   and their 100% readouts render. Kane's bounded collision attempt did not reach
   a low-health state before its input sequence stalled, so near-zero behavior is
   additionally covered by the renderer's deterministic empty-track path.
+
+## Iteration 22
+
+- **Kane finding:** After a 700 ms resume/pause cycle, the phrase asteroids had
+  scattered far enough that “KANE CLI” over “HACKATHON” was no longer a
+  recognizable two-line remnant. The paused help panel also hid the phrase,
+  and the initial chord bodies were uniform rectangles.
+- **Action:** Replaced the rectangular chord bodies with irregular convex-hull
+  asteroid forms, made the pause veil and panel translucent, and reduced only
+  the phrase bodies' initial linear speed to 6 px/s with zero initial angular
+  momentum. The normal integrator, collision solver, and wall physics remain
+  unchanged.
+- **Verification:** A follow-up visible-Chrome run confirmed irregular
+  silhouettes and phrase visibility through the paused overlay, then confirmed
+  a recognizable two-line phrase remnant after 700 ms of resumed play with no
+  visible error text.
