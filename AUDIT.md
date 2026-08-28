@@ -1,3 +1,5 @@
+This file must only contain bug reports that have been found by Kane and actioned upon:
+
 ## Iteration 19
 
 - **Kane finding:** After resuming the game, the visible PHYSICS DEBUG panel

@@ -100,9 +100,13 @@ const PLAY_HELP = Object.freeze([
   }),
   Object.freeze({ label: FIRE_KEY_LABEL, description: "fire" }),
   Object.freeze({ label: PAUSE_KEY_LABEL, description: "pause / resume" }),
+  Object.freeze({
+    label: "COLOR",
+    description: "redder asteroids are denser",
+  }),
 ]);
 const HELP_PANEL_WIDTH = 540;
-const HELP_PANEL_HEIGHT = 400;
+const HELP_PANEL_HEIGHT = 446;
 
 const ASTEROID_COUNT = 8;
 const ASTEROID_MIN_RADIUS = 24;
@@ -113,15 +117,23 @@ const ASTEROID_MIN_SPEED = 70;
 const ASTEROID_MAX_SPEED = 170;
 const ASTEROID_MIN_ANGULAR_SPEED = -1.8;
 const ASTEROID_MAX_ANGULAR_SPEED = 1.8;
-const ASTEROID_FILL_STYLE = "#8f99a6";
 // A grazing cut can produce a technically valid but visually meaningless
 // sliver. Discarding fragments below this area keeps the asteroid population
 // useful while leaving the cutoff easy to tune for the game's scale.
 const ASTEROID_MIN_FRAGMENT_AREA = 500;
 // Geometric asteroid mass is density times the true area of the convex
-// polygon. The encompassing radius remains useful for safe field-boundary
-// placement; fragments can also carry absorbed bullet mass.
+// polygon. The current density is the average material density; each new
+// asteroid samples a bounded variation around it so no two materials need to
+// be equally massive. The encompassing radius remains useful for safe
+// field-boundary placement.
 const ASTEROID_DENSITY = 1.0;
+const ASTEROID_MIN_DENSITY = 0.65;
+const ASTEROID_MAX_DENSITY = 1.35;
+// Density is encoded from cool blue-gray to warm red. Both endpoints are
+// bright enough against black space, while hue—not brightness—does the main
+// communication so denser asteroids remain easy to see.
+const ASTEROID_MIN_COLOR_HUE = 210;
+const ASTEROID_MAX_COLOR_HUE = 0;
 // A value of one is a fully elastic collision. At 0.8, an impact loses 36% of
 // the kinetic energy in the contact-normal component while preserving tangent
 // motion. The same coefficient is used for asteroid contacts and wall hits.
@@ -217,6 +229,26 @@ function randomIntegerBetween(minimum, maximum) {
 }
 
 /**
+ * Convert material density into a readable asteroid color. Lower-density
+ * bodies are blue-gray and higher-density bodies become progressively redder.
+ * @param {number} density
+ * @returns {string}
+ */
+function asteroidColorForDensity(density) {
+  const densityRange = ASTEROID_MAX_DENSITY - ASTEROID_MIN_DENSITY;
+  const densityRatio = densityRange > 0
+    ? Math.max(
+      0,
+      Math.min(1, (density - ASTEROID_MIN_DENSITY) / densityRange),
+    )
+    : 0.5;
+  const hue = ASTEROID_MIN_COLOR_HUE +
+    (ASTEROID_MAX_COLOR_HUE - ASTEROID_MIN_COLOR_HUE) * densityRatio;
+
+  return `hsl(${hue} 78% 62%)`;
+}
+
+/**
  * A point is sampled inside its circular bound when the viewport is large
  * enough. On a very small viewport the center is the only safe position.
  */
@@ -258,6 +290,7 @@ class Asteroid {
    * @param {number} options.y
    * @param {number} options.velocityX
    * @param {number} options.velocityY
+   * @param {number} options.density
    * @param {number} [options.rotation]
    * @param {number} [options.angularVelocity]
    * @param {number} [options.additionalMass]
@@ -270,6 +303,7 @@ class Asteroid {
     y,
     velocityX,
     velocityY,
+    density = ASTEROID_DENSITY,
     rotation = 0,
     angularVelocity = 0,
     additionalMass = 0,
@@ -297,6 +331,7 @@ class Asteroid {
     this.y = y;
     this.velocityX = velocityX;
     this.velocityY = velocityY;
+    this.density = density;
     this.rotation = rotation;
     this.angularVelocity = angularVelocity;
     this.worldVertices = this.localVertices.map((vertex) => ({
@@ -304,7 +339,7 @@ class Asteroid {
       y: this.y + vertex.y,
     }));
     this.surfaceAreaValue = polygonArea(this.localVertices);
-    this.massValue = ASTEROID_DENSITY * this.surfaceAreaValue + additionalMass;
+    this.massValue = this.density * this.surfaceAreaValue + additionalMass;
     // A uniform polygon's mass moment of inertia comes directly from its
     // vertices. Scaling the unit-density value by mass/area also treats any
     // absorbed mass as material spread through the fragment, keeping the
@@ -385,7 +420,7 @@ class Asteroid {
     }
 
     context.closePath();
-    context.fillStyle = ASTEROID_FILL_STYLE;
+    context.fillStyle = asteroidColorForDensity(this.density);
     context.fill();
   }
 
@@ -511,6 +546,7 @@ function createAsteroid(width, height) {
   return new Asteroid({
     radius,
     angles: createOrderedAngles(vertexCount),
+    density: randomBetween(ASTEROID_MIN_DENSITY, ASTEROID_MAX_DENSITY),
     x: randomCoordinate(width, radius),
     y: randomCoordinate(height, radius),
     velocityX: Math.cos(direction) * speed,
@@ -528,6 +564,7 @@ function createAsteroid(width, height) {
  * @param {number} velocityX
  * @param {number} velocityY
  * @param {number} mass
+ * @param {number} density
  * @param {number} [rotation]
  * @param {number} [angularVelocity]
  * @returns {Asteroid}
@@ -537,6 +574,7 @@ function createAsteroidFromPolygon(
   velocityX,
   velocityY,
   mass,
+  density,
   rotation = 0,
   angularVelocity = 0,
 ) {
@@ -559,9 +597,10 @@ function createAsteroidFromPolygon(
     y: center.y,
     velocityX,
     velocityY,
+    density,
     rotation,
     angularVelocity,
-    additionalMass: mass - ASTEROID_DENSITY * area,
+    additionalMass: mass - density * area,
   });
 }
 
@@ -969,12 +1008,12 @@ function drawPauseHelp(width, height) {
   context.fillText(
     "Shield regenerates; hull damage persists.",
     HELP_PANEL_WIDTH / 2,
-    344,
+    390,
   );
   context.fillText(
     "Walls are harmless. Navigate, cut, survive.",
     HELP_PANEL_WIDTH / 2,
-    372,
+    418,
   );
   context.restore();
 }
@@ -1662,6 +1701,7 @@ function splitAsteroid(
         firstVelocity.x,
         firstVelocity.y,
         firstMass,
+        asteroid.density,
         asteroid.rotation,
         asteroid.angularVelocity,
       ),
@@ -1673,6 +1713,7 @@ function splitAsteroid(
         secondVelocity.x,
         secondVelocity.y,
         secondMass,
+        asteroid.density,
         asteroid.rotation,
         asteroid.angularVelocity,
       ),
@@ -2825,7 +2866,7 @@ function updateDebugOutput() {
     `FPS minimum: ${displayedMinimumFrameRate} (rolling window)`,
     `Asteroid: ${asteroidMass.toFixed(2)} mass, ${
       asteroidArea.toFixed(2)
-    } area`,
+    } area, density ${(firstAsteroid?.density ?? 0).toFixed(3)}`,
     `Spin: ${(firstAsteroid?.angularVelocity ?? 0).toFixed(5)} rad/s, inertia ${
       (firstAsteroid?.momentOfInertia ?? 0).toFixed(2)
     }`,
