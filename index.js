@@ -93,6 +93,8 @@ let lastKineticEnergyDelta = 0;
 let totalBulletCutCount = 0;
 let lastBulletMomentumDelta = { x: 0, y: 0 };
 let lastBulletKineticEnergyDelta = 0;
+let lastFiringImpulseDelta = { x: 0, y: 0 };
+let lastFiringRecoilVelocity = { x: 0, y: 0 };
 let frameRate = 0;
 let minimumFrameRate = Infinity;
 const frameTimeSamples = new Float64Array(FPS_SAMPLE_COUNT);
@@ -409,15 +411,40 @@ function emitBullet() {
   const directionX = Math.cos(playerAngle);
   const directionY = Math.sin(playerAngle);
   const spawnDistance = PLAYER_RADIUS + BULLET_HALF_LENGTH;
+  const bullet = new Bullet({
+    x: playerX + directionX * spawnDistance,
+    y: playerY + directionY * spawnDistance,
+    angle: playerAngle,
+  });
+  const initialShipImpulseX = STARSHIP_MASS * playerVelocityX;
+  const initialShipImpulseY = STARSHIP_MASS * playerVelocityY;
+  const bulletImpulseX = bullet.mass * bullet.velocityX;
+  const bulletImpulseY = bullet.mass * bullet.velocityY;
+
+  // Firing transfers the bullet's launch impulse out of the ship. Applying
+  // equal and opposite recoil keeps the ship-plus-bullet total impulse equal
+  // to the ship's impulse before firing, while making the nudge visible even
+  // when the ship was initially at rest.
+  const recoilVelocityX = -bulletImpulseX / STARSHIP_MASS;
+  const recoilVelocityY = -bulletImpulseY / STARSHIP_MASS;
+  playerVelocityX += recoilVelocityX;
+  playerVelocityY += recoilVelocityY;
+  lastFiringRecoilVelocity = {
+    x: recoilVelocityX,
+    y: recoilVelocityY,
+  };
+
+  const finalTotalImpulseX = STARSHIP_MASS * playerVelocityX +
+    bulletImpulseX;
+  const finalTotalImpulseY = STARSHIP_MASS * playerVelocityY +
+    bulletImpulseY;
+  lastFiringImpulseDelta = {
+    x: finalTotalImpulseX - initialShipImpulseX,
+    y: finalTotalImpulseY - initialShipImpulseY,
+  };
 
   totalBulletsEmitted += 1;
-  bullets.push(
-    new Bullet({
-      x: playerX + directionX * spawnDistance,
-      y: playerY + directionY * spawnDistance,
-      angle: playerAngle,
-    }),
-  );
+  bullets.push(bullet);
 }
 
 function updateBullets(deltaTime) {
@@ -1714,6 +1741,12 @@ function updateDebugOutput() {
       lastBulletMomentumDelta.y.toFixed(5)
     })`,
     `Last cut Δ kinetic energy: ${lastBulletKineticEnergyDelta.toFixed(5)}`,
+    `Last firing Δ impulse: (${lastFiringImpulseDelta.x.toFixed(5)}, ${
+      lastFiringImpulseDelta.y.toFixed(5)
+    })`,
+    `Last firing recoil Δ velocity: (${
+      lastFiringRecoilVelocity.x.toFixed(5)
+    }, ${lastFiringRecoilVelocity.y.toFixed(5)})`,
     `Δ momentum at contact: (${lastMomentumDelta.x.toFixed(5)}, ${
       lastMomentumDelta.y.toFixed(5)
     })`,
