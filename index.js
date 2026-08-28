@@ -44,13 +44,13 @@ const PLAYER_TRIANGLE_HALF_ANGLE = Math.PI / 4;
 const STARSHIP_MASS = 1000;
 // A global speed keeps the steering response easy to tune from one place and
 // makes rotation consistent across displays with different refresh rates.
-const ROTATION_SPEED = Math.PI * 2;
+const ROTATION_SPEED = Math.PI * 1.5;
 // Movement is deliberately expressed in CSS pixels per second so the game
 // behaves the same at different device pixel ratios and display refresh rates.
-const MAX_SPEED = 360;
+const MAX_SPEED = 330;
 // This is the rate at which the ship gains or loses speed while a throttle key
 // is held. Keeping it global makes the handling easy to tune.
-const MOVEMENT_RESPONSIVENESS = 480;
+const MOVEMENT_RESPONSIVENESS = 400;
 
 // The shield and hull are intentionally separate gameplay states. Collision
 // impulse is scaled into readable percentage points, while the different
@@ -58,10 +58,10 @@ const MOVEMENT_RESPONSIVENESS = 480;
 // unprotected hull would receive.
 const SHIELD_MAX_STATE = 100;
 const SHIP_MAX_STATE = 100;
-const SHIELD_REGENERATION_RATE = 7.5;
-const COLLISION_DAMAGE_SCALE = 1 / 10000;
-const SHIELD_DAMAGE_COEFFICIENT = 1.1;
-const SHIP_DAMAGE_COEFFICIENT = 1.0;
+const SHIELD_REGENERATION_RATE = 3.5;
+const COLLISION_DAMAGE_SCALE = 1 / 6000;
+const SHIELD_DAMAGE_COEFFICIENT = 1.15;
+const SHIP_DAMAGE_COEFFICIENT = 1.1;
 const STATUS_BAR_WIDTH = 220;
 const STATUS_BAR_HEIGHT = 22;
 const STATUS_BAR_GAP = 12;
@@ -74,7 +74,7 @@ const BULLET_FIRE_INTERVAL = 1 / BULLET_FREQUENCY;
 // A bullet's mass is deliberately independent of its visual length. The
 // collision response uses this value for both bullet momentum and bullet
 // kinetic energy while the projectile remains an independent body.
-const BULLET_MASS = 10;
+const BULLET_MASS = 7;
 const BULLET_SPEED = 720;
 const BULLET_HALF_LENGTH = 10;
 const BULLET_LINE_WIDTH = 3;
@@ -108,19 +108,19 @@ const PLAY_HELP = Object.freeze([
 const HELP_PANEL_WIDTH = 540;
 const HELP_PANEL_HEIGHT = 446;
 
-const ASTEROID_COUNT = 8;
+const ASTEROID_COUNT = 9;
 const ASTEROID_MIN_RADIUS = 24;
 const ASTEROID_MAX_RADIUS = 52;
 const ASTEROID_MIN_VERTICES = 6;
 const ASTEROID_MAX_VERTICES = 10;
-const ASTEROID_MIN_SPEED = 70;
-const ASTEROID_MAX_SPEED = 170;
+const ASTEROID_MIN_SPEED = 75;
+const ASTEROID_MAX_SPEED = 180;
 const ASTEROID_MIN_ANGULAR_SPEED = -1.8;
 const ASTEROID_MAX_ANGULAR_SPEED = 1.8;
 // A grazing cut can produce a technically valid but visually meaningless
 // sliver. Discarding fragments below this area keeps the asteroid population
 // useful while leaving the cutoff easy to tune for the game's scale.
-const ASTEROID_MIN_FRAGMENT_AREA = 500;
+const ASTEROID_MIN_FRAGMENT_AREA = 400;
 // Geometric asteroid mass is density times the true area of the convex
 // polygon. The current density is the average material density; each new
 // asteroid samples a bounded variation around it so no two materials need to
@@ -134,13 +134,13 @@ const ASTEROID_MAX_DENSITY = 1.35;
 // communication so denser asteroids remain easy to see.
 const ASTEROID_MIN_COLOR_HUE = 210;
 const ASTEROID_MAX_COLOR_HUE = 0;
-// A value of one is a fully elastic collision. At 0.8, an impact loses 36% of
-// the kinetic energy in the contact-normal component while preserving tangent
-// motion. The same coefficient is used for asteroid contacts and wall hits.
-const BOUNCINESS = 0.8;
+// A value of one is a fully elastic collision. At 0.74, an impact loses about
+// 45% of the kinetic energy in the contact-normal component while preserving
+// enough motion to keep asteroid contacts and wall hits dynamic.
+const BOUNCINESS = 0.74;
 // A modest Coulomb friction coefficient lets a shoulder scrape exchange spin
-// instead of making every contact behave like two frictionless billiard balls.
-const FRICTION_COEFFICIENT = 0.35;
+// without draining so much tangential motion that contacts feel sticky.
+const FRICTION_COEFFICIENT = 0.25;
 const COLLISION_EPSILON = 0.000001;
 const STATIC_WALL_BODY = Object.freeze({
   x: 0,
