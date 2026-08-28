@@ -305,13 +305,17 @@ class Bullet {
     this.y += this.velocityY * deltaTime;
   }
 
+  syncAngle() {
+    this.angle = Math.atan2(this.velocityY, this.velocityX);
+  }
+
   reflect(normal) {
     const normalVelocity = this.velocityX * normal.x +
       this.velocityY * normal.y;
 
     this.velocityX -= 2 * normalVelocity * normal.x;
     this.velocityY -= 2 * normalVelocity * normal.y;
-    this.angle = Math.atan2(this.velocityY, this.velocityX);
+    this.syncAngle();
     this.recordReflection();
   }
 
@@ -945,7 +949,7 @@ function splitAsteroid(
   const totalArea = firstArea + secondArea;
   // The bullet ricochets instead of being absorbed, so only the asteroid's
   // mass is distributed across its two geometric fragments. The caller has
-  // already resolved the elastic bullet/asteroid bounce before this split.
+  // already resolved the bullet/asteroid collision before this split.
   const totalMass = asteroid.mass;
   const firstMass = (totalMass * firstArea) / totalArea;
   const secondMass = (totalMass * secondArea) / totalArea;
@@ -1108,38 +1112,39 @@ function circleNormalAtPoint(
 }
 
 /**
- * Apply the same restitution and inverse-mass impulse used by asteroid
- * contacts to any dynamic body. The returned vector is the impulse received
- * by that body, which makes the ship's bullet impact inspectable in debug UI.
+ * Apply the shared normal impulse used by every dynamic-body contact. The
+ * normal points from the first body toward the second body; the returned
+ * vector is the impulse received by the second body. Keeping this calculation
+ * in one place means bullets transfer exactly the same momentum as asteroids
+ * and the ship.
  */
-function resolveBulletBodyBounce(bullet, body, normal) {
-  const relativeVelocityX = bullet.velocityX - body.velocityX;
-  const relativeVelocityY = bullet.velocityY - body.velocityY;
+function applyCollisionImpulse(firstBody, secondBody, normal) {
+  const relativeVelocityX = secondBody.velocityX - firstBody.velocityX;
+  const relativeVelocityY = secondBody.velocityY - firstBody.velocityY;
   const relativeNormalVelocity = relativeVelocityX * normal.x +
     relativeVelocityY * normal.y;
 
-  if (relativeNormalVelocity >= -COLLISION_EPSILON) {
-    const normalVelocity = bullet.velocityX * normal.x +
-      bullet.velocityY * normal.y;
-    bullet.velocityX -= 2 * normalVelocity * normal.x;
-    bullet.velocityY -= 2 * normalVelocity * normal.y;
-    bullet.angle = Math.atan2(bullet.velocityY, bullet.velocityX);
+  // A separating contact needs no impulse. Reflecting only one body here
+  // would change momentum without giving the other body the impulse it should
+  // receive.
+  if (relativeNormalVelocity >= 0) {
     return { x: 0, y: 0 };
   }
 
-  const inverseMassSum = 1 / bullet.mass + 1 / body.mass;
+  const inverseFirstMass = 1 / firstBody.mass;
+  const inverseSecondMass = 1 / secondBody.mass;
+  const inverseMassSum = inverseFirstMass + inverseSecondMass;
   const impulseMagnitude = -(1 + BOUNCINESS) * relativeNormalVelocity /
     inverseMassSum;
   const impulseX = impulseMagnitude * normal.x;
   const impulseY = impulseMagnitude * normal.y;
 
-  bullet.velocityX += impulseX / bullet.mass;
-  bullet.velocityY += impulseY / bullet.mass;
-  body.velocityX -= impulseX / body.mass;
-  body.velocityY -= impulseY / body.mass;
-  bullet.angle = Math.atan2(bullet.velocityY, bullet.velocityX);
+  firstBody.velocityX -= impulseX * inverseFirstMass;
+  firstBody.velocityY -= impulseY * inverseFirstMass;
+  secondBody.velocityX += impulseX * inverseSecondMass;
+  secondBody.velocityY += impulseY * inverseSecondMass;
 
-  return { x: -impulseX, y: -impulseY };
+  return { x: impulseX, y: impulseY };
 }
 
 function resolveBulletCollisions(width, height) {
@@ -1259,7 +1264,8 @@ function resolveBulletCollisions(width, height) {
           bullet.velocityY,
         );
         if (canReflect) {
-          resolveBulletBodyBounce(bullet, asteroid, normal);
+          applyCollisionImpulse(asteroid, bullet, normal);
+          bullet.syncAngle();
           bullet.recordReflection();
         }
         const fragments = splitAsteroid(
@@ -1316,9 +1322,14 @@ function resolveBulletCollisions(width, height) {
           bullet.velocityX,
           bullet.velocityY,
         );
-        const shipImpulse = canReflect
-          ? resolveBulletBodyBounce(bullet, ship, normal)
+        const bulletImpulse = canReflect
+          ? applyCollisionImpulse(ship, bullet, normal)
           : { x: 0, y: 0 };
+        const shipImpulse = {
+          x: -bulletImpulse.x,
+          y: -bulletImpulse.y,
+        };
+        bullet.syncAngle();
 
         if (canReflect) {
           bullet.recordReflection();
@@ -1710,26 +1721,10 @@ function resolveCollision(firstBody, secondBody) {
     secondBody.y += offsetY * separation * inverseSecondMass;
   }
 
-  const relativeVelocityX = secondBody.velocityX - firstBody.velocityX;
-  const relativeVelocityY = secondBody.velocityY - firstBody.velocityY;
-  const relativeNormalVelocity = relativeVelocityX * offsetX +
-    relativeVelocityY * offsetY;
-
-  // A contact that is already separating needs position correction only. An
-  // impulse here would add energy and make the bodies bounce repeatedly.
-  if (relativeNormalVelocity >= 0) {
-    return true;
-  }
-
-  const impulseMagnitude = (-(1 + BOUNCINESS) * relativeNormalVelocity) /
-    inverseMassSum;
-  const impulseX = impulseMagnitude * offsetX;
-  const impulseY = impulseMagnitude * offsetY;
-
-  firstBody.velocityX -= impulseX * inverseFirstMass;
-  firstBody.velocityY -= impulseY * inverseFirstMass;
-  secondBody.velocityX += impulseX * inverseSecondMass;
-  secondBody.velocityY += impulseY * inverseSecondMass;
+  applyCollisionImpulse(firstBody, secondBody, {
+    x: offsetX,
+    y: offsetY,
+  });
 
   return true;
 }
