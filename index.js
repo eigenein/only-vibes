@@ -403,7 +403,10 @@ function updateBullets(deltaTime, width, height) {
 }
 
 function updateBulletFiring(deltaTime) {
-  if (!pressedKeys.has("Space")) {
+  // Keep firing paused even if the key was held before the game was paused.
+  // The simulation normally skips this function while paused, but this guard
+  // keeps the firing rule local and prevents future callers from bypassing it.
+  if (gamePaused || !pressedKeys.has("Space")) {
     bulletCooldown = 0;
     return;
   }
@@ -1518,6 +1521,14 @@ function controlKeyForEvent(event) {
 document.addEventListener("keydown", (event) => {
   if (event.code === "KeyP" && !event.repeat) {
     gamePaused = !gamePaused;
+
+    if (gamePaused) {
+      // A pause freezes gameplay input as well as simulation time. Requiring a
+      // fresh Space press after resuming avoids a held key firing unexpectedly.
+      pressedKeys.delete("Space");
+      bulletCooldown = 0;
+    }
+
     event.preventDefault();
     return;
   }
@@ -1533,6 +1544,11 @@ document.addEventListener("keydown", (event) => {
 
   if (controlKey !== undefined) {
     event.preventDefault();
+
+    if (gamePaused && controlKey === "Space") {
+      return;
+    }
+
     if (controlKey === "Space" && !event.repeat) {
       emitBullet();
       bulletCooldown = BULLET_FIRE_INTERVAL;
