@@ -91,8 +91,12 @@ let totalCollisionCount = 0;
 let lastMomentumDelta = { x: 0, y: 0 };
 let lastKineticEnergyDelta = 0;
 let totalBulletCutCount = 0;
+let totalBulletShipCollisionCount = 0;
 let lastBulletMomentumDelta = { x: 0, y: 0 };
 let lastBulletKineticEnergyDelta = 0;
+let lastBulletShipMomentumDelta = { x: 0, y: 0 };
+let lastBulletShipKineticEnergyDelta = 0;
+let lastBulletShipImpulse = { x: 0, y: 0 };
 let lastFiringImpulseDelta = { x: 0, y: 0 };
 let lastFiringRecoilVelocity = { x: 0, y: 0 };
 let frameRate = 0;
@@ -833,6 +837,50 @@ function segmentPolygonIntersectionParameter(start, end, vertices) {
     : undefined;
 }
 
+/**
+ * Return the first normalized position at which a segment reaches a circle.
+ * Bullets use this swept test for the ship as well as the polygon test above,
+ * so a fast projectile cannot pass through the circular hull between frames.
+ */
+function segmentCircleIntersectionParameter(start, end, circle) {
+  const directionX = end.x - start.x;
+  const directionY = end.y - start.y;
+  const offsetX = start.x - circle.x;
+  const offsetY = start.y - circle.y;
+  const directionLengthSquared = directionX ** 2 + directionY ** 2;
+  const radiusSquared = circle.radius ** 2;
+
+  if (offsetX ** 2 + offsetY ** 2 <= radiusSquared) {
+    return 0;
+  }
+
+  if (directionLengthSquared <= COLLISION_EPSILON) {
+    return undefined;
+  }
+
+  const projectedOffset = offsetX * directionX + offsetY * directionY;
+  const discriminant = projectedOffset ** 2 -
+    directionLengthSquared * (offsetX ** 2 + offsetY ** 2 - radiusSquared);
+
+  if (discriminant < -COLLISION_EPSILON) {
+    return undefined;
+  }
+
+  const squareRootDiscriminant = Math.sqrt(Math.max(0, discriminant));
+  const firstParameter = (-projectedOffset - squareRootDiscriminant) /
+    directionLengthSquared;
+  const secondParameter = (-projectedOffset + squareRootDiscriminant) /
+    directionLengthSquared;
+
+  if (firstParameter >= -COLLISION_EPSILON && firstParameter <= 1) {
+    return Math.max(0, firstParameter);
+  }
+
+  return secondParameter >= -COLLISION_EPSILON && secondParameter <= 1
+    ? Math.max(0, secondParameter)
+    : undefined;
+}
+
 function splitAsteroid(
   asteroid,
   bullet,
@@ -1034,9 +1082,39 @@ function polygonNormalAtPoint(
   return nearestNormal;
 }
 
-function resolveBulletAsteroidBounce(bullet, asteroid, normal) {
-  const relativeVelocityX = bullet.velocityX - asteroid.velocityX;
-  const relativeVelocityY = bullet.velocityY - asteroid.velocityY;
+function circleNormalAtPoint(
+  circle,
+  point,
+  incomingVelocityX,
+  incomingVelocityY,
+) {
+  const fallbackNormal = normalizedVector(
+    -incomingVelocityX,
+    -incomingVelocityY,
+  );
+  const normal = normalizedVector(
+    point.x - circle.x,
+    point.y - circle.y,
+    fallbackNormal.x,
+    fallbackNormal.y,
+  );
+
+  if (incomingVelocityX * normal.x + incomingVelocityY * normal.y > 0) {
+    normal.x *= -1;
+    normal.y *= -1;
+  }
+
+  return normal;
+}
+
+/**
+ * Apply the same restitution and inverse-mass impulse used by asteroid
+ * contacts to any dynamic body. The returned vector is the impulse received
+ * by that body, which makes the ship's bullet impact inspectable in debug UI.
+ */
+function resolveBulletBodyBounce(bullet, body, normal) {
+  const relativeVelocityX = bullet.velocityX - body.velocityX;
+  const relativeVelocityY = bullet.velocityY - body.velocityY;
   const relativeNormalVelocity = relativeVelocityX * normal.x +
     relativeVelocityY * normal.y;
 
@@ -1046,10 +1124,10 @@ function resolveBulletAsteroidBounce(bullet, asteroid, normal) {
     bullet.velocityX -= 2 * normalVelocity * normal.x;
     bullet.velocityY -= 2 * normalVelocity * normal.y;
     bullet.angle = Math.atan2(bullet.velocityY, bullet.velocityX);
-    return;
+    return { x: 0, y: 0 };
   }
 
-  const inverseMassSum = 1 / bullet.mass + 1 / asteroid.mass;
+  const inverseMassSum = 1 / bullet.mass + 1 / body.mass;
   const impulseMagnitude = -(1 + BOUNCINESS) * relativeNormalVelocity /
     inverseMassSum;
   const impulseX = impulseMagnitude * normal.x;
@@ -1057,12 +1135,16 @@ function resolveBulletAsteroidBounce(bullet, asteroid, normal) {
 
   bullet.velocityX += impulseX / bullet.mass;
   bullet.velocityY += impulseY / bullet.mass;
-  asteroid.velocityX -= impulseX / asteroid.mass;
-  asteroid.velocityY -= impulseY / asteroid.mass;
+  body.velocityX -= impulseX / body.mass;
+  body.velocityY -= impulseY / body.mass;
   bullet.angle = Math.atan2(bullet.velocityY, bullet.velocityX);
+
+  return { x: -impulseX, y: -impulseY };
 }
 
 function resolveBulletCollisions(width, height) {
+  const ship = playerBody();
+
   for (
     let bulletIndex = bullets.length - 1;
     bulletIndex >= 0;
@@ -1072,6 +1154,7 @@ function resolveBulletCollisions(width, height) {
     let segmentStart = { x: bullet.previousX, y: bullet.previousY };
     let segmentEnd = { x: bullet.x, y: bullet.y };
     const ignoredAsteroids = new Set();
+    let shipIgnored = false;
 
     // A single animation step can contain more than one collision after a
     // bounce. Rebuild the remaining swept segment after every interaction so
@@ -1123,13 +1206,22 @@ function resolveBulletCollisions(width, height) {
       const wallHit = boundaryHit(segmentStart, segmentEnd, width, height);
       const asteroidIsFirst = hitAsteroidIndex >= 0 &&
         nearestHitParameter <= (wallHit?.parameter ?? Infinity);
+      const shipHitParameter = shipIgnored
+        ? Infinity
+        : segmentCircleIntersectionParameter(segmentStart, segmentEnd, ship);
+      const shipIsFirst = shipHitParameter !== undefined &&
+        shipHitParameter < nearestHitParameter &&
+        shipHitParameter <= (wallHit?.parameter ?? Infinity);
+      const bodyIsFirst = asteroidIsFirst || shipIsFirst;
 
-      if (!asteroidIsFirst && wallHit === undefined) {
+      if (!bodyIsFirst && wallHit === undefined) {
         break;
       }
 
       const hitParameter = asteroidIsFirst
         ? nearestHitParameter
+        : shipIsFirst
+        ? shipHitParameter
         : wallHit.parameter;
       const hitPoint = {
         x: segmentStart.x + (segmentEnd.x - segmentStart.x) * hitParameter,
@@ -1141,7 +1233,7 @@ function resolveBulletCollisions(width, height) {
       ) * (1 - hitParameter);
       const canReflect = bullet.reflectionCount < MAX_BULLET_REFLECTIONS;
 
-      let normal = asteroidIsFirst ? undefined : wallHit.normal;
+      let normal = bodyIsFirst ? undefined : wallHit.normal;
 
       if (asteroidIsFirst) {
         const asteroid = asteroids[hitAsteroidIndex];
@@ -1167,7 +1259,7 @@ function resolveBulletCollisions(width, height) {
           bullet.velocityY,
         );
         if (canReflect) {
-          resolveBulletAsteroidBounce(bullet, asteroid, normal);
+          resolveBulletBodyBounce(bullet, asteroid, normal);
           bullet.recordReflection();
         }
         const fragments = splitAsteroid(
@@ -1208,6 +1300,47 @@ function resolveBulletCollisions(width, height) {
           };
           lastBulletKineticEnergyDelta = afterEnergy - beforeEnergy;
         }
+      } else if (shipIsFirst) {
+        const beforeMomentum = {
+          x: ship.mass * ship.velocityX + bullet.mass * bullet.velocityX,
+          y: ship.mass * ship.velocityY + bullet.mass * bullet.velocityY,
+        };
+        const beforeEnergy = 0.5 * ship.mass *
+            (ship.velocityX ** 2 + ship.velocityY ** 2) +
+          0.5 * bullet.mass *
+            (bullet.velocityX ** 2 + bullet.velocityY ** 2);
+
+        normal = circleNormalAtPoint(
+          ship,
+          hitPoint,
+          bullet.velocityX,
+          bullet.velocityY,
+        );
+        const shipImpulse = canReflect
+          ? resolveBulletBodyBounce(bullet, ship, normal)
+          : { x: 0, y: 0 };
+
+        if (canReflect) {
+          bullet.recordReflection();
+        }
+
+        const afterMomentum = {
+          x: ship.mass * ship.velocityX + bullet.mass * bullet.velocityX,
+          y: ship.mass * ship.velocityY + bullet.mass * bullet.velocityY,
+        };
+        const afterEnergy = 0.5 * ship.mass *
+            (ship.velocityX ** 2 + ship.velocityY ** 2) +
+          0.5 * bullet.mass *
+            (bullet.velocityX ** 2 + bullet.velocityY ** 2);
+
+        totalBulletShipCollisionCount += 1;
+        lastBulletShipImpulse = shipImpulse;
+        lastBulletShipMomentumDelta = {
+          x: afterMomentum.x - beforeMomentum.x,
+          y: afterMomentum.y - beforeMomentum.y,
+        };
+        lastBulletShipKineticEnergyDelta = afterEnergy - beforeEnergy;
+        shipIgnored = true;
       }
 
       if (!canReflect) {
@@ -1215,7 +1348,7 @@ function resolveBulletCollisions(width, height) {
         break;
       }
 
-      if (!asteroidIsFirst) {
+      if (!bodyIsFirst) {
         bullet.reflect(normal);
       }
       const direction = normalizedVector(bullet.velocityX, bullet.velocityY);
@@ -1240,6 +1373,8 @@ function resolveBulletCollisions(width, height) {
       bullet.y = segmentEnd.y;
     }
   }
+
+  applyPlayerBody(ship);
 }
 
 function polygonAxes(vertices) {
@@ -1735,12 +1870,22 @@ function updateDebugOutput() {
         : bullets.map((bullet) => bullet.reflectionCount).join(", ")
     }`,
     `Bullet cuts: ${totalBulletCutCount}`,
+    `Bullet ↔ ship contacts: ${totalBulletShipCollisionCount}`,
     `Bullets active: ${bullets.length}`,
     `Bullets fired: ${totalBulletsEmitted}`,
     `Last cut Δ momentum: (${lastBulletMomentumDelta.x.toFixed(5)}, ${
       lastBulletMomentumDelta.y.toFixed(5)
     })`,
     `Last cut Δ kinetic energy: ${lastBulletKineticEnergyDelta.toFixed(5)}`,
+    `Last bullet→ship impulse: (${lastBulletShipImpulse.x.toFixed(5)}, ${
+      lastBulletShipImpulse.y.toFixed(5)
+    })`,
+    `Last bullet↔ship Δ momentum: (${
+      lastBulletShipMomentumDelta.x.toFixed(5)
+    }, ${lastBulletShipMomentumDelta.y.toFixed(5)})`,
+    `Last bullet↔ship Δ kinetic energy: ${
+      lastBulletShipKineticEnergyDelta.toFixed(5)
+    }`,
     `Last firing Δ impulse: (${lastFiringImpulseDelta.x.toFixed(5)}, ${
       lastFiringImpulseDelta.y.toFixed(5)
     })`,

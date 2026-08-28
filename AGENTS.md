@@ -14,6 +14,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Should keep `index.html` minimal.
 - Should embrace encapsulation.
 - Should continuously clean up dead code.
+- Should not repeat itself.
 
 # Implementation choices
 
@@ -35,6 +36,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must not display any debug elements when the debug UI is off.
 - May add debug console output.
 - Must prefer Kane CLI to Node VM.
-- Must document Kane bug findings and brief descriptions of subsequent fixes in `AUDIT.md`.
+- Must document actionable Kane bug findings that resulted in code changes in `AUDIT.md`.
 - Must not rely merely on code analysis.
 - Must use W/A/S/D keys instead of the arrow keys when the spaceship control is needed.
+- May temporarily change the code to isolate certain behavior; must revert it back when done.
