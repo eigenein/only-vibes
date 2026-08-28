@@ -28,6 +28,10 @@ const MOVEMENT_RESPONSIVENESS = 480;
 // in shots per second so holding Space feels regular at every frame rate.
 const BULLET_FREQUENCY = 8;
 const BULLET_FIRE_INTERVAL = 1 / BULLET_FREQUENCY;
+// A bullet's mass is deliberately independent of its visual length. The
+// collision response uses this value for both bullet momentum and bullet
+// kinetic energy before the projectile is absorbed by the cut fragments.
+const BULLET_MASS = 1;
 const BULLET_SPEED = 720;
 const BULLET_HALF_LENGTH = 10;
 const BULLET_LINE_WIDTH = 3;
@@ -46,8 +50,9 @@ const ASTEROID_MAX_VERTICES = 10;
 const ASTEROID_MIN_SPEED = 70;
 const ASTEROID_MAX_SPEED = 170;
 const ASTEROID_FILL_STYLE = "#8f99a6";
-// Asteroid mass is density times the true area of the convex polygon. The
-// encompassing radius remains useful for safe field-boundary placement.
+// Geometric asteroid mass is density times the true area of the convex
+// polygon. The encompassing radius remains useful for safe field-boundary
+// placement; fragments can also carry absorbed bullet mass.
 const ASTEROID_DENSITY = 0.1;
 // A value of one is a fully elastic collision, which preserves both momentum
 // and kinetic energy. It remains a global coefficient so later iterations can
@@ -74,6 +79,9 @@ let lastCollisionCount = 0;
 let totalCollisionCount = 0;
 let lastMomentumDelta = { x: 0, y: 0 };
 let lastKineticEnergyDelta = 0;
+let totalBulletCutCount = 0;
+let lastBulletMomentumDelta = { x: 0, y: 0 };
+let lastBulletKineticEnergyDelta = 0;
 
 // The debug panel is created only in JavaScript so index.html stays a minimal
 // canvas host. It is hidden by default and reports collision telemetry without
@@ -112,8 +120,9 @@ function randomCoordinate(extent, radius) {
  * an ordered convex polygon without requiring collision or triangulation code.
  */
 function createOrderedAngles(vertexCount) {
-  const angles = Array.from({ length: vertexCount }, () =>
-    randomBetween(0, Math.PI * 2),
+  const angles = Array.from(
+    { length: vertexCount },
+    () => randomBetween(0, Math.PI * 2),
   );
 
   angles.sort((firstAngle, secondAngle) => firstAngle - secondAngle);
@@ -121,17 +130,39 @@ function createOrderedAngles(vertexCount) {
 }
 
 class Asteroid {
-  constructor({ radius, angles, x, y, velocityX, velocityY }) {
+  constructor({
+    radius,
+    angles,
+    localVertices,
+    x,
+    y,
+    velocityX,
+    velocityY,
+    additionalMass = 0,
+  }) {
+    const resolvedAngles = angles ??
+      localVertices.map((vertex) => Math.atan2(vertex.y, vertex.x));
+    const generatedVertices = resolvedAngles.map((angle) => ({
+      x: Math.cos(angle) * radius,
+      y: Math.sin(angle) * radius,
+    }));
+
     this.radius = radius;
-    this.angles = angles;
+    this.localVertices = Object.freeze(
+      (localVertices ?? generatedVertices).map((vertex) =>
+        Object.freeze({ x: vertex.x, y: vertex.y })
+      ),
+    );
+    this.angles = resolvedAngles;
     this.x = x;
     this.y = y;
     this.velocityX = velocityX;
     this.velocityY = velocityY;
+    this.additionalMass = additionalMass;
   }
 
   get mass() {
-    return ASTEROID_DENSITY * this.surfaceArea;
+    return ASTEROID_DENSITY * this.surfaceArea + this.additionalMass;
   }
 
   get surfaceArea() {
@@ -144,8 +175,8 @@ class Asteroid {
     for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
       const firstVertex = vertices[vertexIndex];
       const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
-      twiceArea +=
-        firstVertex.x * secondVertex.y - secondVertex.x * firstVertex.y;
+      twiceArea += firstVertex.x * secondVertex.y -
+        secondVertex.x * firstVertex.y;
     }
 
     return Math.abs(twiceArea) / 2;
@@ -182,14 +213,13 @@ class Asteroid {
   }
 
   draw() {
-    const firstAngle = this.angles[0];
-    const firstVertex = this.vertexAt(firstAngle);
+    const vertices = this.collisionPolygon();
+    const firstVertex = vertices[0];
 
     context.beginPath();
     context.moveTo(firstVertex.x, firstVertex.y);
 
-    for (const angle of this.angles.slice(1)) {
-      const vertex = this.vertexAt(angle);
+    for (const vertex of vertices.slice(1)) {
       context.lineTo(vertex.x, vertex.y);
     }
 
@@ -206,7 +236,10 @@ class Asteroid {
   }
 
   collisionPolygon() {
-    return this.angles.map((angle) => this.vertexAt(angle));
+    return this.localVertices.map((vertex) => ({
+      x: this.x + vertex.x,
+      y: this.y + vertex.y,
+    }));
   }
 }
 
@@ -215,11 +248,21 @@ class Bullet {
     this.x = x;
     this.y = y;
     this.angle = angle;
+    this.previousX = x;
+    this.previousY = y;
+    this.velocityX = Math.cos(angle) * BULLET_SPEED;
+    this.velocityY = Math.sin(angle) * BULLET_SPEED;
+  }
+
+  get mass() {
+    return BULLET_MASS;
   }
 
   update(deltaTime) {
-    this.x += Math.cos(this.angle) * BULLET_SPEED * deltaTime;
-    this.y += Math.sin(this.angle) * BULLET_SPEED * deltaTime;
+    this.previousX = this.x;
+    this.previousY = this.y;
+    this.x += this.velocityX * deltaTime;
+    this.y += this.velocityY * deltaTime;
   }
 
   isOutside(width, height) {
@@ -282,14 +325,46 @@ function createAsteroid(width, height) {
   });
 }
 
+function createAsteroidFromPolygon(
+  vertices,
+  velocityX,
+  velocityY,
+  mass,
+) {
+  const center = polygonCentroid(vertices);
+  const localVertices = vertices.map((vertex) => ({
+    x: vertex.x - center.x,
+    y: vertex.y - center.y,
+  }));
+  const radius = Math.max(
+    ...localVertices.map((vertex) => Math.hypot(vertex.x, vertex.y)),
+  );
+  const area = polygonArea(vertices);
+  const angles = Object.freeze(
+    localVertices.map((vertex) => Math.atan2(vertex.y, vertex.x)),
+  );
+
+  return new Asteroid({
+    radius,
+    angles,
+    localVertices,
+    x: center.x,
+    y: center.y,
+    velocityX,
+    velocityY,
+    additionalMass: mass - ASTEROID_DENSITY * area,
+  });
+}
+
 function generateAsteroids(width, height) {
   if (asteroidsGenerated || width <= 0 || height <= 0) {
     return;
   }
 
   asteroids.push(
-    ...Array.from({ length: ASTEROID_COUNT }, () =>
-      createAsteroid(width, height),
+    ...Array.from(
+      { length: ASTEROID_COUNT },
+      () => createAsteroid(width, height),
     ),
   );
   asteroidsGenerated = true;
@@ -462,6 +537,437 @@ function normalizedVector(x, y, fallbackX = 1, fallbackY = 0) {
     : { x: x / length, y: y / length };
 }
 
+function cross2D(firstX, firstY, secondX, secondY) {
+  return firstX * secondY - firstY * secondX;
+}
+
+function polygonArea(vertices) {
+  let twiceArea = 0;
+
+  for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
+    const firstVertex = vertices[vertexIndex];
+    const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
+    twiceArea += cross2D(
+      firstVertex.x,
+      firstVertex.y,
+      secondVertex.x,
+      secondVertex.y,
+    );
+  }
+
+  return Math.abs(twiceArea) / 2;
+}
+
+function polygonCentroid(vertices) {
+  let twiceArea = 0;
+  let centroidX = 0;
+  let centroidY = 0;
+
+  for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
+    const firstVertex = vertices[vertexIndex];
+    const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
+    const edgeCross = cross2D(
+      firstVertex.x,
+      firstVertex.y,
+      secondVertex.x,
+      secondVertex.y,
+    );
+
+    twiceArea += edgeCross;
+    centroidX += (firstVertex.x + secondVertex.x) * edgeCross;
+    centroidY += (firstVertex.y + secondVertex.y) * edgeCross;
+  }
+
+  if (Math.abs(twiceArea) <= COLLISION_EPSILON) {
+    const average = vertices.reduce(
+      (sum, vertex) => ({ x: sum.x + vertex.x, y: sum.y + vertex.y }),
+      { x: 0, y: 0 },
+    );
+
+    return {
+      x: average.x / vertices.length,
+      y: average.y / vertices.length,
+    };
+  }
+
+  return {
+    x: centroidX / (3 * twiceArea),
+    y: centroidY / (3 * twiceArea),
+  };
+}
+
+function cleanPolygon(vertices) {
+  const cleanedVertices = [];
+
+  for (const vertex of vertices) {
+    const previousVertex = cleanedVertices.at(-1);
+
+    if (
+      previousVertex === undefined ||
+      Math.hypot(vertex.x - previousVertex.x, vertex.y - previousVertex.y) >
+        COLLISION_EPSILON
+    ) {
+      cleanedVertices.push(vertex);
+    }
+  }
+
+  if (cleanedVertices.length > 1) {
+    const firstVertex = cleanedVertices[0];
+    const lastVertex = cleanedVertices.at(-1);
+
+    if (
+      Math.hypot(lastVertex.x - firstVertex.x, lastVertex.y - firstVertex.y) <=
+        COLLISION_EPSILON
+    ) {
+      cleanedVertices.pop();
+    }
+  }
+
+  return cleanedVertices;
+}
+
+/**
+ * Clip a convex polygon against one side of the bullet's infinite path. The
+ * two clipped polygons retain the original boundary vertices and gain the
+ * two new cut intersections, so the visible geometry really is divided by
+ * the projectile's line instead of merely replaced with smaller circles.
+ */
+function clipPolygonByLine(
+  vertices,
+  linePoint,
+  lineDirection,
+  keepPositiveSide,
+) {
+  const clippedVertices = [];
+  const sideMultiplier = keepPositiveSide ? 1 : -1;
+
+  for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
+    const firstVertex = vertices[vertexIndex];
+    const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
+    const firstSide = sideMultiplier *
+      cross2D(
+        lineDirection.x,
+        lineDirection.y,
+        firstVertex.x - linePoint.x,
+        firstVertex.y - linePoint.y,
+      );
+    const secondSide = sideMultiplier *
+      cross2D(
+        lineDirection.x,
+        lineDirection.y,
+        secondVertex.x - linePoint.x,
+        secondVertex.y - linePoint.y,
+      );
+    const firstInside = firstSide >= -COLLISION_EPSILON;
+    const secondInside = secondSide >= -COLLISION_EPSILON;
+
+    if (firstInside !== secondInside) {
+      const sideDifference = firstSide - secondSide;
+
+      if (Math.abs(sideDifference) > COLLISION_EPSILON) {
+        const intersectionRatio = firstSide / sideDifference;
+        clippedVertices.push({
+          x: firstVertex.x +
+            (secondVertex.x - firstVertex.x) * intersectionRatio,
+          y: firstVertex.y +
+            (secondVertex.y - firstVertex.y) * intersectionRatio,
+        });
+      }
+    }
+
+    if (secondInside) {
+      clippedVertices.push({ x: secondVertex.x, y: secondVertex.y });
+    }
+  }
+
+  return cleanPolygon(clippedVertices);
+}
+
+/**
+ * Return the first normalized position at which a segment enters a convex
+ * polygon. Half-plane clipping makes this a swept hit test, avoiding the
+ * tunnelling a fast bullet would cause if only its final position were used.
+ */
+function segmentPolygonIntersectionParameter(start, end, vertices) {
+  if (vertices.length < 3) {
+    return undefined;
+  }
+
+  const direction = {
+    x: end.x - start.x,
+    y: end.y - start.y,
+  };
+  let polygonTwiceArea = 0;
+
+  for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
+    const firstVertex = vertices[vertexIndex];
+    const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
+    polygonTwiceArea += cross2D(
+      firstVertex.x,
+      firstVertex.y,
+      secondVertex.x,
+      secondVertex.y,
+    );
+  }
+
+  if (Math.abs(polygonTwiceArea) <= COLLISION_EPSILON) {
+    return undefined;
+  }
+
+  const orientation = polygonTwiceArea < 0 ? -1 : 1;
+  let minimumParameter = 0;
+  let maximumParameter = 1;
+
+  for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
+    const firstVertex = vertices[vertexIndex];
+    const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
+    const edgeX = secondVertex.x - firstVertex.x;
+    const edgeY = secondVertex.y - firstVertex.y;
+    const startSide = orientation *
+      cross2D(
+        edgeX,
+        edgeY,
+        start.x - firstVertex.x,
+        start.y - firstVertex.y,
+      );
+    const sideRate = orientation *
+      cross2D(edgeX, edgeY, direction.x, direction.y);
+
+    if (Math.abs(sideRate) <= COLLISION_EPSILON) {
+      if (startSide < -COLLISION_EPSILON) {
+        return undefined;
+      }
+
+      continue;
+    }
+
+    const boundaryParameter = (-COLLISION_EPSILON - startSide) / sideRate;
+
+    if (sideRate > 0) {
+      minimumParameter = Math.max(minimumParameter, boundaryParameter);
+    } else {
+      maximumParameter = Math.min(maximumParameter, boundaryParameter);
+    }
+
+    if (minimumParameter > maximumParameter + COLLISION_EPSILON) {
+      return undefined;
+    }
+  }
+
+  return minimumParameter <= 1 + COLLISION_EPSILON
+    ? Math.min(1, Math.max(0, minimumParameter))
+    : undefined;
+}
+
+function splitAsteroid(asteroid, bullet, hitPoint) {
+  if (asteroid.localVertices.length <= 3) {
+    return [];
+  }
+
+  const asteroidVertices = asteroid.collisionPolygon();
+  const bulletDirection = normalizedVector(
+    bullet.velocityX,
+    bullet.velocityY,
+  );
+  let firstPolygon = clipPolygonByLine(
+    asteroidVertices,
+    hitPoint,
+    bulletDirection,
+    true,
+  );
+  let secondPolygon = clipPolygonByLine(
+    asteroidVertices,
+    hitPoint,
+    bulletDirection,
+    false,
+  );
+
+  // A tangent or a cut exactly through a vertex can create a zero-area side
+  // because of floating-point boundaries. A line through the polygon's
+  // centroid is a deterministic fallback that still follows the bullet's
+  // direction and guarantees two real fragments for a valid convex asteroid.
+  if (
+    firstPolygon.length < 3 ||
+    secondPolygon.length < 3 ||
+    polygonArea(firstPolygon) <= COLLISION_EPSILON ||
+    polygonArea(secondPolygon) <= COLLISION_EPSILON
+  ) {
+    const centroid = polygonCentroid(asteroidVertices);
+    firstPolygon = clipPolygonByLine(
+      asteroidVertices,
+      centroid,
+      bulletDirection,
+      true,
+    );
+    secondPolygon = clipPolygonByLine(
+      asteroidVertices,
+      centroid,
+      bulletDirection,
+      false,
+    );
+  }
+
+  if (
+    firstPolygon.length < 3 ||
+    secondPolygon.length < 3 ||
+    polygonArea(firstPolygon) <= COLLISION_EPSILON ||
+    polygonArea(secondPolygon) <= COLLISION_EPSILON
+  ) {
+    return [];
+  }
+
+  const firstArea = polygonArea(firstPolygon);
+  const secondArea = polygonArea(secondPolygon);
+  const totalArea = firstArea + secondArea;
+  const totalMass = asteroid.mass + bullet.mass;
+  const firstMass = (totalMass * firstArea) / totalArea;
+  const secondMass = (totalMass * secondArea) / totalArea;
+  const totalMomentumX = asteroid.mass * asteroid.velocityX +
+    bullet.mass * bullet.velocityX;
+  const totalMomentumY = asteroid.mass * asteroid.velocityY +
+    bullet.mass * bullet.velocityY;
+  const totalKineticEnergy = 0.5 *
+      asteroid.mass *
+      (asteroid.velocityX ** 2 + asteroid.velocityY ** 2) +
+    0.5 *
+      bullet.mass *
+      (bullet.velocityX ** 2 + bullet.velocityY ** 2);
+  const centerVelocityX = totalMomentumX / totalMass;
+  const centerVelocityY = totalMomentumY / totalMass;
+  const centerKineticEnergy = 0.5 *
+    totalMass *
+    (centerVelocityX ** 2 + centerVelocityY ** 2);
+  const reducedMass = (firstMass * secondMass) / totalMass;
+  const relativeKineticEnergy = Math.max(
+    0,
+    totalKineticEnergy - centerKineticEnergy,
+  );
+  const relativeSpeed = reducedMass <= COLLISION_EPSILON
+    ? 0
+    : Math.sqrt((2 * relativeKineticEnergy) / reducedMass);
+  // The first polygon is on the left side of the bullet path. Its partner is
+  // therefore sent to the right, making the two touching pieces separate
+  // without introducing any energy beyond the incoming bodies' energy.
+  const separationDirection = {
+    x: bulletDirection.y,
+    y: -bulletDirection.x,
+  };
+  const relativeVelocityX = separationDirection.x * relativeSpeed;
+  const relativeVelocityY = separationDirection.y * relativeSpeed;
+  const firstVelocityX = centerVelocityX -
+    (secondMass / totalMass) * relativeVelocityX;
+  const firstVelocityY = centerVelocityY -
+    (secondMass / totalMass) * relativeVelocityY;
+  const secondVelocityX = centerVelocityX +
+    (firstMass / totalMass) * relativeVelocityX;
+  const secondVelocityY = centerVelocityY +
+    (firstMass / totalMass) * relativeVelocityY;
+
+  return [
+    createAsteroidFromPolygon(
+      firstPolygon,
+      firstVelocityX,
+      firstVelocityY,
+      firstMass,
+    ),
+    createAsteroidFromPolygon(
+      secondPolygon,
+      secondVelocityX,
+      secondVelocityY,
+      secondMass,
+    ),
+  ];
+}
+
+function resolveBulletCollisions() {
+  for (
+    let bulletIndex = bullets.length - 1;
+    bulletIndex >= 0;
+    bulletIndex -= 1
+  ) {
+    const bullet = bullets[bulletIndex];
+    const bulletStart = { x: bullet.previousX, y: bullet.previousY };
+    const bulletEnd = { x: bullet.x, y: bullet.y };
+    let hitAsteroidIndex = -1;
+    let nearestHitParameter = Infinity;
+
+    for (
+      let asteroidIndex = 0;
+      asteroidIndex < asteroids.length;
+      asteroidIndex += 1
+    ) {
+      const hitParameter = segmentPolygonIntersectionParameter(
+        bulletStart,
+        bulletEnd,
+        asteroids[asteroidIndex].collisionPolygon(),
+      );
+
+      if (
+        hitParameter !== undefined &&
+        hitParameter < nearestHitParameter
+      ) {
+        nearestHitParameter = hitParameter;
+        hitAsteroidIndex = asteroidIndex;
+      }
+    }
+
+    if (hitAsteroidIndex < 0) {
+      continue;
+    }
+
+    const asteroid = asteroids[hitAsteroidIndex];
+    const hitPoint = {
+      x: bulletStart.x +
+        (bulletEnd.x - bulletStart.x) * nearestHitParameter,
+      y: bulletStart.y +
+        (bulletEnd.y - bulletStart.y) * nearestHitParameter,
+    };
+    const fragments = splitAsteroid(asteroid, bullet, hitPoint);
+
+    // A projectile is consumed by every interaction, including the terminal
+    // interaction with a three-vertex asteroid. For larger asteroids the
+    // bullet's mass is distributed into the two new bodies by splitAsteroid.
+    bullets.splice(bulletIndex, 1);
+    asteroids.splice(hitAsteroidIndex, 1, ...fragments);
+
+    if (fragments.length === 2) {
+      totalBulletCutCount += 1;
+
+      const beforeMomentum = {
+        x: asteroid.mass * asteroid.velocityX + bullet.mass * bullet.velocityX,
+        y: asteroid.mass * asteroid.velocityY + bullet.mass * bullet.velocityY,
+      };
+      const afterMomentum = fragments.reduce(
+        (momentum, fragment) => ({
+          x: momentum.x + fragment.mass * fragment.velocityX,
+          y: momentum.y + fragment.mass * fragment.velocityY,
+        }),
+        { x: 0, y: 0 },
+      );
+      const beforeEnergy = 0.5 *
+          asteroid.mass *
+          (asteroid.velocityX ** 2 + asteroid.velocityY ** 2) +
+        0.5 *
+          bullet.mass *
+          (bullet.velocityX ** 2 + bullet.velocityY ** 2);
+      const afterEnergy = fragments.reduce(
+        (energy, fragment) =>
+          energy +
+          0.5 *
+            fragment.mass *
+            (fragment.velocityX ** 2 + fragment.velocityY ** 2),
+        0,
+      );
+
+      lastBulletMomentumDelta = {
+        x: afterMomentum.x - beforeMomentum.x,
+        y: afterMomentum.y - beforeMomentum.y,
+      };
+      lastBulletKineticEnergyDelta = afterEnergy - beforeEnergy;
+    }
+  }
+}
+
 function polygonAxes(vertices) {
   const axes = [];
 
@@ -510,23 +1016,19 @@ function projectCircle(body, axis) {
  * other; the ordinary intersection width would under-correct that contact.
  */
 function projectionOverlap(firstProjection, secondProjection) {
-  const moveFirstNegative =
-    firstProjection.maximum - secondProjection.minimum;
-  const moveFirstPositive =
-    secondProjection.maximum - firstProjection.minimum;
+  const moveFirstNegative = firstProjection.maximum - secondProjection.minimum;
+  const moveFirstPositive = secondProjection.maximum - firstProjection.minimum;
 
   return Math.min(moveFirstNegative, moveFirstPositive);
 }
 
 function collisionAxis(firstBody, secondBody, axis, firstShape, secondShape) {
-  const firstProjection =
-    firstShape.type === "polygon"
-      ? projectPolygon(firstShape.vertices, axis)
-      : projectCircle(firstBody, axis);
-  const secondProjection =
-    secondShape.type === "polygon"
-      ? projectPolygon(secondShape.vertices, axis)
-      : projectCircle(secondBody, axis);
+  const firstProjection = firstShape.type === "polygon"
+    ? projectPolygon(firstShape.vertices, axis)
+    : projectCircle(firstBody, axis);
+  const secondProjection = secondShape.type === "polygon"
+    ? projectPolygon(secondShape.vertices, axis)
+    : projectCircle(secondBody, axis);
   const overlap = projectionOverlap(firstProjection, secondProjection);
 
   return overlap < -COLLISION_EPSILON ? undefined : overlap;
@@ -535,8 +1037,7 @@ function collisionAxis(firstBody, secondBody, axis, firstShape, secondShape) {
 function orientCollisionAxis(firstBody, secondBody, axis) {
   const centerOffsetX = secondBody.x - firstBody.x;
   const centerOffsetY = secondBody.y - firstBody.y;
-  const centerDirection =
-    centerOffsetX * axis.x + centerOffsetY * axis.y;
+  const centerDirection = centerOffsetX * axis.x + centerOffsetY * axis.y;
 
   if (centerDirection < -COLLISION_EPSILON) {
     return { x: -axis.x, y: -axis.y };
@@ -745,8 +1246,12 @@ function collisionManifold(firstBody, secondBody) {
   return undefined;
 }
 
-function physicsSnapshot(ship) {
-  const bodies = [ship, ...asteroids];
+function physicsSnapshot(ship, includeBullets = false) {
+  const bodies = [
+    ship,
+    ...asteroids,
+    ...(includeBullets ? bullets : []),
+  ];
   let momentumX = 0;
   let momentumY = 0;
   let kineticEnergy = 0;
@@ -754,8 +1259,8 @@ function physicsSnapshot(ship) {
   for (const body of bodies) {
     momentumX += body.mass * body.velocityX;
     momentumY += body.mass * body.velocityY;
-    kineticEnergy +=
-      0.5 * body.mass * (body.velocityX ** 2 + body.velocityY ** 2);
+    kineticEnergy += 0.5 * body.mass *
+      (body.velocityX ** 2 + body.velocityY ** 2);
   }
 
   return { momentumX, momentumY, kineticEnergy };
@@ -795,8 +1300,8 @@ function resolveCollision(firstBody, secondBody) {
 
   const relativeVelocityX = secondBody.velocityX - firstBody.velocityX;
   const relativeVelocityY = secondBody.velocityY - firstBody.velocityY;
-  const relativeNormalVelocity =
-    relativeVelocityX * offsetX + relativeVelocityY * offsetY;
+  const relativeNormalVelocity = relativeVelocityX * offsetX +
+    relativeVelocityY * offsetY;
 
   // A contact that is already separating needs position correction only. An
   // impulse here would add energy and make the bodies bounce repeatedly.
@@ -804,8 +1309,8 @@ function resolveCollision(firstBody, secondBody) {
     return true;
   }
 
-  const impulseMagnitude =
-    (-(1 + BOUNCINESS) * relativeNormalVelocity) / inverseMassSum;
+  const impulseMagnitude = (-(1 + BOUNCINESS) * relativeNormalVelocity) /
+    inverseMassSum;
   const impulseX = impulseMagnitude * offsetX;
   const impulseY = impulseMagnitude * offsetY;
 
@@ -868,8 +1373,8 @@ function resolveAsteroidCollisions() {
     x: afterCollision.momentumX - beforeCollision.momentumX,
     y: afterCollision.momentumY - beforeCollision.momentumY,
   };
-  lastKineticEnergyDelta =
-    afterCollision.kineticEnergy - beforeCollision.kineticEnergy;
+  lastKineticEnergyDelta = afterCollision.kineticEnergy -
+    beforeCollision.kineticEnergy;
   applyPlayerBody(ship);
 }
 
@@ -880,7 +1385,7 @@ function updateDebugOutput() {
 
   const ship = playerBody();
   const firstAsteroid = asteroids[0];
-  const totalPhysics = physicsSnapshot(ship);
+  const totalPhysics = physicsSnapshot(ship, true);
   const asteroidArea = firstAsteroid?.surfaceArea ?? 0;
   const asteroidMass = firstAsteroid?.mass ?? 0;
 
@@ -889,15 +1394,27 @@ function updateDebugOutput() {
     `Game: ${gamePaused ? "paused (P toggles)" : "running"}`,
     `Starship mass: ${STARSHIP_MASS.toFixed(2)}`,
     `Asteroid area: ${asteroidArea.toFixed(2)} (first polygon)`,
-    `Asteroid mass: density × polygon area = ${asteroidMass.toFixed(2)} (first)`,
+    `Asteroid mass (including absorbed bullet mass): ${
+      asteroidMass.toFixed(2)
+    } (first)`,
     `Bounciness: ${BOUNCINESS.toFixed(2)}`,
     `Contacts/frame: ${lastCollisionCount}`,
     `Contacts total: ${totalCollisionCount}`,
+    `Bullet mass: ${BULLET_MASS.toFixed(2)}`,
+    `Bullet cuts: ${totalBulletCutCount}`,
     `Bullets active: ${bullets.length}`,
     `Bullets fired: ${totalBulletsEmitted}`,
-    `Δ momentum at contact: (${lastMomentumDelta.x.toFixed(5)}, ${lastMomentumDelta.y.toFixed(5)})`,
+    `Last cut Δ momentum: (${lastBulletMomentumDelta.x.toFixed(5)}, ${
+      lastBulletMomentumDelta.y.toFixed(5)
+    })`,
+    `Last cut Δ kinetic energy: ${lastBulletKineticEnergyDelta.toFixed(5)}`,
+    `Δ momentum at contact: (${lastMomentumDelta.x.toFixed(5)}, ${
+      lastMomentumDelta.y.toFixed(5)
+    })`,
     `Δ kinetic energy at contact: ${lastKineticEnergyDelta.toFixed(5)}`,
-    `Total momentum: (${totalPhysics.momentumX.toFixed(2)}, ${totalPhysics.momentumY.toFixed(2)})`,
+    `Total momentum: (${totalPhysics.momentumX.toFixed(2)}, ${
+      totalPhysics.momentumY.toFixed(2)
+    })`,
     `Total kinetic energy: ${totalPhysics.kineticEnergy.toFixed(2)}`,
   ].join("\n");
 }
@@ -908,12 +1425,12 @@ function updateDebugOutput() {
  * acceleration tops out at MAX_SPEED.
  */
 function updateGame(deltaTime, width, height) {
-  const turnsCounterClockwise =
-    pressedKeys.has("ArrowLeft") || pressedKeys.has("KeyA");
-  const turnsClockwise =
-    pressedKeys.has("ArrowRight") || pressedKeys.has("KeyD");
-  const rotationDirection =
-    Number(turnsClockwise) - Number(turnsCounterClockwise);
+  const turnsCounterClockwise = pressedKeys.has("ArrowLeft") ||
+    pressedKeys.has("KeyA");
+  const turnsClockwise = pressedKeys.has("ArrowRight") ||
+    pressedKeys.has("KeyD");
+  const rotationDirection = Number(turnsClockwise) -
+    Number(turnsCounterClockwise);
 
   playerAngle += rotationDirection * ROTATION_SPEED * deltaTime;
 
@@ -960,14 +1477,14 @@ function updateGame(deltaTime, width, height) {
 
   updateBulletFiring(deltaTime);
   updateBullets(deltaTime, width, height);
+  resolveBulletCollisions();
   resolveAsteroidCollisions();
 }
 
 function animate(frameTime) {
-  const deltaTime =
-    previousFrameTime === undefined
-      ? 0
-      : Math.min((frameTime - previousFrameTime) / 1000, 0.1);
+  const deltaTime = previousFrameTime === undefined
+    ? 0
+    : Math.min((frameTime - previousFrameTime) / 1000, 0.1);
   previousFrameTime = frameTime;
 
   const { width, height } = canvas.getBoundingClientRect();
@@ -987,8 +1504,8 @@ function controlKeyForEvent(event) {
 
   if (event.key.startsWith("Arrow")) {
     return ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
-      event.key,
-    )
+        event.key,
+      )
       ? event.key
       : undefined;
   }
