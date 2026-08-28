@@ -20,7 +20,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must use `<canvas>` for rendering.
 - Must use plain HTML and JavaScript.
 - Must not use dependencies like React, Phaser, PixiJS, WebGL, or a physics engine.
-- Must think of performance.
+- Must care about performance and ensure the minimum of 60 FPS.
 
 # How to verify
 
