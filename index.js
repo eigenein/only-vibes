@@ -66,9 +66,21 @@ const STATUS_BAR_WIDTH = 220;
 const STATUS_BAR_HEIGHT = 22;
 const STATUS_BAR_GAP = 12;
 const STATUS_BAR_MARGIN = 16;
+// The bars are presentation values that catch up to the authoritative state
+// at a readable speed. Keeping this separate from damage simulation makes a
+// large impact legible without changing when a collision actually resolves.
+const STATUS_BAR_ANIMATION_SPEED = 190;
 const STATUS_POINTS_WIDTH = 92;
 const STATUS_POINTS_GAP = 16;
 const STATUS_POINTS_HEIGHT = STATUS_BAR_HEIGHT * 2 + STATUS_BAR_GAP;
+// Hold the failure message long enough for a new player to connect the empty
+// hull bar with the collision that ended the current life.
+const SHIP_FAILURE_DISPLAY_SECONDS = 2.4;
+const SHIP_FAILURE_PANEL_WIDTH = 480;
+const SHIP_FAILURE_PANEL_HEIGHT = 226;
+const SHIP_FAILURE_BACKDROP_ALPHA = 0.68;
+const SHIP_FAILURE_PANEL_ALPHA = 0.9;
+const SHIP_FAILURE_REASON = "Hull depleted by a collision.";
 
 // Bullets are intentionally fast and short-lived. The frequency is expressed
 // in shots per second so holding Space feels regular at every frame rate.
@@ -290,7 +302,11 @@ let playerX;
 let playerY;
 let shieldState = SHIELD_MAX_STATE;
 let shipState = SHIP_MAX_STATE;
+let displayedShieldState = SHIELD_MAX_STATE;
+let displayedShipState = SHIP_MAX_STATE;
 let restartRequested = false;
+let shipFailureActive = false;
+let shipFailureTimeRemaining = 0;
 let totalShipRestartCount = 0;
 let lastCollisionMomentum = 0;
 let lastShieldDamage = 0;
@@ -979,7 +995,7 @@ function updateBulletFiring(deltaTime) {
   // Keep firing paused even if the key was held before the game was paused.
   // The simulation normally skips this function while paused, but this guard
   // keeps the firing rule local and prevents future callers from bypassing it.
-  if (gamePaused || !pressedKeys.has(FIRE_KEY)) {
+  if (gamePaused || shipFailureActive || !pressedKeys.has(FIRE_KEY)) {
     bulletCooldown = 0;
     return;
   }
@@ -1104,7 +1120,11 @@ function restartGame(width, height) {
   playerVelocityY = 0;
   shieldState = SHIELD_MAX_STATE;
   shipState = SHIP_MAX_STATE;
+  displayedShieldState = SHIELD_MAX_STATE;
+  displayedShipState = SHIP_MAX_STATE;
   restartRequested = false;
+  shipFailureActive = false;
+  shipFailureTimeRemaining = 0;
   totalShipRestartCount += 1;
   bulletCooldown = 0;
   bullets.length = 0;
@@ -1113,6 +1133,47 @@ function restartGame(width, height) {
   asteroids.length = 0;
   asteroidsGenerated = false;
   generateAsteroids(width, height);
+}
+
+/**
+ * Start the short frozen state shown after the hull reaches zero. The render
+ * loop remains alive so the animated bars and the explanation stay visible.
+ * @returns {void}
+ */
+function beginShipFailure() {
+  if (shipFailureActive) {
+    return;
+  }
+
+  shipFailureActive = true;
+  shipFailureTimeRemaining = SHIP_FAILURE_DISPLAY_SECONDS;
+  restartRequested = false;
+  pressedKeys.clear();
+  bulletCooldown = 0;
+  resetHelpAttention();
+}
+
+/**
+ * Count down the failure message and start the next life when it has been
+ * readable for the configured display interval.
+ * @param {number} deltaTime Elapsed real time in seconds.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @returns {void}
+ */
+function updateShipFailure(deltaTime, width, height) {
+  if (!shipFailureActive || !Number.isFinite(deltaTime)) {
+    return;
+  }
+
+  shipFailureTimeRemaining = Math.max(
+    0,
+    shipFailureTimeRemaining - Math.max(0, deltaTime),
+  );
+
+  if (shipFailureTimeRemaining <= 0) {
+    restartGame(width, height);
+  }
 }
 
 /**
@@ -1154,6 +1215,48 @@ function drawPoints(rightX, topY) {
 }
 
 /**
+ * Move one displayed bar value toward its authoritative target.
+ * @param {number} currentValue Current displayed percentage.
+ * @param {number} targetValue Authoritative percentage.
+ * @param {number} maximumChange Maximum movement this frame.
+ * @returns {number}
+ */
+function moveBarValueToward(currentValue, targetValue, maximumChange) {
+  if (!Number.isFinite(targetValue)) {
+    return currentValue;
+  }
+
+  const distance = targetValue - currentValue;
+
+  return Math.abs(distance) <= maximumChange
+    ? targetValue
+    : currentValue + Math.sign(distance) * maximumChange;
+}
+
+/**
+ * Animate both status bars toward their real gameplay values.
+ * @param {number} deltaTime Elapsed real time in seconds.
+ * @returns {void}
+ */
+function updateDisplayedStatusBars(deltaTime) {
+  if (!Number.isFinite(deltaTime)) {
+    return;
+  }
+
+  const maximumChange = STATUS_BAR_ANIMATION_SPEED * Math.max(0, deltaTime);
+  displayedShieldState = moveBarValueToward(
+    displayedShieldState,
+    shieldState,
+    maximumChange,
+  );
+  displayedShipState = moveBarValueToward(
+    displayedShipState,
+    shipState,
+    maximumChange,
+  );
+}
+
+/**
  * Draw the two persistent ship-life indicators in the upper-right corner.
  * These are game UI, not debug output, so they remain visible when debugging
  * is disabled and while the paused help screen is open.
@@ -1183,8 +1286,8 @@ function drawStatusBars(width) {
   );
 
   const bars = [
-    { label: "SHIELD", state: shieldState, color: "#65d8ff" },
-    { label: "SHIP", state: shipState, color: "#ffffff" },
+    { label: "SHIELD", state: displayedShieldState, color: "#65d8ff" },
+    { label: "SHIP", state: displayedShipState, color: "#ffffff" },
   ];
 
   context.save();
@@ -1253,7 +1356,7 @@ function resetHelpAttention() {
  * @returns {void}
  */
 function updateHelpAttention(deltaTime) {
-  if (gamePaused) {
+  if (gamePaused || shipFailureActive) {
     resetHelpAttention();
     return;
   }
@@ -1325,7 +1428,9 @@ function drawGame(width, height) {
   context.fillStyle = "#fff";
   context.fill();
 
-  if (gamePaused) {
+  if (shipFailureActive) {
+    drawShipFailure(width, height);
+  } else if (gamePaused) {
     drawPauseHelp(width, height);
   } else {
     drawEssentialHelp(width, height);
@@ -1404,6 +1509,77 @@ function drawEssentialHelp(width, height) {
     width / 2,
     panelY + panelHeight / 2,
     textWidth,
+  );
+  context.restore();
+}
+
+/**
+ * Explain why the current life ended while the next field is delayed. The
+ * status bars are drawn afterward so their animated drainage remains visible
+ * above the failure treatment.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @returns {void}
+ */
+function drawShipFailure(width, height) {
+  const failureScale = Math.max(
+    0,
+    Math.min(
+      1,
+      (width - 32) / SHIP_FAILURE_PANEL_WIDTH,
+      (height - 32) / SHIP_FAILURE_PANEL_HEIGHT,
+    ),
+  );
+
+  context.save();
+  context.fillStyle = `rgba(0, 0, 0, ${SHIP_FAILURE_BACKDROP_ALPHA})`;
+  context.fillRect(0, 0, width, height);
+
+  if (failureScale === 0) {
+    context.restore();
+    return;
+  }
+
+  const panelX = (width - SHIP_FAILURE_PANEL_WIDTH * failureScale) / 2;
+  const panelY = (height - SHIP_FAILURE_PANEL_HEIGHT * failureScale) / 2;
+
+  context.translate(panelX, panelY);
+  context.scale(failureScale, failureScale);
+  context.beginPath();
+  context.roundRect(
+    0,
+    0,
+    SHIP_FAILURE_PANEL_WIDTH,
+    SHIP_FAILURE_PANEL_HEIGHT,
+    18,
+  );
+  context.fillStyle = `rgba(40, 18, 24, ${SHIP_FAILURE_PANEL_ALPHA})`;
+  context.fill();
+  context.strokeStyle = "rgba(255, 113, 125, 0.9)";
+  context.lineWidth = 2;
+  context.stroke();
+
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#ff7b85";
+  context.font = "700 32px system-ui, sans-serif";
+  context.fillText("SHIP DESTROYED", SHIP_FAILURE_PANEL_WIDTH / 2, 56);
+  context.fillStyle = "#fff";
+  context.font = "500 19px system-ui, sans-serif";
+  context.fillText(SHIP_FAILURE_REASON, SHIP_FAILURE_PANEL_WIDTH / 2, 105);
+  context.fillStyle = "#c6d1dc";
+  context.font = "400 16px system-ui, sans-serif";
+  context.fillText(
+    "Keep clear of the asteroids.",
+    SHIP_FAILURE_PANEL_WIDTH / 2,
+    137,
+  );
+  context.fillStyle = "#9fdcff";
+  context.font = "600 17px system-ui, sans-serif";
+  context.fillText(
+    `New game in ${Math.max(1, Math.ceil(shipFailureTimeRemaining))}`,
+    SHIP_FAILURE_PANEL_WIDTH / 2,
+    185,
   );
   context.restore();
 }
@@ -3330,7 +3506,18 @@ function updateDebugOutput() {
 
   debugOutput.textContent = [
     `PHYSICS DEBUG  (${DEBUG_TOGGLE_KEY} toggles)`,
-    `Game: ${gamePaused ? `${PAUSE_KEY_LABEL} toggles` : "running"}`,
+    `Game: ${
+      shipFailureActive
+        ? `ship destroyed (new game in ${
+          Math.max(
+            1,
+            Math.ceil(shipFailureTimeRemaining),
+          )
+        })`
+        : gamePaused
+        ? `${PAUSE_KEY_LABEL} toggles`
+        : "running"
+    }`,
     `Shield/ship: ${shieldState.toFixed(2)}%/${shipState.toFixed(2)}% (regen ${
       SHIELD_REGENERATION_RATE.toFixed(1)
     }/s)`,
@@ -3481,7 +3668,7 @@ function updateGame(deltaTime, width, height) {
   resolveAsteroidCollisions();
 
   if (restartRequested) {
-    restartGame(width, height);
+    beginShipFailure();
   }
 }
 
@@ -3496,9 +3683,12 @@ function animate(frameTime) {
   const height = viewportHeight;
   generateAsteroids(width, height);
   updateHelpAttention(deltaTime);
-  if (!gamePaused) {
+  if (shipFailureActive) {
+    updateShipFailure(deltaTime, width, height);
+  } else if (!gamePaused) {
     updateGame(deltaTime, width, height);
   }
+  updateDisplayedStatusBars(deltaTime);
   updateDebugOutput();
   drawGame(width, height);
   window.requestAnimationFrame(animate);
@@ -3524,14 +3714,17 @@ function controlKeyForEvent(event) {
 
 document.addEventListener("keydown", (event) => {
   if (event.code === PAUSE_KEY && !event.repeat) {
-    gamePaused = !gamePaused;
-    resetHelpAttention();
+    if (!shipFailureActive) {
+      gamePaused = !gamePaused;
+      resetHelpAttention();
 
-    if (gamePaused) {
-      // A pause freezes gameplay input as well as simulation time. Requiring a
-      // fresh Space press after resuming avoids a held key firing unexpectedly.
-      pressedKeys.clear();
-      bulletCooldown = 0;
+      if (gamePaused) {
+        // A pause freezes gameplay input as well as simulation time. Requiring
+        // a fresh Space press after resuming avoids a held key firing
+        // unexpectedly.
+        pressedKeys.clear();
+        bulletCooldown = 0;
+      }
     }
 
     event.preventDefault();
@@ -3541,6 +3734,11 @@ document.addEventListener("keydown", (event) => {
   if (event.code === DEBUG_TOGGLE_KEY && !event.repeat) {
     debugEnabled = !debugEnabled;
     debugOutput.hidden = !debugEnabled;
+    event.preventDefault();
+    return;
+  }
+
+  if (shipFailureActive) {
     event.preventDefault();
     return;
   }
