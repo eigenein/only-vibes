@@ -4939,6 +4939,22 @@ function updateGame(deltaTime, width, height) {
   }
 }
 
+/**
+ * Advance one coherent world snapshot, then render that same snapshot.
+ *
+ * `async` functions do not execute JavaScript concurrently: awaiting here
+ * would only split this main-thread transaction and could make a renderer see
+ * a half-resolved collision or an autopilot decision based on stale bodies.
+ * A Web Worker would provide real parallelism, but it cannot share these
+ * mutable objects with this direct-file page without copying the complete
+ * world each frame (SharedArrayBuffer is unavailable without cross-origin
+ * isolation). That copy, plus one-frame message latency, costs more than the
+ * deliberately bounded particle and 15 Hz autopilot work, and would weaken
+ * the ordered collision/health/score rules. Keep the authoritative simulation
+ * atomic; move only future independent, immutable work to a worker.
+ * @param {number} frameTime Animation-frame timestamp in milliseconds.
+ * @returns {void}
+ */
 function animate(frameTime) {
   updateFrameRate(frameTime);
   const deltaTime =
