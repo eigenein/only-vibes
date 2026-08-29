@@ -90,6 +90,14 @@ const SHIP_FAILURE_PANEL_HEIGHT = 226;
 const SHIP_FAILURE_BACKDROP_ALPHA = 0.68;
 const SHIP_FAILURE_PANEL_ALPHA = 0.9;
 const SHIP_FAILURE_REASON = "Hull depleted by a collision.";
+// The win state is intentionally frozen so the player can read the result and
+// see the final score before choosing to start another field.
+const WIN_SCREEN_PANEL_WIDTH = 480;
+const WIN_SCREEN_PANEL_HEIGHT = 252;
+const WIN_SCREEN_BACKDROP_ALPHA = 0.58;
+const WIN_SCREEN_PANEL_ALPHA = 0.9;
+const WIN_SCREEN_TITLE = "YOU WIN";
+const WIN_SCREEN_REASON = "All asteroids destroyed.";
 
 // Bullets are intentionally fast and short-lived. The frequency is expressed
 // in shots per second so holding Space feels regular at every frame rate.
@@ -244,6 +252,7 @@ let displayedShipState = SHIP_MAX_STATE;
 let restartRequested = false;
 let shipFailureActive = false;
 let shipFailureTimeRemaining = 0;
+let gameWon = false;
 let totalShipRestartCount = 0;
 let lastCollisionMomentum = 0;
 let lastShieldDamage = 0;
@@ -946,6 +955,7 @@ function restartGame(width, height) {
   restartRequested = false;
   shipFailureActive = false;
   shipFailureTimeRemaining = 0;
+  gameWon = false;
   totalShipRestartCount += 1;
   bulletCooldown = 0;
   bullets.length = 0;
@@ -969,6 +979,25 @@ function beginShipFailure() {
   shipFailureActive = true;
   shipFailureTimeRemaining = SHIP_FAILURE_DISPLAY_SECONDS;
   restartRequested = false;
+  pressedKeys.clear();
+  bulletCooldown = 0;
+  resetHelpAttention();
+}
+
+/**
+ * Freeze the completed field and show the final score until the player starts
+ * another game. Keeping this separate from pause makes the win screen a real
+ * terminal gameplay state rather than a paused empty arena.
+ * @returns {void}
+ */
+function beginWin() {
+  if (gameWon || shipFailureActive || asteroids.length > 0) {
+    return;
+  }
+
+  gameWon = true;
+  gamePaused = true;
+  bullets.length = 0;
   pressedKeys.clear();
   bulletCooldown = 0;
   resetHelpAttention();
@@ -1177,7 +1206,7 @@ function resetHelpAttention() {
  * @returns {void}
  */
 function updateHelpAttention(deltaTime) {
-  if (gamePaused || shipFailureActive) {
+  if (gamePaused || shipFailureActive || gameWon) {
     resetHelpAttention();
     return;
   }
@@ -1283,6 +1312,8 @@ function drawGame(width, height) {
 
   if (shipFailureActive) {
     drawShipFailure(width, height);
+  } else if (gameWon) {
+    drawWinScreen(width, height);
   } else if (gamePaused) {
     drawPauseHelp(width, height);
   } else {
@@ -1433,6 +1464,76 @@ function drawShipFailure(width, height) {
     `New game in ${Math.max(1, Math.ceil(shipFailureTimeRemaining))}`,
     SHIP_FAILURE_PANEL_WIDTH / 2,
     185,
+  );
+  context.restore();
+}
+
+/**
+ * Draw the final result over the empty arena and keep the restart instruction
+ * aligned with the pause control used everywhere else in the game.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @returns {void}
+ */
+function drawWinScreen(width, height) {
+  const winScale = Math.max(
+    0,
+    Math.min(
+      1,
+      (width - 32) / WIN_SCREEN_PANEL_WIDTH,
+      (height - 32) / WIN_SCREEN_PANEL_HEIGHT,
+    ),
+  );
+
+  context.save();
+  context.fillStyle = `rgba(0, 0, 0, ${WIN_SCREEN_BACKDROP_ALPHA})`;
+  context.fillRect(0, 0, width, height);
+
+  if (winScale === 0) {
+    context.restore();
+    return;
+  }
+
+  const panelX = (width - WIN_SCREEN_PANEL_WIDTH * winScale) / 2;
+  const panelY = (height - WIN_SCREEN_PANEL_HEIGHT * winScale) / 2;
+
+  context.translate(panelX, panelY);
+  context.scale(winScale, winScale);
+  context.beginPath();
+  context.roundRect(
+    0,
+    0,
+    WIN_SCREEN_PANEL_WIDTH,
+    WIN_SCREEN_PANEL_HEIGHT,
+    18,
+  );
+  context.fillStyle = `rgba(14, 42, 34, ${WIN_SCREEN_PANEL_ALPHA})`;
+  context.fill();
+  context.strokeStyle = "rgba(102, 255, 183, 0.9)";
+  context.lineWidth = 2;
+  context.stroke();
+
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = "#66ffb7";
+  context.font = "700 38px system-ui, sans-serif";
+  context.fillText(WIN_SCREEN_TITLE, WIN_SCREEN_PANEL_WIDTH / 2, 58);
+  context.fillStyle = "#fff";
+  context.font = "500 19px system-ui, sans-serif";
+  context.fillText(WIN_SCREEN_REASON, WIN_SCREEN_PANEL_WIDTH / 2, 108);
+  context.fillStyle = "#9fdcff";
+  context.font = "600 17px system-ui, sans-serif";
+  context.fillText(
+    `Final score: ${Math.round(points)}`,
+    WIN_SCREEN_PANEL_WIDTH / 2,
+    153,
+  );
+  context.fillStyle = "#c6d1dc";
+  context.font = "400 16px system-ui, sans-serif";
+  context.fillText(
+    `Press ${PAUSE_KEY_LABEL} to play again`,
+    WIN_SCREEN_PANEL_WIDTH / 2,
+    204,
   );
   context.restore();
 }
@@ -3365,6 +3466,8 @@ function updateDebugOutput() {
             Math.ceil(shipFailureTimeRemaining),
           )
         })`
+        : gameWon
+        ? "won (P starts a new game)"
         : gamePaused
         ? `${PAUSE_KEY_LABEL} toggles`
         : "running"
@@ -3528,6 +3631,8 @@ function updateGame(deltaTime, width, height) {
 
   if (restartRequested) {
     beginShipFailure();
+  } else if (asteroids.length === 0) {
+    beginWin();
   }
 }
 
@@ -3573,7 +3678,10 @@ function controlKeyForEvent(event) {
 
 document.addEventListener("keydown", (event) => {
   if (event.code === PAUSE_KEY && !event.repeat) {
-    if (!shipFailureActive) {
+    if (gameWon) {
+      restartGame(viewportWidth, viewportHeight);
+      gamePaused = false;
+    } else if (!shipFailureActive) {
       gamePaused = !gamePaused;
       resetHelpAttention();
 
