@@ -59,9 +59,18 @@ const MOVEMENT_RESPONSIVENESS = 480;
 const SHIELD_MAX_STATE = 100;
 const SHIP_MAX_STATE = 100;
 const SHIELD_REGENERATION_RATE = 7.5;
-const COLLISION_DAMAGE_SCALE = 1 / 10000;
+const COLLISION_DAMAGE_SCALE = 1 / 7500;
 const SHIELD_DAMAGE_COEFFICIENT = 1.1;
 const SHIP_DAMAGE_COEFFICIENT = 1.0;
+// Collision damage is stronger per impact, but a short contact burst shares
+// one replenishing budget. A full budget represents the maximum damage that
+// can pass through immediately; it refills completely over this interval, so
+// a player can survive repeated solver contacts without making collisions
+// harmless.
+const COLLISION_DAMAGE_BUDGET_CAP = 34;
+const COLLISION_DAMAGE_BUDGET_WINDOW_SECONDS = 0.45;
+const COLLISION_DAMAGE_BUDGET_REFILL_RATE = COLLISION_DAMAGE_BUDGET_CAP /
+  COLLISION_DAMAGE_BUDGET_WINDOW_SECONDS;
 const STATUS_BAR_WIDTH = 220;
 const STATUS_BAR_HEIGHT = 22;
 const STATUS_BAR_GAP = 12;
@@ -239,6 +248,9 @@ let totalShipRestartCount = 0;
 let lastCollisionMomentum = 0;
 let lastShieldDamage = 0;
 let lastShipDamage = 0;
+let lastRawCollisionDamage = 0;
+let lastAppliedCollisionDamage = 0;
+let collisionDamageBudget = COLLISION_DAMAGE_BUDGET_CAP;
 let previousFrameTime;
 let bulletCooldown = 0;
 let totalBulletsEmitted = 0;
@@ -855,6 +867,24 @@ function regenerateShield(deltaTime) {
 }
 
 /**
+ * Refill the collision damage budget while the game is simulating. Pausing
+ * therefore freezes both contacts and their protection window together.
+ * @param {number} deltaTime Elapsed simulation time in seconds.
+ * @returns {void}
+ */
+function refillCollisionDamageBudget(deltaTime) {
+  if (!Number.isFinite(deltaTime)) {
+    return;
+  }
+
+  collisionDamageBudget = Math.min(
+    COLLISION_DAMAGE_BUDGET_CAP,
+    collisionDamageBudget +
+      Math.max(0, deltaTime) * COLLISION_DAMAGE_BUDGET_REFILL_RATE,
+  );
+}
+
+/**
  * Convert contact impulse into damage for both layers of the ship. The
  * transmission fraction is sampled before the impact so a 30% shield sends
  * exactly 70% of the original impact damage toward the hull.
@@ -865,8 +895,9 @@ function applyCollisionDamage(collisionMomentum) {
   const safeCollisionMomentum = Number.isFinite(collisionMomentum)
     ? Math.max(0, collisionMomentum)
     : 0;
-  const impactDamage = safeCollisionMomentum *
+  const rawImpactDamage = safeCollisionMomentum *
     COLLISION_DAMAGE_SCALE;
+  const impactDamage = Math.min(rawImpactDamage, collisionDamageBudget);
   const shieldFraction = shieldState / SHIELD_MAX_STATE;
   const transmittedFraction = 1 - shieldFraction;
   const shieldDamage = Math.min(
@@ -880,7 +911,10 @@ function applyCollisionDamage(collisionMomentum) {
 
   shieldState = Math.max(0, shieldState - shieldDamage);
   shipState = Math.max(0, shipState - shipDamage);
+  collisionDamageBudget = Math.max(0, collisionDamageBudget - impactDamage);
   lastCollisionMomentum = safeCollisionMomentum;
+  lastRawCollisionDamage = rawImpactDamage;
+  lastAppliedCollisionDamage = impactDamage;
   lastShieldDamage = shieldDamage;
   lastShipDamage = shipDamage;
 
@@ -908,6 +942,7 @@ function restartGame(width, height) {
   shipState = SHIP_MAX_STATE;
   displayedShieldState = SHIELD_MAX_STATE;
   displayedShipState = SHIP_MAX_STATE;
+  collisionDamageBudget = COLLISION_DAMAGE_BUDGET_CAP;
   restartRequested = false;
   shipFailureActive = false;
   shipFailureTimeRemaining = 0;
@@ -3337,9 +3372,16 @@ function updateDebugOutput() {
     `Shield/ship: ${shieldState.toFixed(2)}%/${shipState.toFixed(2)}% (regen ${
       SHIELD_REGENERATION_RATE.toFixed(1)
     }/s)`,
-    `Damage: momentum ${lastCollisionMomentum.toFixed(2)}, shield ${
-      lastShieldDamage.toFixed(2)
+    `Damage: momentum ${lastCollisionMomentum.toFixed(2)}, raw/applied ${
+      lastRawCollisionDamage.toFixed(2)
+    }/${lastAppliedCollisionDamage.toFixed(2)}, shield ${
+      lastShieldDamage.toFixed(
+        2,
+      )
     }, ship ${lastShipDamage.toFixed(2)}`,
+    `Damage budget: ${collisionDamageBudget.toFixed(2)}/${
+      COLLISION_DAMAGE_BUDGET_CAP.toFixed(2)
+    } (refill ${COLLISION_DAMAGE_BUDGET_REFILL_RATE.toFixed(1)}/s)`,
     `Damage coefficients: shield ${
       SHIELD_DAMAGE_COEFFICIENT.toFixed(2)
     }, ship ${SHIP_DAMAGE_COEFFICIENT.toFixed(2)}`,
@@ -3405,6 +3447,7 @@ function updateDebugOutput() {
  * steering the ship toward its nose.
  */
 function updateGame(deltaTime, width, height) {
+  refillCollisionDamageBudget(deltaTime);
   regenerateShield(deltaTime);
 
   const turnsCounterClockwise = pressedKeys.has("ArrowLeft") ||
