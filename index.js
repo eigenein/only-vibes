@@ -78,6 +78,7 @@ const LCARS_AMBER = "#ff9900";
 const LCARS_GOLD = "#ffcc66";
 const LCARS_CORAL = "#ff8866";
 const LCARS_RED = "#cc6666";
+const LCARS_ALERT_RED = "#ff3333";
 const LCARS_LILAC = "#9999ff";
 const LCARS_LAVENDER = "#cc99cc";
 const LCARS_TEXT = "#fff4dd";
@@ -132,6 +133,12 @@ const STATUS_BAR_ANIMATION_SPEED = 190;
 const STATUS_POINTS_WIDTH = 92;
 const STATUS_POINTS_GAP = 6;
 const STATUS_POINTS_HEIGHT = STATUS_BAR_HEIGHT * 2 + STATUS_BAR_GAP;
+// The alert lives only in the deliberate gap between the fire key and score;
+// compact consoles keep their existing layout instead of squeezing in text.
+const RED_ALERT_TEXT = "RED ALERT";
+const RED_ALERT_HULL_THRESHOLD = 20;
+const RED_ALERT_BLINK_INTERVAL_MILLISECONDS = 450;
+const RED_ALERT_EDGE_GAP = 12;
 // The command-console band encloses its two-row controls with matching
 // 10-pixel margins above and below.
 const LCARS_CONSOLE_HEIGHT = LCARS_CONSOLE_TOP * 2 + STATUS_POINTS_HEIGHT;
@@ -1926,7 +1933,7 @@ function countVanishedAsteroidArea(asteroid, fragments) {
  * viewports where a horizontal score block would overlap the canvas edge.
  * @param {number} rightX Right edge of the score block in CSS pixels.
  * @param {number} topY Top of the score block in CSS pixels.
- * @returns {void}
+ * @returns {number} Left edge of the score block in CSS pixels.
  */
 function drawPoints(rightX, topY) {
   const blockLeft = rightX - STATUS_POINTS_WIDTH;
@@ -1950,6 +1957,8 @@ function drawPoints(rightX, topY) {
   context.font = `700 22px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(Math.round(points).toString(), rightX - 10, topY + 39);
   context.restore();
+
+  return blockLeft;
 }
 
 /**
@@ -1999,7 +2008,7 @@ function updateDisplayedStatusBars(deltaTime) {
  * These are game UI, not debug output, so they remain visible when debugging
  * is disabled and while the paused help screen is open.
  * @param {number} width Viewport width in CSS pixels.
- * @returns {void}
+ * @returns {number|undefined} Left edge of the score block when it is drawn.
  */
 function drawStatusBars(width) {
   const barWidth = Math.min(
@@ -2008,7 +2017,7 @@ function drawStatusBars(width) {
   );
 
   if (barWidth <= 0) {
-    return;
+    return undefined;
   }
 
   const barX = width - barWidth - STATUS_BAR_MARGIN;
@@ -2018,7 +2027,7 @@ function drawStatusBars(width) {
     ? LCARS_CONSOLE_TOP
     : LCARS_CONSOLE_TOP + STATUS_POINTS_HEIGHT + STATUS_BAR_GAP;
 
-  drawPoints(
+  const scoreBlockLeft = drawPoints(
     pointsFitsBesideBars ? barX - STATUS_POINTS_GAP : width - STATUS_BAR_MARGIN,
     pointsFitsBesideBars ? LCARS_CONSOLE_TOP : LCARS_CONSOLE_TOP / 2,
   );
@@ -2060,6 +2069,50 @@ function drawStatusBars(width) {
       `${Math.round(bar.state)}%`,
       barX + barWidth - 8,
       barY + STATUS_BAR_HEIGHT / 2,
+    );
+  }
+
+  context.restore();
+
+  return scoreBlockLeft;
+}
+
+/**
+ * Draw a low-priority warning in the spare console space. Damage below the
+ * threshold promotes it to a bright, time-based blink without changing the
+ * HUD geometry or the authoritative hull simulation.
+ * @param {number|undefined} controlRightX Right edge of the fire control.
+ * @param {number|undefined} scoreBlockLeft Left edge of the score block.
+ * @returns {void}
+ */
+function drawRedAlert(controlRightX, scoreBlockLeft) {
+  if (!Number.isFinite(controlRightX) || !Number.isFinite(scoreBlockLeft)) {
+    return;
+  }
+
+  const alertLeft = controlRightX + RED_ALERT_EDGE_GAP;
+  const alertRight = scoreBlockLeft - RED_ALERT_EDGE_GAP;
+  const availableWidth = alertRight - alertLeft;
+
+  context.save();
+  context.font = `700 21px ${LCARS_FONT_FAMILY}`;
+  const requiredWidth = context.measureText(RED_ALERT_TEXT).width;
+
+  if (availableWidth >= requiredWidth) {
+    const hullIsCritical = shipState <= RED_ALERT_HULL_THRESHOLD;
+    const blinkIsBright =
+      Math.floor(
+        window.performance.now() / RED_ALERT_BLINK_INTERVAL_MILLISECONDS,
+      ) % 2 === 0;
+
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    context.fillStyle = hullIsCritical ? LCARS_ALERT_RED : LCARS_RED;
+    context.globalAlpha = hullIsCritical ? (blinkIsBright ? 1 : 0.18) : 0.48;
+    context.fillText(
+      RED_ALERT_TEXT,
+      (alertLeft + alertRight) / 2,
+      LCARS_CONSOLE_TOP + STATUS_POINTS_HEIGHT / 2,
     );
   }
 
@@ -2267,8 +2320,9 @@ function drawGame(width, height) {
   context.restore();
 
   drawLCARSCommandConsole(width);
-  drawFlightControls(width);
-  drawStatusBars(width);
+  const controlRightX = drawFlightControls(width);
+  const scoreBlockLeft = drawStatusBars(width);
+  drawRedAlert(controlRightX, scoreBlockLeft);
 }
 
 /**
@@ -2344,11 +2398,11 @@ function drawFlightControlButton(
  * for its gameplay action, so arrow-key input is represented as faithfully as
  * the labelled WASD shortcut without adding a second state model.
  * @param {number} width The viewport width in CSS pixels.
- * @returns {void}
+ * @returns {number|undefined} Right edge of the final control button.
  */
 function drawFlightControls(width) {
   if (width <= LCARS_FRAME_MARGIN * 2) {
-    return;
+    return undefined;
   }
 
   const titleWidth = Math.min(
@@ -2430,6 +2484,8 @@ function drawFlightControls(width) {
     );
     buttonX += desiredKeyWidth * rowScale + FLIGHT_CONTROL_GAP * rowScale;
   }
+
+  return buttonX - FLIGHT_CONTROL_GAP * rowScale;
 }
 
 /**
