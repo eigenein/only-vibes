@@ -127,6 +127,40 @@ const BULLET_LINE_WIDTH = 3;
 const MAX_BULLET_REFLECTIONS = 3;
 const BULLET_COLLISION_OFFSET = 0.01;
 
+// Autopilot is deliberately an input producer rather than a second gameplay
+// implementation. It only contributes the same held controls a player can
+// use, which keeps thrust, turning, firing, recoil, and collision handling on
+// the normal gameplay paths.
+const AUTOPILOT_TOGGLE_KEY = "KeyT";
+const AUTOPILOT_TOGGLE_KEY_LABEL = "T";
+const AUTOPILOT_AIM_TOLERANCE = Math.PI / 10;
+const AUTOPILOT_MAX_LOOKAHEAD_SECONDS = 1.8;
+const AUTOPILOT_BASE_SAFE_MARGIN = 80;
+const AUTOPILOT_SHIELD_RECOVERY_MARGIN = 110;
+const AUTOPILOT_HULL_DAMAGE_MARGIN = 140;
+const AUTOPILOT_WALL_SAFE_MARGIN = 180;
+const AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE = Math.PI / 4;
+const AUTOPILOT_FLEE_THRUST_SPEED = 110;
+const AUTOPILOT_CRUISE_SPEED = 210;
+const AUTOPILOT_ENDGAME_CRUISE_SPEED = 260;
+const AUTOPILOT_MIN_COAST_SPEED = 70;
+const AUTOPILOT_BRAKE_SPEED = 300;
+const AUTOPILOT_LEAD_TIME_CAP = 0.9;
+const AUTOPILOT_SHIELD_RECOVERY_THRESHOLD = 0.65;
+const AUTOPILOT_CLOSE_TARGET_BRAKE_SPEED = 35;
+const AUTOPILOT_FIRE_SPEED_LIMIT = 340;
+const AUTOPILOT_POINT_BLANK_MARGIN = 100;
+const AUTOPILOT_UPDATE_INTERVAL = 1 / 15;
+const AUTOPILOT_BURST_SECONDS = 0.38;
+const AUTOPILOT_BURST_COOLDOWN = 0.85;
+const AUTOPILOT_TARGET_COMMITMENT_SECONDS = 0.9;
+const AUTOPILOT_TARGET_RECHECK_SECONDS = 0.3;
+const AUTOPILOT_TARGET_SWITCH_ADVANTAGE = 90;
+const AUTOPILOT_FLOW_HEADING_SPEED = 80;
+const AUTOPILOT_TURN_START_TOLERANCE = Math.PI / 14;
+const AUTOPILOT_TURN_STOP_TOLERANCE = Math.PI / 36;
+const AUTOPILOT_TURN_REVERSAL_DELAY = 0.35;
+
 // Sparks turn dissipated kinetic energy into a readable, non-gameplay visual.
 // One spark represents a fixed slice of energy so larger impacts create denser
 // bursts while the cap keeps a single destruction event inexpensive to draw.
@@ -183,6 +217,12 @@ const PLAY_HELP = Object.freeze([
     label: PAUSE_KEY_LABEL,
     description: "pause / resume",
     compactDescription: "pause",
+    essential: true,
+  }),
+  Object.freeze({
+    label: AUTOPILOT_TOGGLE_KEY_LABEL,
+    description: "autopilot on / off",
+    compactDescription: "autopilot",
     essential: true,
   }),
   Object.freeze({
@@ -280,8 +320,14 @@ const STATIC_WALL_BODY = Object.freeze({
 // frame-time regressions. The debug panel also reports the lowest full-window
 // average observed since the page loaded.
 const FPS_SAMPLE_COUNT = 60;
+// Debug telemetry is deliberately human-paced. Rebuilding and laying out the
+// large preformatted panel every animation frame can itself create a visible
+// stutter while the panel is being used to inspect frame rate.
+const DEBUG_REFRESH_INTERVAL = 0.1;
 
 const pressedKeys = new Set();
+const manualPressedKeys = new Set();
+const autopilotPressedKeys = new Set();
 const asteroids = [];
 const bullets = [];
 const sparks = [];
@@ -315,6 +361,21 @@ let asteroidsGenerated = false;
 // Starting paused gives the player the controls before any movement begins.
 let gamePaused = true;
 let debugEnabled = false;
+// Autopilot starts off for predictable player-first startup. Its state is
+// retained across automatic life restarts so a long demonstration can keep
+// playing after an allowed collision, while any gameplay key immediately
+// turns it off.
+let autopilotEnabled = false;
+let autopilotShotCooldown = 0;
+let autopilotBurstTimeRemaining = 0;
+let autopilotBurstTarget;
+let autopilotTargetLock;
+let autopilotTargetLockTimeRemaining = 0;
+let autopilotTurnDirection = 0;
+let autopilotLastTurnDirection = 0;
+let autopilotTurnReversalTimeRemaining = 0;
+let autopilotDecisionTime = 0;
+let autopilotManeuverMode = "coast";
 let unactedPlayTime = 0;
 let helpAttentionActive = false;
 let helpAttentionPulseTime = 0;
@@ -350,6 +411,7 @@ const frameTimeSamples = new Float64Array(FPS_SAMPLE_COUNT);
 let frameTimeSampleIndex = 0;
 let frameTimeSampleCount = 0;
 let frameTimeSampleTotal = 0;
+let debugRefreshTimeRemaining = 0;
 let viewportWidth = 0;
 let viewportHeight = 0;
 
@@ -944,6 +1006,620 @@ function updateSparks(deltaTime) {
   }
 }
 
+/**
+ * Rebuild the effective held-key state from its two legitimate producers.
+ * Keeping manual and autopilot keys separate lets a human input disable the
+ * autopilot without allowing one producer to forge the other producer's
+ * events. The gameplay loop still consumes only `pressedKeys`, as before.
+ * @returns {void}
+ */
+function syncPressedKeys() {
+  pressedKeys.clear();
+
+  for (const key of manualPressedKeys) {
+    pressedKeys.add(key);
+  }
+
+  for (const key of autopilotPressedKeys) {
+    pressedKeys.add(key);
+  }
+}
+
+/**
+ * Clear both input sources. This is used for pause, focus loss, and life
+ * transitions so no stale held key can survive a state boundary.
+ * @returns {void}
+ */
+function clearPressedKeys() {
+  manualPressedKeys.clear();
+  autopilotPressedKeys.clear();
+  pressedKeys.clear();
+}
+
+/**
+ * Disable autopilot because a player supplied a gameplay input.
+ * @returns {void}
+ */
+function disableAutopilotForManualInput() {
+  if (!autopilotEnabled) {
+    return;
+  }
+
+  autopilotEnabled = false;
+  autopilotPressedKeys.clear();
+  autopilotBurstTimeRemaining = 0;
+  autopilotBurstTarget = undefined;
+  autopilotTurnDirection = 0;
+  autopilotLastTurnDirection = 0;
+  autopilotTurnReversalTimeRemaining = 0;
+  syncPressedKeys();
+}
+
+/**
+ * Toggle autopilot and reset the input edge state. T itself is a mode
+ * control, not one of the simulated gameplay inputs, so it is never added to
+ * either held-key set.
+ * @returns {void}
+ */
+function toggleAutopilot() {
+  autopilotEnabled = !autopilotEnabled;
+  autopilotShotCooldown = 0;
+  autopilotBurstTimeRemaining = 0;
+  autopilotBurstTarget = undefined;
+  autopilotTargetLock = undefined;
+  autopilotTargetLockTimeRemaining = 0;
+  autopilotTurnDirection = 0;
+  autopilotLastTurnDirection = 0;
+  autopilotTurnReversalTimeRemaining = 0;
+  autopilotDecisionTime = autopilotEnabled ? AUTOPILOT_UPDATE_INTERVAL : 0;
+  autopilotManeuverMode = "coast";
+  clearPressedKeys();
+  resetHelpAttention();
+}
+
+/**
+ * Supply the autopilot's current held controls through the same set consumed
+ * by normal movement and firing. No ship, asteroid, health, or bullet state
+ * is changed here.
+ * @param {Iterable<string>} keys W/A/S/D/Space controls to hold.
+ * @returns {void}
+ */
+function setAutopilotInput(keys) {
+  autopilotPressedKeys.clear();
+
+  if (autopilotEnabled && !shipFailureActive && !gameWon) {
+    for (const key of keys) {
+      autopilotPressedKeys.add(key);
+    }
+  }
+
+  syncPressedKeys();
+}
+
+/**
+ * Return the signed shortest turn from the current angle to a desired angle.
+ * Positive values correspond to the existing clockwise D input.
+ * @param {number} desiredAngle
+ * @param {number} currentAngle
+ * @returns {number}
+ */
+function shortestAngleDifference(desiredAngle, currentAngle) {
+  const fullTurn = Math.PI * 2;
+  return ((desiredAngle - currentAngle + Math.PI) % fullTurn + fullTurn) %
+      fullTurn - Math.PI;
+}
+
+/**
+ * Convert current shield and hull state into extra avoidance distance. A full
+ * shield is intentionally treated as a renewable buffer: only shield below
+ * the recovery threshold adds caution, while hull damage always adds caution.
+ * @returns {number} Additional safe distance in CSS pixels.
+ */
+function autopilotHealthSafetyMargin() {
+  const shieldRatio = Math.max(
+    0,
+    Math.min(1, shieldState / SHIELD_MAX_STATE),
+  );
+  const hullRatio = Math.max(0, Math.min(1, shipState / SHIP_MAX_STATE));
+  const shieldRecoveryRatio = Math.max(
+    0,
+    (AUTOPILOT_SHIELD_RECOVERY_THRESHOLD - shieldRatio) /
+      AUTOPILOT_SHIELD_RECOVERY_THRESHOLD,
+  );
+  const hullDamageRatio = 1 - hullRatio;
+
+  return shieldRecoveryRatio * AUTOPILOT_SHIELD_RECOVERY_MARGIN +
+    hullDamageRatio * AUTOPILOT_HULL_DAMAGE_MARGIN;
+}
+
+/**
+ * Apply hysteresis and a reversal delay to the autopilot's A/D choice. The
+ * ship may stop turning as soon as it is aligned, but it cannot immediately
+ * reverse direction. This avoids both CW/CCW chatter and the overshoot caused
+ * by forcing a fast-turning ship to hold a key for a minimum duration.
+ * @param {Set<string>} input Held controls for the current frame.
+ * @param {number} desiredAngle Heading selected by the current policy.
+ * @param {number} deltaTime Seconds since the previous simulation step.
+ * @returns {void}
+ */
+function applyAutopilotTurnInput(input, desiredAngle, deltaTime) {
+  const angleDifference = shortestAngleDifference(desiredAngle, playerAngle);
+  autopilotTurnReversalTimeRemaining = Math.max(
+    0,
+    autopilotTurnReversalTimeRemaining - Math.max(0, deltaTime),
+  );
+  let requestedDirection = 0;
+
+  if (Math.abs(angleDifference) > AUTOPILOT_TURN_START_TOLERANCE) {
+    requestedDirection = Math.sign(angleDifference);
+  } else if (
+    Math.abs(angleDifference) > AUTOPILOT_TURN_STOP_TOLERANCE &&
+    Math.sign(angleDifference) === autopilotTurnDirection
+  ) {
+    requestedDirection = autopilotTurnDirection;
+  }
+
+  const reversesCommittedTurn = requestedDirection !== 0 &&
+    autopilotLastTurnDirection !== 0 &&
+    requestedDirection !== autopilotLastTurnDirection;
+
+  if (reversesCommittedTurn && autopilotTurnReversalTimeRemaining > 0) {
+    autopilotTurnDirection = 0;
+  } else {
+    autopilotTurnDirection = requestedDirection;
+
+    if (reversesCommittedTurn || autopilotLastTurnDirection === 0) {
+      autopilotLastTurnDirection = requestedDirection;
+      autopilotTurnReversalTimeRemaining = AUTOPILOT_TURN_REVERSAL_DELAY;
+    }
+  }
+
+  if (autopilotTurnDirection > 0) {
+    input.add("KeyD");
+  } else if (autopilotTurnDirection < 0) {
+    input.add("KeyA");
+  }
+}
+
+/**
+ * Score a navigation target by how naturally it fits the ship's current
+ * momentum. Distance still matters, but a target ahead of the velocity vector
+ * is preferable to one that requires a hard reversal.
+ * @param {Asteroid} asteroid Candidate read from the world.
+ * @returns {number} Lower scores are easier fly-by engagements.
+ */
+function autopilotTargetScore(asteroid) {
+  const offsetX = asteroid.x - playerX;
+  const offsetY = asteroid.y - playerY;
+  const distance = Math.hypot(offsetX, offsetY);
+  const targetAngle = Math.atan2(offsetY, offsetX);
+  const speed = Math.hypot(playerVelocityX, playerVelocityY);
+  const flowAngle = speed >= AUTOPILOT_FLOW_HEADING_SPEED
+    ? Math.atan2(playerVelocityY, playerVelocityX)
+    : playerAngle;
+  const flowTurn = Math.abs(shortestAngleDifference(targetAngle, flowAngle));
+  const noseTurn = Math.abs(shortestAngleDifference(targetAngle, playerAngle));
+
+  return distance + flowTurn * 180 + noseTurn * 70 - asteroid.radius * 1.5;
+}
+
+/**
+ * Pick a convenient navigation target with a short commitment and switching
+ * hysteresis. A target far behind the ship's momentum may be released early;
+ * this lets a fly-by continue naturally instead of forcing an ugly reversal.
+ * @param {number} deltaTime Seconds since the previous autopilot decision.
+ * @returns {Asteroid | undefined}
+ */
+function autopilotTarget(deltaTime) {
+  autopilotTargetLockTimeRemaining = Math.max(
+    0,
+    autopilotTargetLockTimeRemaining - Math.max(0, deltaTime),
+  );
+  const lockedTargetIsPresent = autopilotTargetLock !== undefined &&
+    asteroids.includes(autopilotTargetLock);
+  const isEndgame = asteroids.length <= 2;
+  const speed = Math.hypot(playerVelocityX, playerVelocityY);
+  const flowAngle = speed >= AUTOPILOT_FLOW_HEADING_SPEED
+    ? Math.atan2(playerVelocityY, playerVelocityX)
+    : playerAngle;
+  const lockedTargetAngle = lockedTargetIsPresent
+    ? Math.atan2(
+      autopilotTargetLock.y - playerY,
+      autopilotTargetLock.x - playerX,
+    )
+    : flowAngle;
+  const lockedTargetIsBehind = lockedTargetIsPresent &&
+    speed >= AUTOPILOT_FLOW_HEADING_SPEED &&
+    Math.abs(shortestAngleDifference(lockedTargetAngle, flowAngle)) >
+      Math.PI * 2 / 3;
+
+  if (
+    lockedTargetIsPresent &&
+    (isEndgame ||
+      (autopilotTargetLockTimeRemaining > 0 && !lockedTargetIsBehind))
+  ) {
+    return autopilotTargetLock;
+  }
+
+  let selectedAsteroid;
+  let selectedScore = Infinity;
+
+  for (const asteroid of asteroids) {
+    const score = autopilotTargetScore(asteroid);
+
+    if (score < selectedScore) {
+      selectedAsteroid = asteroid;
+      selectedScore = score;
+    }
+  }
+
+  if (lockedTargetIsPresent && !lockedTargetIsBehind) {
+    const lockedScore = autopilotTargetScore(autopilotTargetLock);
+
+    if (lockedScore <= selectedScore + AUTOPILOT_TARGET_SWITCH_ADVANTAGE) {
+      autopilotTargetLockTimeRemaining = AUTOPILOT_TARGET_RECHECK_SECONDS;
+      return autopilotTargetLock;
+    }
+  }
+
+  autopilotTargetLock = selectedAsteroid;
+  autopilotTargetLockTimeRemaining = AUTOPILOT_TARGET_COMMITMENT_SECONDS;
+  return autopilotTargetLock;
+}
+
+/**
+ * Find any asteroid already crossing the firing cone. This target is separate
+ * from navigation, allowing opportunistic fly-by bursts without steering the
+ * ship away from its momentum-friendly course.
+ * @returns {Asteroid | undefined}
+ */
+function autopilotFiringTarget() {
+  let selectedAsteroid;
+  let selectedScore = Infinity;
+
+  for (const asteroid of asteroids) {
+    const distance = Math.hypot(asteroid.x - playerX, asteroid.y - playerY);
+    const leadTime = distance <= PLAYER_RADIUS + asteroid.radius +
+        AUTOPILOT_POINT_BLANK_MARGIN
+      ? 0
+      : Math.min(AUTOPILOT_LEAD_TIME_CAP, distance / BULLET_SPEED);
+    const aimAngle = Math.atan2(
+      asteroid.y + asteroid.velocityY * leadTime - playerY,
+      asteroid.x + asteroid.velocityX * leadTime - playerX,
+    );
+    const angularRadius = Math.asin(
+      Math.min(1, asteroid.radius / Math.max(distance, asteroid.radius)),
+    );
+    const aimError = Math.abs(shortestAngleDifference(aimAngle, playerAngle));
+    const tolerance = Math.max(
+      AUTOPILOT_AIM_TOLERANCE,
+      angularRadius * 0.8,
+    );
+
+    if (aimError > tolerance) {
+      continue;
+    }
+
+    const score = aimError * 400 + distance - asteroid.radius * 2;
+
+    if (score < selectedScore) {
+      selectedAsteroid = asteroid;
+      selectedScore = score;
+    }
+  }
+
+  return selectedAsteroid;
+}
+
+/**
+ * Find an asteroid whose predicted closest approach is uncomfortably near.
+ * Relative linear motion is enough for a useful warning between frames; the
+ * collision solver remains the authority when bodies actually touch.
+ * @returns {{ asteroid: Asteroid, futureX: number, futureY: number,
+ *   distance: number, closingSpeed: number } | undefined}
+ */
+function autopilotThreat() {
+  const safeMargin = AUTOPILOT_BASE_SAFE_MARGIN +
+    autopilotHealthSafetyMargin();
+  let selectedThreat;
+  let selectedScore = Infinity;
+
+  for (const asteroid of asteroids) {
+    const relativeX = asteroid.x - playerX;
+    const relativeY = asteroid.y - playerY;
+    const relativeVelocityX = asteroid.velocityX - playerVelocityX;
+    const relativeVelocityY = asteroid.velocityY - playerVelocityY;
+    const distance = Math.hypot(relativeX, relativeY);
+    const safeDistance = PLAYER_RADIUS + asteroid.radius + safeMargin;
+    const velocitySquared = relativeVelocityX ** 2 + relativeVelocityY ** 2;
+    const closestTime = velocitySquared > COLLISION_EPSILON
+      ? Math.max(
+        0,
+        Math.min(
+          AUTOPILOT_MAX_LOOKAHEAD_SECONDS,
+          -(relativeX * relativeVelocityX + relativeY * relativeVelocityY) /
+            velocitySquared,
+        ),
+      )
+      : 0;
+    const futureX = relativeX + relativeVelocityX * closestTime;
+    const futureY = relativeY + relativeVelocityY * closestTime;
+    const futureDistance = Math.hypot(futureX, futureY);
+    const closingSpeed = distance > COLLISION_EPSILON
+      ? -(relativeX * relativeVelocityX + relativeY * relativeVelocityY) /
+        distance
+      : 0;
+    const isNearNow = distance <= safeDistance;
+    const isPredictedNear = closingSpeed > 0 &&
+      futureDistance <= safeDistance &&
+      closestTime <= AUTOPILOT_MAX_LOOKAHEAD_SECONDS;
+
+    if (!isNearNow && !isPredictedNear) {
+      continue;
+    }
+
+    const score = futureDistance + closestTime * 80 + asteroid.radius;
+
+    if (score < selectedScore) {
+      selectedThreat = {
+        asteroid,
+        futureX: playerX + futureX,
+        futureY: playerY + futureY,
+        distance,
+        closingSpeed,
+      };
+      selectedScore = score;
+    }
+  }
+
+  return selectedThreat;
+}
+
+/**
+ * Find a nearby arena edge and return the inward direction. Wall damage is
+ * resolved by the normal physics path, so the safest intervention available
+ * to autopilot is an early turn and a braking/thrust input before the ship
+ * reaches the boundary.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @returns {{ desiredAngle: number, distance: number,
+ *   movingOutward: boolean } | undefined}
+ */
+function autopilotWallThreat(width, height) {
+  const safeMargin = AUTOPILOT_WALL_SAFE_MARGIN +
+    autopilotHealthSafetyMargin();
+  const edgeDistances = [
+    { distance: playerX, inwardX: 1, inwardY: 0 },
+    { distance: width - playerX, inwardX: -1, inwardY: 0 },
+    { distance: playerY, inwardX: 0, inwardY: 1 },
+    { distance: height - playerY, inwardX: 0, inwardY: -1 },
+  ];
+  const nearestEdge = edgeDistances.reduce((closestEdge, edge) =>
+    edge.distance < closestEdge.distance ? edge : closestEdge
+  );
+
+  if (nearestEdge.distance > safeMargin) {
+    return undefined;
+  }
+
+  const velocityInward = playerVelocityX * nearestEdge.inwardX +
+    playerVelocityY * nearestEdge.inwardY;
+
+  return {
+    desiredAngle: Math.atan2(nearestEdge.inwardY, nearestEdge.inwardX),
+    distance: nearestEdge.distance,
+    movingOutward: velocityInward < -AUTOPILOT_FLEE_THRUST_SPEED,
+  };
+}
+
+/**
+ * Choose only held W/A/S/D/Space input for the current frame. A committed
+ * attack pass keeps the nose on the locked target for useful shooting, then a
+ * committed breakaway creates another dynamic pass instead of settling into
+ * a stationary firing solution. Walls and unrelated collision threats still
+ * preempt either maneuver. Health widens the avoidance margin without
+ * bypassing the ordinary collision, recoil, or firing systems.
+ * @param {number} deltaTime Elapsed simulation time in seconds.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @returns {void}
+ */
+function updateAutopilotInput(deltaTime, width, height) {
+  if (!autopilotEnabled || gamePaused || shipFailureActive || gameWon) {
+    autopilotDecisionTime = 0;
+    setAutopilotInput([]);
+    return;
+  }
+
+  autopilotDecisionTime += Math.max(0, deltaTime);
+
+  if (autopilotDecisionTime < AUTOPILOT_UPDATE_INTERVAL) {
+    return;
+  }
+
+  const decisionDeltaTime = autopilotDecisionTime;
+  autopilotDecisionTime = 0;
+  autopilotShotCooldown = Math.max(
+    0,
+    autopilotShotCooldown - decisionDeltaTime,
+  );
+  autopilotBurstTimeRemaining = Math.max(
+    0,
+    autopilotBurstTimeRemaining - decisionDeltaTime,
+  );
+  const input = new Set();
+  const wallThreat = autopilotWallThreat(width, height);
+  const threat = wallThreat === undefined ? autopilotThreat() : undefined;
+  const target = autopilotTarget(decisionDeltaTime);
+  const targetDistance = target === undefined
+    ? Infinity
+    : Math.hypot(target.x - playerX, target.y - playerY);
+  const targetCollisionDistance = target === undefined
+    ? Infinity
+    : PLAYER_RADIUS + target.radius;
+  const pointBlankDistance = targetCollisionDistance +
+    AUTOPILOT_POINT_BLANK_MARGIN;
+  const targetIsPointBlank = target !== undefined &&
+    targetDistance <= pointBlankDistance;
+  const targetLeadTime = targetIsPointBlank ? 0 : Math.min(
+    AUTOPILOT_LEAD_TIME_CAP,
+    targetDistance / BULLET_SPEED,
+  );
+  const targetAimAngle = target === undefined ? playerAngle : Math.atan2(
+    target.y + target.velocityY * targetLeadTime - playerY,
+    target.x + target.velocityX * targetLeadTime - playerX,
+  );
+  let desiredAngle = playerAngle;
+  const targetRelativeVelocityX = target === undefined
+    ? 0
+    : target.velocityX - playerVelocityX;
+  const targetRelativeVelocityY = target === undefined
+    ? 0
+    : target.velocityY - playerVelocityY;
+  const targetClosingSpeed = target === undefined ||
+      targetDistance <= COLLISION_EPSILON
+    ? 0
+    : -((target.x - playerX) * targetRelativeVelocityX +
+      (target.y - playerY) * targetRelativeVelocityY) / targetDistance;
+  const targetIsEmergency = target !== undefined &&
+    targetDistance <= targetCollisionDistance + AUTOPILOT_BASE_SAFE_MARGIN &&
+    targetClosingSpeed > AUTOPILOT_CLOSE_TARGET_BRAKE_SPEED;
+  const threatIsTarget = threat !== undefined && threat.asteroid === target;
+
+  if (wallThreat !== undefined) {
+    autopilotManeuverMode = "wall evade";
+    desiredAngle = wallThreat.desiredAngle;
+    const speed = Math.hypot(playerVelocityX, playerVelocityY);
+    const wallAngleDifference = shortestAngleDifference(
+      desiredAngle,
+      playerAngle,
+    );
+
+    if (
+      (wallThreat.movingOutward && speed > AUTOPILOT_MIN_COAST_SPEED) ||
+      speed > AUTOPILOT_BRAKE_SPEED
+    ) {
+      input.add("KeyS");
+    } else if (
+      Math.abs(wallAngleDifference) <=
+        AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
+    ) {
+      input.add("KeyW");
+    }
+  } else if (threat !== undefined && (!threatIsTarget || targetIsEmergency)) {
+    autopilotManeuverMode = "asteroid evade";
+    const escapeX = playerX - threat.futureX;
+    const escapeY = playerY - threat.futureY;
+    const escapeLength = Math.hypot(escapeX, escapeY);
+    desiredAngle = escapeLength > COLLISION_EPSILON
+      ? Math.atan2(escapeY, escapeX)
+      : Math.atan2(-playerVelocityY, -playerVelocityX);
+
+    const escapeDirectionX = Math.cos(desiredAngle);
+    const escapeDirectionY = Math.sin(desiredAngle);
+    const velocityAwayFromThreat = playerVelocityX * escapeDirectionX +
+      playerVelocityY * escapeDirectionY;
+    const escapeAngleDifference = shortestAngleDifference(
+      desiredAngle,
+      playerAngle,
+    );
+
+    if (
+      velocityAwayFromThreat < -AUTOPILOT_FLEE_THRUST_SPEED ||
+      (threat.closingSpeed > AUTOPILOT_BRAKE_SPEED &&
+        threat.distance < AUTOPILOT_BASE_SAFE_MARGIN * 2)
+    ) {
+      if (
+        Math.hypot(playerVelocityX, playerVelocityY) >
+          AUTOPILOT_MIN_COAST_SPEED
+      ) {
+        input.add("KeyS");
+      }
+    } else if (
+      velocityAwayFromThreat < AUTOPILOT_CRUISE_SPEED &&
+      Math.abs(escapeAngleDifference) <=
+        AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
+    ) {
+      input.add("KeyW");
+    }
+  } else if (target !== undefined) {
+    autopilotManeuverMode = "fly-by";
+    desiredAngle = targetAimAngle;
+    const speed = Math.hypot(playerVelocityX, playerVelocityY);
+    const aimAngleDifference = shortestAngleDifference(
+      desiredAngle,
+      playerAngle,
+    );
+    const velocityTowardTarget = playerVelocityX * Math.cos(desiredAngle) +
+      playerVelocityY * Math.sin(desiredAngle);
+    const desiredCruiseSpeed = asteroids.length <= 2
+      ? AUTOPILOT_ENDGAME_CRUISE_SPEED
+      : AUTOPILOT_CRUISE_SPEED;
+
+    if (
+      targetIsPointBlank &&
+      targetClosingSpeed > AUTOPILOT_CLOSE_TARGET_BRAKE_SPEED &&
+      speed > AUTOPILOT_MIN_COAST_SPEED
+    ) {
+      // Braking does not alter facing, so a close approach remains a firing
+      // opportunity while speed is removed before it becomes a ram.
+      input.add("KeyS");
+    } else if (
+      targetDistance > targetCollisionDistance +
+          AUTOPILOT_POINT_BLANK_MARGIN * 0.6 &&
+      velocityTowardTarget < desiredCruiseSpeed &&
+      Math.abs(aimAngleDifference) <=
+        AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
+    ) {
+      input.add("KeyW");
+    }
+  } else {
+    autopilotManeuverMode = "coast";
+  }
+
+  applyAutopilotTurnInput(input, desiredAngle, decisionDeltaTime);
+
+  const speed = Math.hypot(playerVelocityX, playerVelocityY);
+  const burstTargetIsPresent = autopilotBurstTarget !== undefined &&
+    asteroids.includes(autopilotBurstTarget);
+
+  if (!burstTargetIsPresent) {
+    autopilotBurstTarget = undefined;
+    autopilotBurstTimeRemaining = 0;
+  }
+
+  if (
+    autopilotBurstTimeRemaining <= 0 && autopilotShotCooldown <= 0 &&
+    wallThreat === undefined
+  ) {
+    const firingTarget = autopilotFiringTarget();
+    const firingDistance = firingTarget === undefined
+      ? Infinity
+      : Math.hypot(firingTarget.x - playerX, firingTarget.y - playerY);
+    const firingTargetIsPointBlank = firingTarget !== undefined &&
+      firingDistance <= PLAYER_RADIUS + firingTarget.radius +
+          AUTOPILOT_POINT_BLANK_MARGIN;
+
+    if (
+      firingTarget !== undefined &&
+      (firingTargetIsPointBlank || speed <= AUTOPILOT_FIRE_SPEED_LIMIT)
+    ) {
+      autopilotBurstTarget = firingTarget;
+      autopilotBurstTimeRemaining = AUTOPILOT_BURST_SECONDS;
+      autopilotShotCooldown = AUTOPILOT_BURST_COOLDOWN;
+    }
+  }
+
+  if (
+    autopilotBurstTimeRemaining > 0 &&
+    autopilotBurstTarget !== undefined && wallThreat === undefined
+  ) {
+    input.add(FIRE_KEY);
+  }
+
+  setAutopilotInput(input);
+}
+
 function updateBulletFiring(deltaTime) {
   // Keep firing paused even if the key was held before the game was paused.
   // The simulation normally skips this function while paused, but this guard
@@ -1104,7 +1780,17 @@ function restartGame(width, height) {
   bulletCooldown = 0;
   bullets.length = 0;
   sparks.length = 0;
-  pressedKeys.clear();
+  clearPressedKeys();
+  autopilotShotCooldown = 0;
+  autopilotBurstTimeRemaining = 0;
+  autopilotBurstTarget = undefined;
+  autopilotTargetLock = undefined;
+  autopilotTargetLockTimeRemaining = 0;
+  autopilotTurnDirection = 0;
+  autopilotLastTurnDirection = 0;
+  autopilotTurnReversalTimeRemaining = 0;
+  autopilotDecisionTime = autopilotEnabled ? AUTOPILOT_UPDATE_INTERVAL : 0;
+  autopilotManeuverMode = "coast";
   resetHelpAttention();
   asteroids.length = 0;
   asteroidsGenerated = false;
@@ -1124,7 +1810,7 @@ function beginShipFailure() {
   shipFailureActive = true;
   shipFailureTimeRemaining = SHIP_FAILURE_DISPLAY_SECONDS;
   restartRequested = false;
-  pressedKeys.clear();
+  clearPressedKeys();
   bulletCooldown = 0;
   resetHelpAttention();
 }
@@ -1149,7 +1835,7 @@ function beginWin() {
     );
   }
   bullets.length = 0;
-  pressedKeys.clear();
+  clearPressedKeys();
   bulletCooldown = 0;
   resetHelpAttention();
 }
@@ -1555,6 +2241,7 @@ function drawGame(width, height) {
     drawEssentialHelp(width, height);
   }
 
+  drawAutopilotIndicator(width);
   drawStatusBars(width);
 }
 
@@ -1628,6 +2315,50 @@ function drawEssentialHelp(width, height) {
     width / 2,
     panelY + panelHeight / 2,
     textWidth,
+  );
+  context.restore();
+}
+
+/**
+ * Draw a persistent, high-contrast mode badge. Autopilot stays visible over
+ * pause, failure, and win treatments so a demonstration never leaves the
+ * player guessing whether T is still active.
+ * @param {number} width The viewport width in CSS pixels.
+ * @returns {void}
+ */
+function drawAutopilotIndicator(width) {
+  if (!autopilotEnabled || width <= 0) {
+    return;
+  }
+
+  const badgeWidth = Math.min(246, Math.max(190, width - 32));
+  const badgeHeight = 58;
+  const badgeX = 16;
+  const badgeY = 16;
+
+  context.save();
+  context.beginPath();
+  context.roundRect(badgeX, badgeY, badgeWidth, badgeHeight, 14);
+  context.fillStyle = "rgba(70, 48, 12, 0.96)";
+  context.shadowColor = "rgba(255, 209, 102, 0.78)";
+  context.shadowBlur = 16;
+  context.fill();
+  context.shadowBlur = 0;
+  context.strokeStyle = "#ffd166";
+  context.lineWidth = 3;
+  context.stroke();
+
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+  context.fillStyle = "#fff4c7";
+  context.font = "800 18px system-ui, sans-serif";
+  context.fillText("AUTOPILOT ACTIVE", badgeX + 14, badgeY + 22);
+  context.fillStyle = "#ffd166";
+  context.font = "600 12px system-ui, sans-serif";
+  context.fillText(
+    "T to disable · manual input takes over",
+    badgeX + 14,
+    badgeY + 42,
   );
   context.restore();
 }
@@ -1853,7 +2584,7 @@ function drawPauseHelp(width, height) {
     390,
   );
   context.fillText(
-    "Walls damage the ship. Navigate, cut, survive.",
+    "Walls damage the ship. Manual input disables autopilot.",
     HELP_PANEL_WIDTH / 2,
     418,
   );
@@ -3906,10 +4637,24 @@ function updateFrameRate(frameTime) {
   }
 }
 
-function updateDebugOutput() {
+/**
+ * Refresh diagnostic text at a human-readable rate to keep inspection from
+ * becoming a source of frame-time spikes itself.
+ * @param {number} deltaTime Elapsed simulation time in seconds.
+ * @returns {void}
+ */
+function updateDebugOutput(deltaTime) {
   if (!debugEnabled) {
     return;
   }
+
+  debugRefreshTimeRemaining -= Math.max(0, deltaTime);
+
+  if (debugRefreshTimeRemaining > 0) {
+    return;
+  }
+
+  debugRefreshTimeRemaining = DEBUG_REFRESH_INTERVAL;
 
   const ship = playerBody();
   const firstAsteroid = asteroids[0];
@@ -3920,6 +4665,17 @@ function updateDebugOutput() {
   const displayedMinimumFrameRate = Number.isFinite(minimumFrameRate)
     ? minimumFrameRate.toFixed(1)
     : "--";
+  const autopilotTargetIndex = autopilotTargetLock === undefined
+    ? -1
+    : asteroids.indexOf(autopilotTargetLock);
+  const autopilotTargetDistance = autopilotTargetLock === undefined
+    ? 0
+    : Math.hypot(
+      autopilotTargetLock.x - playerX,
+      autopilotTargetLock.y - playerY,
+    );
+  const autopilotShieldRatio = shieldState / SHIELD_MAX_STATE;
+  const autopilotHullRatio = shipState / SHIP_MAX_STATE;
 
   debugOutput.textContent = [
     `PHYSICS DEBUG  (${DEBUG_TOGGLE_KEY} toggles)`,
@@ -3937,6 +4693,26 @@ function updateDebugOutput() {
         ? `${PAUSE_KEY_LABEL} toggles`
         : "running"
     }`,
+    `Autopilot: ${
+      autopilotEnabled ? "ON" : "OFF"
+    } (${AUTOPILOT_TOGGLE_KEY_LABEL} toggles; manual input disables)`,
+    `Autopilot target: ${
+      autopilotTargetIndex >= 0 ? autopilotTargetIndex + 1 : "none"
+    } at ${autopilotTargetDistance.toFixed(0)}px, turn ${
+      autopilotTurnDirection > 0
+        ? "CW"
+        : autopilotTurnDirection < 0
+        ? "CCW"
+        : "hold"
+    }`,
+    `Autopilot maneuver: ${autopilotManeuverMode}; burst ${
+      autopilotBurstTimeRemaining > 0 ? "active" : "ready"
+    }`,
+    `Autopilot shield policy: shield ${
+      (autopilotShieldRatio * 100).toFixed(0)
+    }%, hull ${(autopilotHullRatio * 100).toFixed(0)}%, margin ${
+      autopilotHealthSafetyMargin().toFixed(0)
+    }px`,
     `Shield/ship: ${shieldState.toFixed(2)}%/${shipState.toFixed(2)}% (regen ${
       SHIELD_REGENERATION_RATE.toFixed(1)
     }/s)`,
@@ -4022,6 +4798,7 @@ function updateGame(deltaTime, width, height) {
   lastFrameSparkEnergy = 0;
   refillCollisionDamageBudget(deltaTime);
   regenerateShield(deltaTime);
+  updateAutopilotInput(deltaTime, width, height);
 
   const turnsCounterClockwise = pressedKeys.has("ArrowLeft") ||
     pressedKeys.has("KeyA");
@@ -4127,7 +4904,7 @@ function animate(frameTime) {
   }
   updateSparks(deltaTime);
   updateDisplayedStatusBars(deltaTime);
-  updateDebugOutput();
+  updateDebugOutput(deltaTime);
   drawGame(width, height);
   window.requestAnimationFrame(animate);
 }
@@ -4151,6 +4928,12 @@ function controlKeyForEvent(event) {
 }
 
 document.addEventListener("keydown", (event) => {
+  if (event.code === AUTOPILOT_TOGGLE_KEY && !event.repeat) {
+    toggleAutopilot();
+    event.preventDefault();
+    return;
+  }
+
   if (event.code === PAUSE_KEY && !event.repeat) {
     if (gameWon) {
       restartGame(viewportWidth, viewportHeight);
@@ -4163,7 +4946,7 @@ document.addEventListener("keydown", (event) => {
         // A pause freezes gameplay input as well as simulation time. Requiring
         // a fresh Space press after resuming avoids a held key firing
         // unexpectedly.
-        pressedKeys.clear();
+        clearPressedKeys();
         bulletCooldown = 0;
       }
     }
@@ -4175,6 +4958,7 @@ document.addEventListener("keydown", (event) => {
   if (event.code === DEBUG_TOGGLE_KEY && !event.repeat) {
     debugEnabled = !debugEnabled;
     debugOutput.hidden = !debugEnabled;
+    debugRefreshTimeRemaining = 0;
     event.preventDefault();
     return;
   }
@@ -4189,6 +4973,8 @@ document.addEventListener("keydown", (event) => {
   if (controlKey !== undefined) {
     event.preventDefault();
 
+    disableAutopilotForManualInput();
+
     if (gamePaused) {
       return;
     }
@@ -4198,7 +4984,8 @@ document.addEventListener("keydown", (event) => {
       emitBullet();
       bulletCooldown = BULLET_FIRE_INTERVAL;
     }
-    pressedKeys.add(controlKey);
+    manualPressedKeys.add(controlKey);
+    syncPressedKeys();
   }
 });
 
@@ -4206,11 +4993,12 @@ document.addEventListener("keyup", (event) => {
   const controlKey = controlKeyForEvent(event);
 
   if (controlKey !== undefined) {
-    pressedKeys.delete(controlKey);
+    manualPressedKeys.delete(controlKey);
+    syncPressedKeys();
   }
 });
 
-window.addEventListener("blur", () => pressedKeys.clear());
+window.addEventListener("blur", clearPressedKeys);
 
 window.addEventListener("resize", resizeCanvas);
 resizeCanvas();
