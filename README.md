@@ -1,7 +1,6 @@
 # Only Vibes
 
-A classic single-page Asteroids game in pure HTML and JavaScript, with an
-LCARS-like interface and a suspicious amount of enthusiasm, and code that boldly goes wherever the prompt takes it..
+A classic single-page Asteroids game in pure HTML and JavaScript, with an LCARS-inspired interface and code that boldly goes wherever the prompt takes it.
 
 ![Only Vibes screenshot](screenshot.png)
 
