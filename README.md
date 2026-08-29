@@ -6,12 +6,16 @@ This project was made for the [Kane CLI Hackathon](https://luma.com/kanecli-onli
 
 ![Only Vibes screenshot](screenshot.png)
 
-> [!NOTE]
+> [!IMPORTANT]
 > **The code quality is by no means attributed to me.** It is **146% vibe-coded for purpose**.
 > The point of this project
 > was the full loop: automated development, browser-based verification, and
 > iterating on what the running game actually did. The implementation is the
 > artifact of that loop.
+
+> [!CAUTION]
+> The game works best in Google Chrome because Kane CLI's browser automation
+> and verification workflow is tied to Chrome.
 
 ## Play
 
@@ -26,7 +30,6 @@ Play the hosted version on [GitHub Pages](https://eigenein.github.io/only-vibes/
 | `A` / `D` | Turn counter-clockwise / clockwise |
 | `P` | Pause / resume |
 | `T` | Toggle autopilot |
-| `` ` `` | Toggle the debug panel |
 
 ### Shield and hull
 

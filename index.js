@@ -245,9 +245,6 @@ const SPARK_CORE_RADIUS = 3;
 const SPARK_GLOW_RADIUS = 10;
 const SPARK_GLOW_ALPHA = 0.18;
 const SPARK_COLOR = LCARS_GOLD;
-// Backquote is an uncommon gameplay key and is separate from the ship's
-// letter-key controls, so it leaves D available for clockwise rotation.
-const DEBUG_TOGGLE_KEY = "Backquote";
 const PAUSE_KEY = "KeyP";
 const PAUSE_KEY_LABEL = "P";
 const FIRE_KEY = "Space";
@@ -345,15 +342,6 @@ const STATIC_WALL_BODY = Object.freeze({
   mass: Infinity,
   momentOfInertia: Infinity,
 });
-// A rolling sample smooths display-refresh jitter without hiding sustained
-// frame-time regressions. The debug panel also reports the lowest full-window
-// average observed since the page loaded.
-const FPS_SAMPLE_COUNT = 60;
-// Debug telemetry is deliberately human-paced. Rebuilding and laying out the
-// large preformatted panel every animation frame can itself create a visible
-// stutter while the panel is being used to inspect frame rate.
-const DEBUG_REFRESH_INTERVAL = 0.1;
-
 const pressedKeys = new Set();
 const manualPressedKeys = new Set();
 const autopilotPressedKeys = new Set();
@@ -375,23 +363,14 @@ let restartRequested = false;
 let shipFailureActive = false;
 let shipFailureTimeRemaining = 0;
 let gameWon = false;
-let totalShipRestartCount = 0;
-let lastCollisionMomentum = 0;
-let lastShieldDamage = 0;
-let lastShipDamage = 0;
-let lastRawCollisionDamage = 0;
-let lastAppliedCollisionDamage = 0;
 let collisionDamageBudget = COLLISION_DAMAGE_BUDGET_CAP;
 let previousFrameTime;
 let bulletCooldown = 0;
-let totalBulletsEmitted = 0;
-let totalBulletReflectionCount = 0;
 let asteroidsGenerated = false;
 // Pausing stops simulation time while leaving the render loop alive, so the
 // player can inspect a frozen collision result and resume without a time jump.
 // Starting paused gives the player the controls before any movement begins.
 let gamePaused = true;
-let debugEnabled = false;
 // Autopilot starts off for predictable player-first startup. Its state is
 // retained across automatic life restarts so a long demonstration can keep
 // playing after an allowed collision, while any gameplay key immediately
@@ -406,42 +385,14 @@ let autopilotTurnDirection = 0;
 let autopilotLastTurnDirection = 0;
 let autopilotTurnReversalTimeRemaining = 0;
 let autopilotDecisionTime = 0;
-let autopilotManeuverMode = "coast";
-let lastCollisionCount = 0;
-let totalCollisionCount = 0;
-let lastMomentumDelta = { x: 0, y: 0 };
-let lastKineticEnergyDelta = 0;
-let totalBulletCutCount = 0;
-let totalBulletShipCollisionCount = 0;
 // Points measure material that really leaves the playfield. A successful cut
 // preserves area across its retained fragments, while fragments below the
 // minimum area (and terminal asteroids) contribute the area that disappears.
 let points = 0;
-let lastBulletMomentumDelta = { x: 0, y: 0 };
-let lastBulletLostMomentum = { x: 0, y: 0 };
-let lastBulletKineticEnergyDelta = 0;
-let lastBulletAngularMomentumDelta = 0;
-let lastBulletShoulder = 0;
-let lastBulletAngularImpulse = 0;
-let lastBulletShipMomentumDelta = { x: 0, y: 0 };
-let lastBulletShipKineticEnergyDelta = 0;
-let lastBulletShipImpulse = { x: 0, y: 0 };
-let lastFiringImpulseDelta = { x: 0, y: 0 };
-let lastFiringRecoilVelocity = { x: 0, y: 0 };
-let lastAngularMomentumDelta = 0;
-let lastAngularKineticEnergyDelta = 0;
-let totalSparksEmitted = 0;
-let lastFrameSparkCount = 0;
-let lastFrameSparkEnergy = 0;
-let frameRate = 0;
-let minimumFrameRate = Infinity;
-const frameTimeSamples = new Float64Array(FPS_SAMPLE_COUNT);
-let frameTimeSampleIndex = 0;
-let frameTimeSampleCount = 0;
-let frameTimeSampleTotal = 0;
-let debugRefreshTimeRemaining = 0;
 let viewportWidth = 0;
 let viewportHeight = 0;
+const phraseMetricsCache = new Map();
+let dangerWallGradients;
 
 /**
  * Play randomly selected local sound effects without making audio availability
@@ -490,19 +441,6 @@ const empSound = new SoundEffect(EMP_SOUND_SOURCES, SOUND_EFFECT_VOICE_COUNT);
 const redAlertSound = new SoundEffect([RED_ALERT_SOUND_SOURCE], 1);
 const winSound = new SoundEffect([WIN_SOUND_SOURCE], 1);
 const defeatSound = new SoundEffect([DEFEAT_SOUND_SOURCE], 1);
-
-// The debug panel is created only in JavaScript so index.html stays a minimal
-// canvas host. It is hidden by default and reports collision telemetry without
-// changing the normal game presentation.
-const debugOutput = document.createElement("pre");
-debugOutput.hidden = true;
-debugOutput.setAttribute("aria-label", "Physics debug information");
-debugOutput.style.cssText =
-  "position:fixed;top:12px;left:12px;margin:0;padding:10px;" +
-  `color:${LCARS_AMBER};background:${LCARS_PANEL};` +
-  `font:13px/1.45 ${LCARS_BODY_FONT_FAMILY};letter-spacing:.25px;` +
-  "white-space:pre;z-index:1;pointer-events:none;";
-document.body.append(debugOutput);
 
 function randomBetween(minimum, maximum) {
   return minimum + Math.random() * (maximum - minimum);
@@ -627,6 +565,9 @@ class Asteroid {
     this.velocityX = velocityX;
     this.velocityY = velocityY;
     this.density = density;
+    // Density is immutable for the lifetime of a body, so its presentation
+    // color is likewise immutable and does not need rebuilding every frame.
+    this.materialColor = asteroidColorForDensity(density);
     this.rotation = rotation;
     this.angularVelocity = angularVelocity;
     this.worldVertices = this.localVertices.map((vertex) => ({
@@ -718,8 +659,7 @@ class Asteroid {
     }
 
     context.closePath();
-    const materialColor = asteroidColorForDensity(this.density);
-    context.fillStyle = materialColor;
+    context.fillStyle = this.materialColor;
     context.fill();
     context.strokeStyle = LCARS_GOLD;
     context.globalAlpha = 0.72;
@@ -777,7 +717,6 @@ class Bullet {
 
   recordReflection() {
     this.reflectionCount += 1;
-    totalBulletReflectionCount += 1;
   }
 
   update(deltaTime) {
@@ -987,6 +926,12 @@ function createAsteroidFromPolygon(
  * @returns {{ ascent: number, lineHeight: number, widestLine: number }}
  */
 function phraseTextMetrics(fontSize) {
+  const cachedMetrics = phraseMetricsCache.get(fontSize);
+
+  if (cachedMetrics !== undefined) {
+    return cachedMetrics;
+  }
+
   context.save();
   context.font = `${PHRASE_FONT_WEIGHT} ${fontSize}px ${PHRASE_FONT_FAMILY}`;
   const firstLineMetrics = context.measureText(PHRASE_LINES[0]);
@@ -1001,8 +946,20 @@ function phraseTextMetrics(fontSize) {
     ? firstLineMetrics.actualBoundingBoxDescent
     : 0;
 
-  return { ascent, lineHeight: Math.max(1, ascent + descent), widestLine };
+  const metrics = {
+    ascent,
+    lineHeight: Math.max(1, ascent + descent),
+    widestLine,
+  };
+  phraseMetricsCache.set(fontSize, metrics);
+
+  return metrics;
 }
+
+// A measurement made before Antonio finishes loading uses the fallback font.
+// Invalidate that small cache once fonts settle so the next frame reproduces
+// the same final layout as measuring on every frame did.
+void document.fonts.ready.then(() => phraseMetricsCache.clear());
 
 /**
  * Choose one scale that keeps the background phrase inside the viewport.
@@ -1046,8 +1003,6 @@ function emitBullet() {
     y: playerY + directionY * spawnDistance,
     angle: playerAngle,
   });
-  const initialShipImpulseX = STARSHIP_MASS * playerVelocityX;
-  const initialShipImpulseY = STARSHIP_MASS * playerVelocityY;
   const bulletImpulseX = bullet.mass * bullet.velocityX;
   const bulletImpulseY = bullet.mass * bullet.velocityY;
 
@@ -1059,20 +1014,8 @@ function emitBullet() {
   const recoilVelocityY = -bulletImpulseY / STARSHIP_MASS;
   playerVelocityX += recoilVelocityX;
   playerVelocityY += recoilVelocityY;
-  lastFiringRecoilVelocity = {
-    x: recoilVelocityX,
-    y: recoilVelocityY,
-  };
-
-  const finalTotalImpulseX = STARSHIP_MASS * playerVelocityX + bulletImpulseX;
-  const finalTotalImpulseY = STARSHIP_MASS * playerVelocityY + bulletImpulseY;
-  lastFiringImpulseDelta = {
-    x: finalTotalImpulseX - initialShipImpulseX,
-    y: finalTotalImpulseY - initialShipImpulseY,
-  };
 
   heavyShotSound.playRandom();
-  totalBulletsEmitted += 1;
   bullets.push(bullet);
 }
 
@@ -1171,7 +1114,6 @@ function toggleAutopilot() {
   autopilotLastTurnDirection = 0;
   autopilotTurnReversalTimeRemaining = 0;
   autopilotDecisionTime = autopilotEnabled ? AUTOPILOT_UPDATE_INTERVAL : 0;
-  autopilotManeuverMode = "coast";
   clearPressedKeys();
 }
 
@@ -1594,7 +1536,6 @@ function updateAutopilotInput(deltaTime, width, height) {
   const threatIsTarget = threat !== undefined && threat.asteroid === target;
 
   if (wallThreat !== undefined) {
-    autopilotManeuverMode = "wall evade";
     desiredAngle = wallThreat.desiredAngle;
     const speed = Math.hypot(playerVelocityX, playerVelocityY);
     const wallAngleDifference = shortestAngleDifference(
@@ -1613,7 +1554,6 @@ function updateAutopilotInput(deltaTime, width, height) {
       input.add("KeyW");
     }
   } else if (threat !== undefined && (!threatIsTarget || targetIsEmergency)) {
-    autopilotManeuverMode = "asteroid evade";
     const escapeX = playerX - threat.futureX;
     const escapeY = playerY - threat.futureY;
     const escapeLength = Math.hypot(escapeX, escapeY);
@@ -1648,7 +1588,6 @@ function updateAutopilotInput(deltaTime, width, height) {
       input.add("KeyW");
     }
   } else if (target !== undefined) {
-    autopilotManeuverMode = "fly-by";
     desiredAngle = targetAimAngle;
     const speed = Math.hypot(playerVelocityX, playerVelocityY);
     const aimAngleDifference = shortestAngleDifference(
@@ -1679,8 +1618,6 @@ function updateAutopilotInput(deltaTime, width, height) {
     ) {
       input.add("KeyW");
     }
-  } else {
-    autopilotManeuverMode = "coast";
   }
 
   applyAutopilotTurnInput(input, desiredAngle, decisionDeltaTime);
@@ -1762,6 +1699,9 @@ function resizeCanvas() {
   canvas.width = Math.round(width * pixelRatio);
   canvas.height = Math.round(height * pixelRatio);
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+  // Resizing resets the canvas state and changes gradient coordinates. The
+  // next draw lazily rebuilds this presentation-only cache once.
+  dangerWallGradients = undefined;
 
   if (playerX === undefined || playerY === undefined) {
     playerX = width / 2;
@@ -1861,11 +1801,6 @@ function applyCollisionDamage(collisionMomentum) {
   shieldState = Math.max(0, shieldState - shieldDamage);
   shipState = Math.max(0, shipState - shipDamage);
   collisionDamageBudget = Math.max(0, collisionDamageBudget - impactDamage);
-  lastCollisionMomentum = safeCollisionMomentum;
-  lastRawCollisionDamage = rawImpactDamage;
-  lastAppliedCollisionDamage = impactDamage;
-  lastShieldDamage = shieldDamage;
-  lastShipDamage = shipDamage;
 
   if (
     shipDamage > 0 &&
@@ -1906,7 +1841,6 @@ function restartGame(width, height) {
   shipFailureActive = false;
   shipFailureTimeRemaining = 0;
   gameWon = false;
-  totalShipRestartCount += 1;
   bulletCooldown = 0;
   bullets.length = 0;
   sparks.length = 0;
@@ -1920,7 +1854,6 @@ function restartGame(width, height) {
   autopilotLastTurnDirection = 0;
   autopilotTurnReversalTimeRemaining = 0;
   autopilotDecisionTime = autopilotEnabled ? AUTOPILOT_UPDATE_INTERVAL : 0;
-  autopilotManeuverMode = "coast";
   asteroids.length = 0;
   asteroidsGenerated = false;
   generateAsteroids(width, height);
@@ -2232,6 +2165,34 @@ function drawPhraseBackground(width, height) {
 }
 
 /**
+ * Build the immutable wall paints for the current canvas size. CanvasGradient
+ * objects remain valid between frames and are invalidated by resizeCanvas().
+ * @param {number} width Playfield width in CSS pixels.
+ * @param {number} height Playfield height in CSS pixels.
+ * @param {number} thickness Wall glow thickness in CSS pixels.
+ * @returns {{top: CanvasGradient, bottom: CanvasGradient, left: CanvasGradient, right: CanvasGradient}}
+ */
+function createDangerWallGradients(width, height, thickness) {
+  const top = context.createLinearGradient(0, 0, 0, thickness);
+  top.addColorStop(0, WALL_GLOW_COLOR);
+  top.addColorStop(1, WALL_GLOW_FADE_COLOR);
+
+  const bottom = context.createLinearGradient(0, height, 0, height - thickness);
+  bottom.addColorStop(0, WALL_GLOW_COLOR);
+  bottom.addColorStop(1, WALL_GLOW_FADE_COLOR);
+
+  const left = context.createLinearGradient(0, 0, thickness, 0);
+  left.addColorStop(0, WALL_GLOW_COLOR);
+  left.addColorStop(1, WALL_GLOW_FADE_COLOR);
+
+  const right = context.createLinearGradient(width, 0, width - thickness, 0);
+  right.addColorStop(0, WALL_GLOW_COLOR);
+  right.addColorStop(1, WALL_GLOW_FADE_COLOR);
+
+  return { top, bottom, left, right };
+}
+
+/**
  * Draw the four physical arena boundaries as a restrained danger glow. The
  * gradients fade inward so the edge remains legible while the play field
  * stays clear; this is presentation only and does not change wall physics.
@@ -2245,43 +2206,22 @@ function drawDangerWalls(width, height) {
     Math.max(1, Math.min(width, height) / 2),
   );
 
+  dangerWallGradients ??= createDangerWallGradients(width, height, thickness);
   context.save();
 
   // Gradients provide the complete inward glow. A shadow on these full-edge
   // rectangles duplicates that effect while forcing Safari to rasterize four
   // large blur regions on every frame.
-  const topGradient = context.createLinearGradient(0, 0, 0, thickness);
-  topGradient.addColorStop(0, WALL_GLOW_COLOR);
-  topGradient.addColorStop(1, WALL_GLOW_FADE_COLOR);
-  context.fillStyle = topGradient;
+  context.fillStyle = dangerWallGradients.top;
   context.fillRect(0, 0, width, thickness);
 
-  const bottomGradient = context.createLinearGradient(
-    0,
-    height,
-    0,
-    height - thickness,
-  );
-  bottomGradient.addColorStop(0, WALL_GLOW_COLOR);
-  bottomGradient.addColorStop(1, WALL_GLOW_FADE_COLOR);
-  context.fillStyle = bottomGradient;
+  context.fillStyle = dangerWallGradients.bottom;
   context.fillRect(0, height - thickness, width, thickness);
 
-  const leftGradient = context.createLinearGradient(0, 0, thickness, 0);
-  leftGradient.addColorStop(0, WALL_GLOW_COLOR);
-  leftGradient.addColorStop(1, WALL_GLOW_FADE_COLOR);
-  context.fillStyle = leftGradient;
+  context.fillStyle = dangerWallGradients.left;
   context.fillRect(0, 0, thickness, height);
 
-  const rightGradient = context.createLinearGradient(
-    width,
-    0,
-    width - thickness,
-    0,
-  );
-  rightGradient.addColorStop(0, WALL_GLOW_COLOR);
-  rightGradient.addColorStop(1, WALL_GLOW_FADE_COLOR);
-  context.fillStyle = rightGradient;
+  context.fillStyle = dangerWallGradients.right;
   context.fillRect(width - thickness, 0, thickness, height);
 
   context.strokeStyle = WALL_GLOW_COLOR;
@@ -3920,10 +3860,6 @@ function emitSparksAt(contactPoint, kineticEnergyLoss) {
   const availableSparkSlots = Math.max(0, MAX_ACTIVE_SPARKS - sparks.length);
   const emittedSparkCount = Math.min(sparkCount, availableSparkSlots);
 
-  lastFrameSparkCount += emittedSparkCount;
-  lastFrameSparkEnergy += safeKineticEnergyLoss;
-  totalSparksEmitted += emittedSparkCount;
-
   for (let sparkIndex = 0; sparkIndex < emittedSparkCount; sparkIndex += 1) {
     sparks.push(new Spark(contactPoint));
   }
@@ -4030,14 +3966,6 @@ function resolveBulletCollisions(width, height) {
         const asteroid = asteroids[hitAsteroidIndex];
         bullet.x = hitPoint.x;
         bullet.y = hitPoint.y;
-        const beforeMomentum = {
-          x:
-            asteroid.mass * asteroid.velocityX + bullet.mass * bullet.velocityX,
-          y:
-            asteroid.mass * asteroid.velocityY + bullet.mass * bullet.velocityY,
-        };
-        const beforeAngularMomentum =
-          bodyAngularMomentum(asteroid) + bodyAngularMomentum(bullet);
         const beforeEnergy =
           bodyKineticEnergy(asteroid) + bodyKineticEnergy(bullet);
         interactionBeforeEnergy = beforeEnergy;
@@ -4052,23 +3980,7 @@ function resolveBulletCollisions(width, height) {
           bullet.velocityX,
           bullet.velocityY,
         );
-        const bulletResponse = applyContactImpulse(
-          asteroid,
-          bullet,
-          normal,
-          hitPoint,
-        );
-        lastBulletLostMomentum = {
-          x: -bulletResponse.x,
-          y: -bulletResponse.y,
-        };
-        lastBulletShoulder = cross2D(
-          hitPoint.x - asteroid.x,
-          hitPoint.y - asteroid.y,
-          normal.x,
-          normal.y,
-        );
-        lastBulletAngularImpulse = bulletResponse.firstAngularImpulse;
+        applyContactImpulse(asteroid, bullet, normal, hitPoint);
         bullet.syncAngle();
         if (canReflect) {
           bullet.recordReflection();
@@ -4095,38 +4007,9 @@ function resolveBulletCollisions(width, height) {
           ignoredAsteroids.add(fragment);
         }
 
-        if (fragments.length === 2) {
-          totalBulletCutCount += 1;
-          const afterMomentum = fragments.reduce(
-            (momentum, fragment) => ({
-              x: momentum.x + fragment.mass * fragment.velocityX,
-              y: momentum.y + fragment.mass * fragment.velocityY,
-            }),
-            {
-              x: bullet.mass * bullet.velocityX,
-              y: bullet.mass * bullet.velocityY,
-            },
-          );
-          const afterAngularMomentum = fragments.reduce(
-            (angularMomentum, fragment) =>
-              angularMomentum + bodyAngularMomentum(fragment),
-            bodyAngularMomentum(bullet),
-          );
-          lastBulletMomentumDelta = {
-            x: afterMomentum.x - beforeMomentum.x,
-            y: afterMomentum.y - beforeMomentum.y,
-          };
-          lastBulletAngularMomentumDelta =
-            afterAngularMomentum - beforeAngularMomentum;
-          lastBulletKineticEnergyDelta = afterEnergy - beforeEnergy;
-        }
       } else if (shipIsFirst) {
         bullet.x = hitPoint.x;
         bullet.y = hitPoint.y;
-        const beforeMomentum = {
-          x: ship.mass * ship.velocityX + bullet.mass * bullet.velocityX,
-          y: ship.mass * ship.velocityY + bullet.mass * bullet.velocityY,
-        };
         const beforeEnergy =
           bodyKineticEnergy(ship) + bodyKineticEnergy(bullet);
         interactionBeforeEnergy = beforeEnergy;
@@ -4144,40 +4027,18 @@ function resolveBulletCollisions(width, height) {
           hitPoint,
         );
         applyShipCollisionAngleAdjustment(bulletImpulse);
-        const shipImpulse = {
-          x: -bulletImpulse.x,
-          y: -bulletImpulse.y,
-        };
         applyCollisionDamage(contactImpulseMagnitude(bulletImpulse));
         if (bulletImpulse.normalImpulse > COLLISION_EPSILON) {
           empSound.playRandom();
         }
-        lastBulletLostMomentum = {
-          x: -bulletImpulse.x,
-          y: -bulletImpulse.y,
-        };
-        lastBulletShoulder = 0;
-        lastBulletAngularImpulse = 0;
         bullet.syncAngle();
 
         if (canReflect) {
           bullet.recordReflection();
         }
 
-        const afterMomentum = {
-          x: ship.mass * ship.velocityX + bullet.mass * bullet.velocityX,
-          y: ship.mass * ship.velocityY + bullet.mass * bullet.velocityY,
-        };
         const afterEnergy = bodyKineticEnergy(ship) + bodyKineticEnergy(bullet);
         interactionAfterEnergy = afterEnergy;
-
-        totalBulletShipCollisionCount += 1;
-        lastBulletShipImpulse = shipImpulse;
-        lastBulletShipMomentumDelta = {
-          x: afterMomentum.x - beforeMomentum.x,
-          y: afterMomentum.y - beforeMomentum.y,
-        };
-        lastBulletShipKineticEnergyDelta = afterEnergy - beforeEnergy;
         shipIgnored = true;
       }
 
@@ -4604,38 +4465,6 @@ function collisionManifold(firstBody, secondBody) {
 }
 
 /**
- * @param {PhysicsBody} ship
- * @param {boolean} [includeBullets]
- * @returns {{momentumX: number, momentumY: number, kineticEnergy: number, angularMomentum: number, angularKineticEnergy: number}}
- */
-function physicsSnapshot(ship, includeBullets = false) {
-  const bodies = [ship, ...asteroids, ...(includeBullets ? bullets : [])];
-  let momentumX = 0;
-  let momentumY = 0;
-  let kineticEnergy = 0;
-  let angularMomentum = 0;
-  let angularKineticEnergy = 0;
-
-  for (const body of bodies) {
-    momentumX += body.mass * body.velocityX;
-    momentumY += body.mass * body.velocityY;
-    kineticEnergy += bodyKineticEnergy(body);
-    angularMomentum += bodyAngularMomentum(body);
-    angularKineticEnergy += Number.isFinite(body.momentOfInertia)
-      ? 0.5 * body.momentOfInertia * bodyAngularVelocity(body) ** 2
-      : 0;
-  }
-
-  return {
-    momentumX,
-    momentumY,
-    kineticEnergy,
-    angularMomentum,
-    angularKineticEnergy,
-  };
-}
-
-/**
  * Resolve a convex-shape contact with a single shared contact point. Equal
  * and opposite impulses at that point preserve total angular momentum for an
  * isolated asteroid pair, while the restitution and friction coefficients
@@ -4746,8 +4575,6 @@ function applyPlayerBody(body) {
 
 function resolveAsteroidCollisions() {
   const ship = playerBody();
-  const beforeCollision = physicsSnapshot(ship);
-  let collisionCount = 0;
 
   for (let firstIndex = 0; firstIndex < asteroids.length; firstIndex += 1) {
     const firstAsteroid = asteroids[firstIndex];
@@ -4763,9 +4590,7 @@ function resolveAsteroidCollisions() {
         continue;
       }
 
-      collisionCount += Number(
-        resolveCollisionWithSparks(firstAsteroid, secondAsteroid) !== undefined,
-      );
+      resolveCollisionWithSparks(firstAsteroid, secondAsteroid);
     }
   }
 
@@ -4775,7 +4600,6 @@ function resolveAsteroidCollisions() {
     }
 
     const response = resolveCollisionWithSparks(ship, asteroid);
-    collisionCount += Number(response !== undefined);
 
     if (response !== undefined) {
       applyCollisionDamage(contactImpulseMagnitude(response));
@@ -4786,19 +4610,6 @@ function resolveAsteroidCollisions() {
     }
   }
 
-  const afterCollision = physicsSnapshot(ship);
-  lastCollisionCount = collisionCount;
-  totalCollisionCount += collisionCount;
-  lastMomentumDelta = {
-    x: afterCollision.momentumX - beforeCollision.momentumX,
-    y: afterCollision.momentumY - beforeCollision.momentumY,
-  };
-  lastKineticEnergyDelta =
-    afterCollision.kineticEnergy - beforeCollision.kineticEnergy;
-  lastAngularMomentumDelta =
-    afterCollision.angularMomentum - beforeCollision.angularMomentum;
-  lastAngularKineticEnergyDelta =
-    afterCollision.angularKineticEnergy - beforeCollision.angularKineticEnergy;
   applyPlayerBody(ship);
 }
 
@@ -4810,180 +4621,6 @@ function bodiesMayOverlap(firstBody, secondBody) {
   return distanceX ** 2 + distanceY ** 2 <= radiusSum ** 2;
 }
 
-function updateFrameRate(frameTime) {
-  if (previousFrameTime === undefined) {
-    return;
-  }
-
-  const frameDuration = frameTime - previousFrameTime;
-
-  if (frameDuration <= 0) {
-    return;
-  }
-
-  if (frameTimeSampleCount === FPS_SAMPLE_COUNT) {
-    frameTimeSampleTotal -= frameTimeSamples[frameTimeSampleIndex];
-  } else {
-    frameTimeSampleCount += 1;
-  }
-
-  frameTimeSamples[frameTimeSampleIndex] = frameDuration;
-  frameTimeSampleTotal += frameDuration;
-  frameTimeSampleIndex = (frameTimeSampleIndex + 1) % FPS_SAMPLE_COUNT;
-  frameRate = 1000 / (frameTimeSampleTotal / frameTimeSampleCount);
-
-  if (frameTimeSampleCount === FPS_SAMPLE_COUNT) {
-    minimumFrameRate = Math.min(minimumFrameRate, frameRate);
-  }
-}
-
-/**
- * Refresh diagnostic text at a human-readable rate to keep inspection from
- * becoming a source of frame-time spikes itself.
- * @param {number} deltaTime Elapsed simulation time in seconds.
- * @returns {void}
- */
-function updateDebugOutput(deltaTime) {
-  if (!debugEnabled) {
-    return;
-  }
-
-  debugRefreshTimeRemaining -= Math.max(0, deltaTime);
-
-  if (debugRefreshTimeRemaining > 0) {
-    return;
-  }
-
-  debugRefreshTimeRemaining = DEBUG_REFRESH_INTERVAL;
-
-  const ship = playerBody();
-  const firstAsteroid = asteroids[0];
-  const totalPhysics = physicsSnapshot(ship, true);
-  const asteroidArea = firstAsteroid?.surfaceArea ?? 0;
-  const asteroidMass = firstAsteroid?.mass ?? 0;
-  const displayedFrameRate = frameRate > 0 ? frameRate.toFixed(1) : "--";
-  const displayedMinimumFrameRate = Number.isFinite(minimumFrameRate)
-    ? minimumFrameRate.toFixed(1)
-    : "--";
-  const autopilotTargetIndex =
-    autopilotTargetLock === undefined
-      ? -1
-      : asteroids.indexOf(autopilotTargetLock);
-  const autopilotTargetDistance =
-    autopilotTargetLock === undefined
-      ? 0
-      : Math.hypot(
-          autopilotTargetLock.x - playerX,
-          autopilotTargetLock.y - playerY,
-        );
-  const autopilotShieldRatio = shieldState / SHIELD_MAX_STATE;
-  const autopilotHullRatio = shipState / SHIP_MAX_STATE;
-
-  debugOutput.textContent = [
-    `PHYSICS DEBUG  (${DEBUG_TOGGLE_KEY} toggles)`,
-    `Game: ${
-      shipFailureActive
-        ? `ship destroyed (new game in ${Math.max(
-            1,
-            Math.ceil(shipFailureTimeRemaining),
-          )})`
-        : gameWon
-          ? "won (P starts a new game)"
-          : gamePaused
-            ? `${PAUSE_KEY_LABEL} toggles`
-            : "running"
-    }`,
-    `Autopilot: ${
-      autopilotEnabled ? "ON" : "OFF"
-    } (${AUTOPILOT_TOGGLE_KEY_LABEL} toggles; manual input disables)`,
-    `Autopilot target: ${
-      autopilotTargetIndex >= 0 ? autopilotTargetIndex + 1 : "none"
-    } at ${autopilotTargetDistance.toFixed(0)}px, turn ${
-      autopilotTurnDirection > 0
-        ? "CW"
-        : autopilotTurnDirection < 0
-          ? "CCW"
-          : "hold"
-    }`,
-    `Autopilot maneuver: ${autopilotManeuverMode}; burst ${
-      autopilotBurstTimeRemaining > 0 ? "active" : "ready"
-    }`,
-    `Autopilot shield policy: shield ${(autopilotShieldRatio * 100).toFixed(
-      0,
-    )}%, hull ${(autopilotHullRatio * 100).toFixed(0)}%, margin ${autopilotHealthSafetyMargin().toFixed(
-      0,
-    )}px`,
-    `Shield/ship: ${shieldState.toFixed(2)}%/${shipState.toFixed(2)}% (regen ${SHIELD_REGENERATION_RATE.toFixed(
-      1,
-    )}/s)`,
-    `Damage: momentum ${lastCollisionMomentum.toFixed(2)}, raw/applied ${lastRawCollisionDamage.toFixed(
-      2,
-    )}/${lastAppliedCollisionDamage.toFixed(2)}, shield ${lastShieldDamage.toFixed(
-      2,
-    )}, ship ${lastShipDamage.toFixed(2)}`,
-    `Damage budget: ${collisionDamageBudget.toFixed(2)}/${COLLISION_DAMAGE_BUDGET_CAP.toFixed(
-      2,
-    )} (refill ${COLLISION_DAMAGE_BUDGET_REFILL_RATE.toFixed(1)}/s)`,
-    `Damage coefficients: shield ${SHIELD_DAMAGE_COEFFICIENT.toFixed(
-      2,
-    )}, ship ${SHIP_DAMAGE_COEFFICIENT.toFixed(2)}`,
-    `Ship restarts: ${totalShipRestartCount}`,
-    `Asteroids: ${asteroids.length} (target: ${ASTEROID_COUNT})`,
-    `FPS: ${displayedFrameRate} (rolling ${FPS_SAMPLE_COUNT}-frame avg)`,
-    `FPS minimum: ${displayedMinimumFrameRate} (rolling window)`,
-    `Asteroid: ${asteroidMass.toFixed(2)} mass, ${asteroidArea.toFixed(
-      2,
-    )} area, density ${(firstAsteroid?.density ?? 0).toFixed(3)}`,
-    `Spin: ${(firstAsteroid?.angularVelocity ?? 0).toFixed(5)} rad/s, inertia ${(
-      firstAsteroid?.momentOfInertia ?? 0
-    ).toFixed(2)}`,
-    `Collision: ${lastCollisionCount}/frame, ${totalCollisionCount} total`,
-    `Material: e=${BOUNCINESS.toFixed(2)}, friction=${FRICTION_COEFFICIENT.toFixed(
-      2,
-    )}`,
-    `Bullets: ${totalBulletsEmitted} fired, ${bullets.length} active, ${totalBulletCutCount} cuts | Sparks: ${sparks.length} active, ${totalSparksEmitted} emitted (${lastFrameSparkCount}, ${lastFrameSparkEnergy.toFixed(
-      0,
-    )}E)`,
-    `Bullet mass/reflections: ${BULLET_MASS.toFixed(
-      2,
-    )}/${totalBulletReflectionCount}`,
-    `Bullet lost Δp: (${lastBulletLostMomentum.x.toFixed(5)}, ${lastBulletLostMomentum.y.toFixed(
-      5,
-    )})`,
-    `Bullet shoulder/ΔL: ${lastBulletShoulder.toFixed(5)}/${lastBulletAngularImpulse.toFixed(
-      5,
-    )}`,
-    `Last cut Δp: (${lastBulletMomentumDelta.x.toFixed(5)}, ${lastBulletMomentumDelta.y.toFixed(
-      5,
-    )})`,
-    `Last cut ΔL/ΔE: ${lastBulletAngularMomentumDelta.toFixed(5)}/${lastBulletKineticEnergyDelta.toFixed(
-      5,
-    )}`,
-    `Ship contacts: ${totalBulletShipCollisionCount}, last impulse (${lastBulletShipImpulse.x.toFixed(
-      5,
-    )}, ${lastBulletShipImpulse.y.toFixed(5)})`,
-    `Ship Δp/ΔE: (${lastBulletShipMomentumDelta.x.toFixed(5)}, ${lastBulletShipMomentumDelta.y.toFixed(
-      5,
-    )})/${lastBulletShipKineticEnergyDelta.toFixed(5)}`,
-    `Firing Δp/recoil: (${lastFiringImpulseDelta.x.toFixed(5)}, ${lastFiringImpulseDelta.y.toFixed(
-      5,
-    )})/(${lastFiringRecoilVelocity.x.toFixed(5)}, ${lastFiringRecoilVelocity.y.toFixed(
-      5,
-    )})`,
-    `Contact Δp: (${lastMomentumDelta.x.toFixed(5)}, ${lastMomentumDelta.y.toFixed(
-      5,
-    )})`,
-    `Contact ΔL/ΔE: ${lastAngularMomentumDelta.toFixed(5)}/${lastKineticEnergyDelta.toFixed(
-      5,
-    )}`,
-    `Total p: (${totalPhysics.momentumX.toFixed(2)}, ${totalPhysics.momentumY.toFixed(
-      2,
-    )})`,
-    `Total angular momentum: ${totalPhysics.angularMomentum.toFixed(2)}`,
-    `Total kinetic energy: ${totalPhysics.kineticEnergy.toFixed(2)}`,
-  ].join("\n");
-}
-
 /**
  * A/D and the left/right arrows directly change the ship's facing. Collision
  * friction applies separate one-time heading adjustments. The velocity vector
@@ -4992,8 +4629,6 @@ function updateDebugOutput(deltaTime) {
  * rather than steering the ship toward its nose.
  */
 function updateGame(deltaTime, width, height) {
-  lastFrameSparkCount = 0;
-  lastFrameSparkEnergy = 0;
   refillCollisionDamageBudget(deltaTime);
   regenerateShield(deltaTime);
   updateAutopilotInput(deltaTime, width, height);
@@ -5098,7 +4733,6 @@ function updateGame(deltaTime, width, height) {
  * @returns {void}
  */
 function animate(frameTime) {
-  updateFrameRate(frameTime);
   const deltaTime =
     previousFrameTime === undefined
       ? 0
@@ -5116,7 +4750,6 @@ function animate(frameTime) {
   }
   updateSparks(deltaTime);
   updateDisplayedStatusBars(deltaTime);
-  updateDebugOutput(deltaTime);
   drawGame(width, height);
   window.requestAnimationFrame(animate);
 }
@@ -5161,14 +4794,6 @@ document.addEventListener("keydown", (event) => {
       }
     }
 
-    event.preventDefault();
-    return;
-  }
-
-  if (event.code === DEBUG_TOGGLE_KEY && !event.repeat) {
-    debugEnabled = !debugEnabled;
-    debugOutput.hidden = !debugEnabled;
-    debugRefreshTimeRemaining = 0;
     event.preventDefault();
     return;
   }
