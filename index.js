@@ -42,8 +42,17 @@ const PLAYER_TRIANGLE_HALF_ANGLE = Math.PI / 4;
 // intentionally heavier than a small asteroid, while still being light enough
 // for a large asteroid to noticeably change its trajectory.
 const STARSHIP_MASS = 1000;
-// A global speed keeps the steering response easy to tune from one place and
-// makes rotation consistent across displays with different refresh rates.
+// This inertia is only the scale used to convert a collision's angular impulse
+// into one immediate heading adjustment; the ship does not retain angular
+// velocity or intrinsic angular momentum after the contact.
+const STARSHIP_COLLISION_TURN_INERTIA = STARSHIP_MASS * PLAYER_RADIUS ** 2 / 2;
+// Collision turning is intentionally a subtle heading nudge rather than a
+// physical spin replacement. The cap prevents a high-speed scrape from
+// producing a chaotic turn-around in ordinary play.
+const SHIP_COLLISION_TURN_RESPONSE = 0.2;
+const MAX_SHIP_COLLISION_TURN_ANGLE = Math.PI / 12;
+// Direct angular control keeps the ship responsive and independent from its
+// one-time collision heading adjustments.
 const ROTATION_SPEED = Math.PI * 2;
 // Movement is deliberately expressed in CSS pixels per second so the game
 // behaves the same at different device pixel ratios and display refresh rates.
@@ -223,6 +232,9 @@ const BOUNCINESS = 0.9;
 // A modest Coulomb friction coefficient lets a shoulder scrape exchange spin
 // instead of making every contact behave like two frictionless billiard balls.
 const FRICTION_COEFFICIENT = 0.35;
+// The shield uses the same material model as asteroid contacts, but keeps a
+// named coefficient so the wall response can be tuned independently later.
+const SHIELD_WALL_FRICTION_COEFFICIENT = FRICTION_COEFFICIENT;
 const COLLISION_EPSILON = 0.000001;
 const STATIC_WALL_BODY = Object.freeze({
   x: 0,
@@ -1629,6 +1641,15 @@ function drawPauseHelp(width, height) {
  * Move one scalar body coordinate without allocating a result object. This is
  * the hot path used by every moving body on every frame; the loop retains the
  * defensive multi-bounce behavior for tiny viewports.
+ * @param {PhysicsBody} body Body whose coordinate and velocity are updated.
+ * @param {"x"|"y"} positionProperty Coordinate property to advance.
+ * @param {"velocityX"|"velocityY"} velocityProperty Matching velocity property.
+ * @param {number} displacement Signed coordinate displacement.
+ * @param {number} minimum Inclusive lower coordinate bound.
+ * @param {number} maximum Inclusive upper coordinate bound.
+ * @param {number} [bounceCoefficient] Normal velocity multiplier without a callback.
+ * @param {(normal: Vector2) => void} [onCollision] Contact handler for each wall hit.
+ * @returns {void}
  */
 function advanceAndReflect(
   body,
@@ -1638,6 +1659,7 @@ function advanceAndReflect(
   minimum,
   maximum,
   bounceCoefficient = 1,
+  onCollision,
 ) {
   if (maximum <= minimum) {
     body[positionProperty] = (minimum + maximum) / 2;
@@ -1651,18 +1673,80 @@ function advanceAndReflect(
     if (nextPosition < minimum) {
       nextPosition = minimum + (minimum - nextPosition);
       directionMultiplier *= -1;
-      body[velocityProperty] *= bounceCoefficient;
+      body[positionProperty] = minimum;
+      if (onCollision === undefined) {
+        body[velocityProperty] *= bounceCoefficient;
+      } else {
+        onCollision(
+          positionProperty === "x" ? { x: -1, y: 0 } : { x: 0, y: -1 },
+        );
+      }
     }
 
     if (nextPosition > maximum) {
       nextPosition = maximum - (nextPosition - maximum);
       directionMultiplier *= -1;
-      body[velocityProperty] *= bounceCoefficient;
+      body[positionProperty] = maximum;
+      if (onCollision === undefined) {
+        body[velocityProperty] *= bounceCoefficient;
+      } else {
+        onCollision(positionProperty === "x" ? { x: 1, y: 0 } : { x: 0, y: 1 });
+      }
     }
   }
 
   body[positionProperty] = nextPosition;
-  body[velocityProperty] *= directionMultiplier;
+  if (onCollision === undefined) {
+    body[velocityProperty] *= directionMultiplier;
+  }
+}
+
+/**
+ * Resolve one ship-to-wall contact at the shield rim. The shared contact
+ * solver applies restitution along the wall normal and a Coulomb-limited
+ * friction impulse along the wall. Because the impulse is off-center, its
+ * magnitude—and therefore the resulting turn—depends on ship momentum.
+ * @param {PhysicsBody} ship
+ * @param {Vector2} normal Normal pointing from the ship toward the wall.
+ * @returns {ContactResponse}
+ */
+function resolveShipWallContact(ship, normal) {
+  const contactPoint = {
+    x: ship.x + normal.x * PLAYER_RADIUS,
+    y: ship.y + normal.y * PLAYER_RADIUS,
+  };
+
+  const response = applyContactImpulse(
+    ship,
+    STATIC_WALL_BODY,
+    normal,
+    contactPoint,
+    SHIELD_WALL_FRICTION_COEFFICIENT,
+  );
+
+  applyShipCollisionAngleAdjustment(response);
+  return response;
+}
+
+/**
+ * Turn the ship once at the collision moment without introducing persistent
+ * angular momentum. The angular impulse still comes from the same friction
+ * calculation, so greater contact momentum or friction produces a larger
+ * heading adjustment.
+ * @param {ContactResponse} response Contact response involving the ship.
+ * @returns {void}
+ */
+function applyShipCollisionAngleAdjustment(response) {
+  const uncappedAngleAdjustment = response.firstAngularImpulse /
+    STARSHIP_COLLISION_TURN_INERTIA * SHIP_COLLISION_TURN_RESPONSE;
+  const angleAdjustment = Math.max(
+    -MAX_SHIP_COLLISION_TURN_ANGLE,
+    Math.min(MAX_SHIP_COLLISION_TURN_ANGLE, uncappedAngleAdjustment),
+  );
+
+  if (Number.isFinite(uncappedAngleAdjustment)) {
+    playerAngle = wrapAngle(playerAngle + angleAdjustment);
+  }
 }
 
 /**
@@ -2465,9 +2549,16 @@ function circleNormalAtPoint(
  * @param {PhysicsBody} secondBody
  * @param {Vector2} normal
  * @param {Vector2} contactPoint
+ * @param {number} [frictionCoefficient]
  * @returns {ContactResponse}
  */
-function applyContactImpulse(firstBody, secondBody, normal, contactPoint) {
+function applyContactImpulse(
+  firstBody,
+  secondBody,
+  normal,
+  contactPoint,
+  frictionCoefficient = FRICTION_COEFFICIENT,
+) {
   const firstOffsetX = contactPoint.x - firstBody.x;
   const firstOffsetY = contactPoint.y - firstBody.y;
   const secondOffsetX = contactPoint.x - secondBody.x;
@@ -2552,7 +2643,7 @@ function applyContactImpulse(firstBody, secondBody, normal, contactPoint) {
       COLLISION_EPSILON
     ? -relativeTangentVelocity / tangentEffectiveMass
     : 0;
-  const maximumTangentImpulse = FRICTION_COEFFICIENT *
+  const maximumTangentImpulse = frictionCoefficient *
     normalImpulseMagnitude;
   const tangentImpulseMagnitude = Math.min(
     maximumTangentImpulse,
@@ -2801,6 +2892,7 @@ function resolveBulletCollisions(width, height) {
           normal,
           hitPoint,
         );
+        applyShipCollisionAngleAdjustment(bulletImpulse);
         const shipImpulse = {
           x: -bulletImpulse.x,
           y: -bulletImpulse.y,
@@ -3387,6 +3479,7 @@ function resolveAsteroidCollisions() {
 
     if (response !== undefined) {
       applyCollisionDamage(contactImpulseMagnitude(response));
+      applyShipCollisionAngleAdjustment(response);
     }
   }
 
@@ -3544,10 +3637,11 @@ function updateDebugOutput() {
 }
 
 /**
- * Rotation changes the ship's facing only. The velocity vector remains free,
- * so a ship can drift sideways or backwards while its nose controls firing
- * and thrust. Down decelerates along the current travel vector rather than
- * steering the ship toward its nose.
+ * A/D and the left/right arrows directly change the ship's facing. Collision
+ * friction applies separate one-time heading adjustments. The velocity vector
+ * remains free, so a ship can drift sideways or backwards while its nose
+ * controls firing and thrust. Down decelerates along the current travel vector
+ * rather than steering the ship toward its nose.
  */
 function updateGame(deltaTime, width, height) {
   refillCollisionDamageBudget(deltaTime);
@@ -3600,9 +3694,10 @@ function updateGame(deltaTime, width, height) {
     asteroid.update(width, height, deltaTime);
   }
 
-  // The ship is a dynamic body just like an asteroid. In particular, walls
-  // damp its normal velocity through BOUNCINESS instead of merely changing
-  // its position, so wall collisions remove kinetic energy consistently.
+  // The ship is a dynamic rigid body just like an asteroid. The wall callback
+  // sends each shield contact through the shared normal/friction solver so a
+  // tangential impact changes the ship's angular velocity instead of only
+  // reflecting its center-of-mass velocity.
   const ship = playerBody();
   advanceAndReflect(
     ship,
@@ -3612,6 +3707,7 @@ function updateGame(deltaTime, width, height) {
     PLAYER_RADIUS,
     width - PLAYER_RADIUS,
     BOUNCINESS,
+    (normal) => resolveShipWallContact(ship, normal),
   );
   advanceAndReflect(
     ship,
@@ -3621,6 +3717,7 @@ function updateGame(deltaTime, width, height) {
     PLAYER_RADIUS,
     height - PLAYER_RADIUS,
     BOUNCINESS,
+    (normal) => resolveShipWallContact(ship, normal),
   );
   applyPlayerBody(ship);
 
