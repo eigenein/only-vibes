@@ -1,4 +1,4 @@
-This file must only contain bug reports that have been found by Kane and actioned upon:
+This file must only contain bug reports that have been found by Kane and actioned upon. Deno checks do not count.
 
 ## Iteration 19
 

@@ -33,6 +33,10 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must not tolerate any visual bugs.
 - Must keep calculations safe and numerically stable.
 
+# Design choices
+
+- LCARS-like user interface.
+
 # How to verify
 
 - Must verify all changes and bug fixes immediately with `kane-cli` skill.
@@ -50,3 +54,5 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must not rely merely on code analysis.
 - Must use W/A/S/D keys instead of the arrow keys when the spaceship control is needed.
 - May temporarily change the code to isolate certain behavior; must revert it back when done.
+- Must verify on different browser window sizes.
+- Must tell Kane exactly what must be verified.

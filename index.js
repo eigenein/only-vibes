@@ -68,6 +68,39 @@ const MAX_SPEED = 360;
 // is held. Keeping it global makes the handling easy to tune.
 const MOVEMENT_RESPONSIVENESS = 480;
 
+// The LCARS palette is shared by every presentation layer so the arena,
+// objects, and overlays read as one interface rather than independent styles.
+// Warm operational colors carry the strongest emphasis; lilac is reserved for
+// shields and low-density material, while black keeps the playfield spacious.
+const LCARS_BLACK = "#000000";
+const LCARS_AMBER = "#ff9900";
+const LCARS_GOLD = "#ffcc66";
+const LCARS_CORAL = "#ff8866";
+const LCARS_RED = "#cc6666";
+const LCARS_LILAC = "#9999ff";
+const LCARS_LAVENDER = "#cc99cc";
+const LCARS_TEXT = "#fff4dd";
+const LCARS_MUTED_TEXT = "#d6c5dc";
+const LCARS_PANEL = "rgba(12, 8, 18, 0.92)";
+// Antonio keeps the tall, narrow geometry associated with LCARS while offering
+// enough weight variation for readable data and instructions. The local
+// fallbacks preserve a condensed silhouette if the CDN font is unavailable.
+const LCARS_FONT_FAMILY = 'Antonio, "Arial Narrow", "Aptos Narrow", sans-serif';
+const LCARS_BODY_FONT_FAMILY = LCARS_FONT_FAMILY;
+const LCARS_FRAME_MARGIN = 14;
+const LCARS_CONSOLE_TOP = 10;
+// This is the smallest fixed width that keeps “FLIGHT CONTROL” and its
+// horizontal padding legible at the command-strip title size.
+const LCARS_MODE_WIDTH = 164;
+// The command strip turns the keyboard map into persistent LCARS controls.
+// Compact gaps keep the keycaps grouped at the left, while their square-like
+// width makes the keyboard map immediately recognizable.
+const FLIGHT_CONTROL_GAP = 5;
+const FLIGHT_CONTROL_KEY_WIDTH = 64;
+const FLIGHT_CONTROL_TITLE_WEIGHT = 700;
+const FLIGHT_CONTROL_DETAIL_WEIGHT = 500;
+const FLIGHT_CONTROL_ACTIVE_INSET = 4;
+
 // The shield and hull are intentionally separate gameplay states. Collision
 // impulse is scaled into readable percentage points, while the different
 // coefficients make the shield absorb slightly more of every impact than the
@@ -88,30 +121,31 @@ const COLLISION_DAMAGE_BUDGET_WINDOW_SECONDS = 0.45;
 const COLLISION_DAMAGE_BUDGET_REFILL_RATE = COLLISION_DAMAGE_BUDGET_CAP /
   COLLISION_DAMAGE_BUDGET_WINDOW_SECONDS;
 const STATUS_BAR_WIDTH = 220;
-const STATUS_BAR_HEIGHT = 22;
-const STATUS_BAR_GAP = 12;
-const STATUS_BAR_MARGIN = 16;
+const STATUS_BAR_HEIGHT = 26;
+const STATUS_BAR_GAP = 10;
+const STATUS_BAR_MARGIN = LCARS_FRAME_MARGIN;
 // The bars are presentation values that catch up to the authoritative state
 // at a readable speed. Keeping this separate from damage simulation makes a
 // large impact legible without changing when a collision actually resolves.
 const STATUS_BAR_ANIMATION_SPEED = 190;
 const STATUS_POINTS_WIDTH = 92;
-const STATUS_POINTS_GAP = 16;
+const STATUS_POINTS_GAP = 6;
 const STATUS_POINTS_HEIGHT = STATUS_BAR_HEIGHT * 2 + STATUS_BAR_GAP;
+// The command-console band encloses its two-row controls with matching
+// 10-pixel margins above and below.
+const LCARS_CONSOLE_HEIGHT = LCARS_CONSOLE_TOP * 2 + STATUS_POINTS_HEIGHT;
 // Hold the failure message long enough for a new player to connect the empty
 // hull bar with the collision that ended the current life.
 const SHIP_FAILURE_DISPLAY_SECONDS = 2.4;
-const SHIP_FAILURE_PANEL_WIDTH = 480;
-const SHIP_FAILURE_PANEL_HEIGHT = 226;
+const SHIP_FAILURE_PANEL_WIDTH = 560;
+const SHIP_FAILURE_PANEL_HEIGHT = 286;
 const SHIP_FAILURE_BACKDROP_ALPHA = 0.68;
-const SHIP_FAILURE_PANEL_ALPHA = 0.9;
 const SHIP_FAILURE_REASON = "Hull depleted by a collision.";
 // The win state is intentionally frozen so the player can read the result and
 // see the final score before choosing to start another field.
-const WIN_SCREEN_PANEL_WIDTH = 480;
-const WIN_SCREEN_PANEL_HEIGHT = 252;
+const WIN_SCREEN_PANEL_WIDTH = 560;
+const WIN_SCREEN_PANEL_HEIGHT = 300;
 const WIN_SCREEN_BACKDROP_ALPHA = 0.58;
-const WIN_SCREEN_PANEL_ALPHA = 0.9;
 const WIN_SCREEN_TITLE = "YOU WIN";
 const WIN_SCREEN_REASON = "All asteroids destroyed.";
 
@@ -186,7 +220,7 @@ const SPARK_MAX_INTENSITY = 1.0;
 const SPARK_CORE_RADIUS = 3;
 const SPARK_GLOW_RADIUS = 10;
 const SPARK_GLOW_ALPHA = 0.18;
-const SPARK_COLOR = "#ffd166";
+const SPARK_COLOR = LCARS_GOLD;
 // Backquote is an uncommon gameplay key and is separate from the ship's
 // letter-key controls, so it leaves D available for clockwise rotation.
 const DEBUG_TOGGLE_KEY = "Backquote";
@@ -195,64 +229,36 @@ const PAUSE_KEY_LABEL = "P";
 const FIRE_KEY = "Space";
 const FIRE_KEY_LABEL = "SPACE";
 
-// Keep every player-facing control in one compact table. The pause screen uses
-// the full descriptions, while the running HUD projects the essential entries
-// into one line, so the two help surfaces cannot drift apart.
+// Keep the detailed paused-help controls in one compact table. The persistent
+// command strip uses shorter LCARS action names suited to its button geometry.
 const PLAY_HELP = Object.freeze([
   Object.freeze({
     label: FIRE_KEY_LABEL,
     description: "shoot",
-    compactDescription: "shoot",
-    essential: true,
   }),
   Object.freeze({
     label: "W / S",
     description: "thrust / brake",
-    compactDescription: "thrust / brake",
-    essential: true,
   }),
   Object.freeze({
     label: "A / D",
     description: "turn counter-clockwise / clockwise",
-    compactDescription: "turn CCW / CW",
-    essential: true,
   }),
   Object.freeze({
     label: PAUSE_KEY_LABEL,
     description: "pause / resume",
-    compactDescription: "pause",
-    essential: true,
   }),
   Object.freeze({
     label: AUTOPILOT_TOGGLE_KEY_LABEL,
     description: "autopilot on / off",
-    compactDescription: "autopilot",
-    essential: true,
   }),
   Object.freeze({
     label: "COLOR",
     description: "redder asteroids are denser",
-    essential: false,
   }),
 ]);
-const ESSENTIAL_HELP_LINE = PLAY_HELP.filter(
-  (helpItem) => helpItem.essential,
-).map(
-  (helpItem) => `${helpItem.label} — ${helpItem.compactDescription}`,
-).join("   ·   ");
 const HELP_PANEL_WIDTH = 540;
-const HELP_PANEL_HEIGHT = 446;
-const RUNNING_HELP_PANEL_MAX_WIDTH = 760;
-const RUNNING_HELP_PANEL_HEIGHT = 34;
-const RUNNING_HELP_PANEL_MARGIN = 16;
-const RUNNING_HELP_TEXT_PADDING = 12;
-const RUNNING_HELP_FONT_SIZE = 13;
-// Give a player who has not touched a control a short, calm reminder before
-// drawing attention to the help. The pulse stays subtle so it cannot compete
-// with the ship or the asteroid field once the player starts playing.
-const HELP_ATTENTION_DELAY = 5;
-const HELP_ATTENTION_PULSE_PERIOD = 1.2;
-const HELP_ATTENTION_COLOR = "#ffd166";
+const HELP_PANEL_HEIGHT = 500;
 
 // A faint two-line phrase brands the arena without participating in the game
 // simulation. It is ordinary canvas text rendered as background decoration.
@@ -260,19 +266,18 @@ const PHRASE_LINES = Object.freeze([
   "KANE CLI",
   "HACKATHON",
 ]);
-const PHRASE_FONT_FAMILY = "Arial, sans-serif";
+const PHRASE_FONT_FAMILY = LCARS_FONT_FAMILY;
 const PHRASE_FONT_WEIGHT = 700;
 const PHRASE_BASE_FONT_SIZE = 100;
 const PHRASE_LINE_GAP = 24;
 const PHRASE_MARGIN = 48;
 const PHRASE_OPACITY = 0.22;
 const PAUSE_BACKDROP_ALPHA = 0.44;
-const PAUSE_PANEL_ALPHA = 0.74;
 // The arena boundary is a gameplay hazard, so its warm gradient and soft
 // bloom should be visible without obscuring the ship or asteroid silhouettes.
 const WALL_GLOW_THICKNESS = 14;
-const WALL_GLOW_COLOR = "rgba(255, 62, 92, 0.9)";
-const WALL_GLOW_FADE_COLOR = "rgba(255, 62, 92, 0)";
+const WALL_GLOW_COLOR = "rgba(204, 102, 102, 0.88)";
+const WALL_GLOW_FADE_COLOR = "rgba(204, 102, 102, 0)";
 const ASTEROID_COUNT = 8;
 const ASTEROID_MIN_RADIUS = 24;
 const ASTEROID_MAX_RADIUS = 52;
@@ -297,8 +302,8 @@ const ASTEROID_MAX_DENSITY = 1.35;
 // Density is encoded from cool blue-gray to warm red. Both endpoints are
 // bright enough against black space, while hue—not brightness—does the main
 // communication so denser asteroids remain easy to see.
-const ASTEROID_MIN_COLOR_HUE = 210;
-const ASTEROID_MAX_COLOR_HUE = 0;
+const ASTEROID_MIN_COLOR_HUE = 250;
+const ASTEROID_MAX_COLOR_HUE = 8;
 // A value of one is a fully elastic collision. At 0.9, an impact loses 19% of
 // the kinetic energy in the contact-normal component while preserving tangent
 // motion. The same coefficient is used for asteroid contacts and wall hits so
@@ -379,9 +384,6 @@ let autopilotLastTurnDirection = 0;
 let autopilotTurnReversalTimeRemaining = 0;
 let autopilotDecisionTime = 0;
 let autopilotManeuverMode = "coast";
-let unactedPlayTime = 0;
-let helpAttentionActive = false;
-let helpAttentionPulseTime = 0;
 let lastCollisionCount = 0;
 let totalCollisionCount = 0;
 let lastMomentumDelta = { x: 0, y: 0 };
@@ -426,7 +428,8 @@ debugOutput.hidden = true;
 debugOutput.setAttribute("aria-label", "Physics debug information");
 debugOutput.style.cssText =
   "position:fixed;top:12px;left:12px;margin:0;padding:10px;" +
-  "color:#9f9;background:#001500e6;font:12px/1.4 monospace;" +
+  `color:${LCARS_AMBER};background:${LCARS_PANEL};` +
+  `font:13px/1.45 ${LCARS_BODY_FONT_FAMILY};letter-spacing:.25px;` +
   "white-space:pre;z-index:1;pointer-events:none;";
 document.body.append(debugOutput);
 
@@ -489,7 +492,7 @@ function asteroidColorForDensity(density) {
   const hue = ASTEROID_MIN_COLOR_HUE +
     (ASTEROID_MAX_COLOR_HUE - ASTEROID_MIN_COLOR_HUE) * densityRatio;
 
-  return `hsl(${hue} 78% 62%)`;
+  return `hsl(${hue} 72% 68%)`;
 }
 
 /**
@@ -638,8 +641,14 @@ class Asteroid {
     }
 
     context.closePath();
-    context.fillStyle = asteroidColorForDensity(this.density);
+    const materialColor = asteroidColorForDensity(this.density);
+    context.fillStyle = materialColor;
     context.fill();
+    context.strokeStyle = LCARS_GOLD;
+    context.globalAlpha = 0.72;
+    context.lineWidth = 1.5;
+    context.stroke();
+    context.globalAlpha = 1;
   }
 
   collisionPolygon() {
@@ -737,9 +746,9 @@ class Bullet {
 
     // A symmetric gradient makes a bullet read as a luminous moving streak:
     // both ends fade to black while the midpoint carries the full brightness.
-    gradient.addColorStop(0, "rgba(255, 255, 255, 0)");
-    gradient.addColorStop(0.5, "rgba(255, 255, 255, 1)");
-    gradient.addColorStop(1, "rgba(255, 255, 255, 0)");
+    gradient.addColorStop(0, "rgba(255, 153, 0, 0)");
+    gradient.addColorStop(0.5, LCARS_GOLD);
+    gradient.addColorStop(1, "rgba(255, 153, 0, 0)");
 
     context.save();
     context.beginPath();
@@ -1077,7 +1086,6 @@ function toggleAutopilot() {
   autopilotDecisionTime = autopilotEnabled ? AUTOPILOT_UPDATE_INTERVAL : 0;
   autopilotManeuverMode = "coast";
   clearPressedKeys();
-  resetHelpAttention();
 }
 
 /**
@@ -1646,6 +1654,7 @@ function updateBulletFiring(deltaTime) {
 function resizeCanvas() {
   const { width, height } = canvas.getBoundingClientRect();
   const pixelRatio = window.devicePixelRatio || 1;
+  const gameplayHeight = gameplayHeightForViewport(height);
 
   viewportWidth = width;
   viewportHeight = height;
@@ -1656,19 +1665,28 @@ function resizeCanvas() {
 
   if (playerX === undefined || playerY === undefined) {
     playerX = width / 2;
-    playerY = height / 2;
+    playerY = gameplayHeight / 2;
   } else {
     playerX = constrainPosition(playerX, PLAYER_RADIUS, width);
-    playerY = constrainPosition(playerY, PLAYER_RADIUS, height);
+    playerY = constrainPosition(playerY, PLAYER_RADIUS, gameplayHeight);
   }
 
-  generateAsteroids(width, height);
+  generateAsteroids(width, gameplayHeight);
 
   for (const asteroid of asteroids) {
-    asteroid.keepInside(width, height);
+    asteroid.keepInside(width, gameplayHeight);
   }
 
   drawGame(width, height);
+}
+
+/**
+ * Reserve the fixed command-console band outside the physical simulation.
+ * @param {number} viewportHeight Full canvas height in CSS pixels.
+ * @returns {number} Height available to gameplay and wall collisions.
+ */
+function gameplayHeightForViewport(viewportHeight) {
+  return Math.max(0, viewportHeight - LCARS_CONSOLE_HEIGHT);
 }
 
 function constrainPosition(position, radius, extent) {
@@ -1794,7 +1812,6 @@ function restartGame(width, height) {
   autopilotTurnReversalTimeRemaining = 0;
   autopilotDecisionTime = autopilotEnabled ? AUTOPILOT_UPDATE_INTERVAL : 0;
   autopilotManeuverMode = "coast";
-  resetHelpAttention();
   asteroids.length = 0;
   asteroidsGenerated = false;
   generateAsteroids(width, height);
@@ -1815,7 +1832,6 @@ function beginShipFailure() {
   restartRequested = false;
   clearPressedKeys();
   bulletCooldown = 0;
-  resetHelpAttention();
 }
 
 /**
@@ -1840,7 +1856,6 @@ function beginWin() {
   bullets.length = 0;
   clearPressedKeys();
   bulletCooldown = 0;
-  resetHelpAttention();
 }
 
 /**
@@ -1892,15 +1907,26 @@ function countVanishedAsteroidArea(asteroid, fragments) {
  * @returns {void}
  */
 function drawPoints(rightX, topY) {
+  const blockLeft = rightX - STATUS_POINTS_WIDTH;
+
   context.save();
+  context.beginPath();
+  context.roundRect(
+    blockLeft,
+    topY,
+    STATUS_POINTS_WIDTH,
+    STATUS_POINTS_HEIGHT,
+    [STATUS_POINTS_HEIGHT / 2, 3, 3, STATUS_POINTS_HEIGHT / 2],
+  );
+  context.fillStyle = LCARS_AMBER;
+  context.fill();
   context.textAlign = "right";
   context.textBaseline = "middle";
-  context.fillStyle = "#9fdcff";
-  context.font = "600 11px system-ui, sans-serif";
-  context.fillText("POINTS", rightX, topY + 10);
-  context.fillStyle = "#fff";
-  context.font = "700 22px system-ui, sans-serif";
-  context.fillText(Math.round(points).toString(), rightX, topY + 37);
+  context.fillStyle = LCARS_BLACK;
+  context.font = `700 11px ${LCARS_BODY_FONT_FAMILY}`;
+  context.fillText("SCORE", rightX - 10, topY + 13);
+  context.font = `700 22px ${LCARS_BODY_FONT_FAMILY}`;
+  context.fillText(Math.round(points).toString(), rightX - 10, topY + 39);
   context.restore();
 }
 
@@ -1967,21 +1993,21 @@ function drawStatusBars(width) {
   const pointsFitsBesideBars = barX - STATUS_BAR_MARGIN >=
     STATUS_POINTS_WIDTH + STATUS_POINTS_GAP;
   const barTop = pointsFitsBesideBars
-    ? STATUS_BAR_MARGIN
-    : STATUS_BAR_MARGIN + STATUS_POINTS_HEIGHT + STATUS_BAR_GAP;
+    ? LCARS_CONSOLE_TOP
+    : LCARS_CONSOLE_TOP + STATUS_POINTS_HEIGHT + STATUS_BAR_GAP;
 
   drawPoints(
     pointsFitsBesideBars ? barX - STATUS_POINTS_GAP : width - STATUS_BAR_MARGIN,
-    pointsFitsBesideBars ? STATUS_BAR_MARGIN : STATUS_BAR_MARGIN / 2,
+    pointsFitsBesideBars ? LCARS_CONSOLE_TOP : LCARS_CONSOLE_TOP / 2,
   );
 
   const bars = [
-    { label: "SHIELD", state: displayedShieldState, color: "#65d8ff" },
-    { label: "SHIP", state: displayedShipState, color: "#ffffff" },
+    { label: "SHIELD", state: displayedShieldState, color: LCARS_LILAC },
+    { label: "HULL", state: displayedShipState, color: LCARS_CORAL },
   ];
 
   context.save();
-  context.font = "600 12px system-ui, sans-serif";
+  context.font = `700 13px ${LCARS_BODY_FONT_FAMILY}`;
   context.textBaseline = "middle";
 
   for (let barIndex = 0; barIndex < bars.length; barIndex += 1) {
@@ -1990,25 +2016,22 @@ function drawStatusBars(width) {
         (STATUS_BAR_HEIGHT + STATUS_BAR_GAP);
     const fillWidth = barWidth * (bar.state / SHIELD_MAX_STATE);
 
-    context.fillStyle = "rgba(14, 22, 34, 0.88)";
-    context.fillRect(barX, barY, barWidth, STATUS_BAR_HEIGHT);
+    context.beginPath();
+    context.roundRect(barX, barY, barWidth, STATUS_BAR_HEIGHT, 11);
+    context.fillStyle = "rgba(30, 20, 34, 0.94)";
+    context.fill();
+    context.save();
+    context.clip();
     context.fillStyle = bar.color;
     context.fillRect(barX, barY, fillWidth, STATUS_BAR_HEIGHT);
-    context.strokeStyle = "rgba(255, 255, 255, 0.75)";
-    context.lineWidth = 1;
-    context.strokeRect(
-      barX + 0.5,
-      barY + 0.5,
-      barWidth - 1,
-      STATUS_BAR_HEIGHT - 1,
-    );
+    context.restore();
 
     // Outline the light text so labels remain readable when a bar is nearly
     // empty (dark track) as well as when the fill passes underneath them.
     context.strokeStyle = "rgba(0, 0, 0, 0.9)";
     context.lineWidth = 3;
     context.lineJoin = "round";
-    context.fillStyle = "#fff";
+    context.fillStyle = LCARS_TEXT;
     context.textAlign = "left";
     context.strokeText(bar.label, barX + 8, barY + STATUS_BAR_HEIGHT / 2);
     context.fillText(bar.label, barX + 8, barY + STATUS_BAR_HEIGHT / 2);
@@ -2029,47 +2052,6 @@ function drawStatusBars(width) {
 }
 
 /**
- * Clear the running help reminder after a pause or player input.
- * @returns {void}
- */
-function resetHelpAttention() {
-  unactedPlayTime = 0;
-  helpAttentionActive = false;
-  helpAttentionPulseTime = 0;
-}
-
-/**
- * Track an unacted play session and start the help pulse after its grace
- * period. This uses simulation time, so the reminder does not advance while
- * the game is paused.
- * @param {number} deltaTime Elapsed simulation time in seconds.
- * @returns {void}
- */
-function updateHelpAttention(deltaTime) {
-  if (gamePaused || shipFailureActive || gameWon) {
-    resetHelpAttention();
-    return;
-  }
-
-  if (!Number.isFinite(deltaTime)) {
-    return;
-  }
-
-  if (helpAttentionActive) {
-    helpAttentionPulseTime = (helpAttentionPulseTime + Math.max(0, deltaTime)) %
-      HELP_ATTENTION_PULSE_PERIOD;
-    return;
-  }
-
-  unactedPlayTime += Math.max(0, deltaTime);
-
-  if (unactedPlayTime >= HELP_ATTENTION_DELAY) {
-    helpAttentionActive = true;
-    helpAttentionPulseTime = 0;
-  }
-}
-
-/**
  * Draw the event phrase as a quiet, non-physical arena background.
  * @param {number} width Viewport width in CSS pixels.
  * @param {number} height Viewport height in CSS pixels.
@@ -2082,7 +2064,7 @@ function drawPhraseBackground(width, height) {
 
   context.save();
   context.font = `${PHRASE_FONT_WEIGHT} ${fontSize}px ${PHRASE_FONT_FAMILY}`;
-  context.fillStyle = "#8aa8c2";
+  context.fillStyle = LCARS_LAVENDER;
   context.globalAlpha = PHRASE_OPACITY;
   context.textAlign = "center";
   context.textBaseline = "top";
@@ -2180,21 +2162,37 @@ function drawSparks() {
 }
 
 /**
+ * Clear the LCARS command console above the physical arena. Buttons and status
+ * read cleanly on black without decorative rails competing behind them.
+ * @param {number} width Viewport width in CSS pixels.
+ * @returns {void}
+ */
+function drawLCARSCommandConsole(width) {
+  context.save();
+  context.fillStyle = LCARS_BLACK;
+  context.fillRect(0, 0, width, LCARS_CONSOLE_HEIGHT);
+  context.restore();
+}
+
+/**
  * Draw the black space and the player in the bounded field.
  * The triangle points upward and has its tip and base endpoints on the hull's
  * circumference. Its base chord is intentionally shorter than its sides so
  * the tip communicates the ship's direction without extra UI.
  */
 function drawGame(width, height) {
+  const playfieldHeight = gameplayHeightForViewport(height);
   const triangleTipAngle = playerAngle;
   const triangleBaseCenterAngle = triangleTipAngle + Math.PI;
   const baseLeftAngle = triangleBaseCenterAngle - PLAYER_TRIANGLE_HALF_ANGLE;
   const baseRightAngle = triangleBaseCenterAngle + PLAYER_TRIANGLE_HALF_ANGLE;
 
-  context.fillStyle = "#000";
+  context.fillStyle = LCARS_BLACK;
   context.fillRect(0, 0, width, height);
-  drawPhraseBackground(width, height);
-  drawDangerWalls(width, height);
+  context.save();
+  context.translate(0, LCARS_CONSOLE_HEIGHT);
+  drawPhraseBackground(width, playfieldHeight);
+  drawDangerWalls(width, playfieldHeight);
 
   // Asteroids are drawn after the background so the player remains visually
   // legible when the two shapes overlap. The phrase itself is never a physics
@@ -2211,9 +2209,9 @@ function drawGame(width, height) {
   context.beginPath();
   context.arc(playerX, playerY, PLAYER_RADIUS, 0, Math.PI * 2);
   context.strokeStyle = shieldState > 0
-    ? "#65d8ff"
-    : "rgba(101, 216, 255, 0.35)";
-  context.lineWidth = 2;
+    ? LCARS_LILAC
+    : "rgba(153, 153, 255, 0.3)";
+  context.lineWidth = 3;
   context.stroke();
 
   const pointOnHull = (angle) => ({
@@ -2229,140 +2227,192 @@ function drawGame(width, height) {
   context.lineTo(baseLeft.x, baseLeft.y);
   context.lineTo(baseRight.x, baseRight.y);
   context.closePath();
-  context.fillStyle = "#fff";
+  context.fillStyle = LCARS_GOLD;
   context.fill();
+
+  context.beginPath();
+  context.moveTo(tip.x, tip.y);
+  context.lineTo(playerX, playerY);
+  context.strokeStyle = LCARS_CORAL;
+  context.lineWidth = 2;
+  context.stroke();
 
   drawSparks();
 
   if (shipFailureActive) {
-    drawShipFailure(width, height);
+    drawShipFailure(width, playfieldHeight);
   } else if (gameWon) {
-    drawWinScreen(width, height);
+    drawWinScreen(width, playfieldHeight);
   } else if (gamePaused) {
-    drawPauseHelp(width, height);
-  } else {
-    drawEssentialHelp(width, height);
+    drawPauseHelp(width, playfieldHeight);
   }
+  context.restore();
 
-  drawAutopilotIndicator(width);
+  drawLCARSCommandConsole(width);
+  drawFlightControls(width);
   drawStatusBars(width);
 }
 
 /**
- * Draw the essential controls in a single line while the game is active.
- * Keeping this projection derived from PLAY_HELP makes the first-play
- * reminder match the more detailed paused help without covering the arena.
- * @param {number} width The viewport width in CSS pixels.
- * @param {number} height The viewport height in CSS pixels.
+ * Draw one LCARS control button with a large command and smaller action.
+ * Active controls receive a bright inset, keeping their base color and label
+ * readable while making held manual and autopilot input equally visible.
+ * @param {number} x Left edge in CSS pixels.
+ * @param {number} y Top edge in CSS pixels.
+ * @param {number} width Button width in CSS pixels.
+ * @param {number} height Button height in CSS pixels.
+ * @param {string} title Large command label.
+ * @param {string} detail Small action label.
+ * @param {string} color Resting LCARS fill color.
+ * @param {boolean} active Whether the control is currently engaged.
+ * @param {boolean} [leftCap=false] Whether to round the left end of the row.
  * @returns {void}
  */
-function drawEssentialHelp(width, height) {
-  const panelWidth = Math.min(
-    RUNNING_HELP_PANEL_MAX_WIDTH,
-    Math.max(0, width - RUNNING_HELP_PANEL_MARGIN * 2),
-  );
-  const panelHeight = Math.min(
-    RUNNING_HELP_PANEL_HEIGHT,
-    Math.max(0, height - RUNNING_HELP_PANEL_MARGIN * 2),
-  );
+function drawFlightControlButton(
+  x,
+  y,
+  width,
+  height,
+  title,
+  detail,
+  color,
+  active,
+  leftCap = false,
+) {
+  context.save();
+  context.fillStyle = color;
+  context.beginPath();
+  context.roundRect(x, y, width, height, leftCap ? [height / 2, 4, 4, 4] : 4);
+  context.fill();
 
-  if (panelWidth <= 0 || panelHeight <= 0) {
-    return;
+  if (active) {
+    context.strokeStyle = LCARS_TEXT;
+    context.lineWidth = FLIGHT_CONTROL_ACTIVE_INSET;
+    context.beginPath();
+    context.roundRect(
+      x + FLIGHT_CONTROL_ACTIVE_INSET / 2,
+      y + FLIGHT_CONTROL_ACTIVE_INSET / 2,
+      Math.max(0, width - FLIGHT_CONTROL_ACTIVE_INSET),
+      Math.max(0, height - FLIGHT_CONTROL_ACTIVE_INSET),
+      leftCap ? [height / 2, 3, 3, 3] : 3,
+    );
+    context.stroke();
   }
 
-  const panelX = (width - panelWidth) / 2;
-  const panelY = height - panelHeight - RUNNING_HELP_PANEL_MARGIN;
-  const textWidth = Math.max(
-    0,
-    panelWidth - RUNNING_HELP_TEXT_PADDING * 2,
-  );
-  const attentionPulse = helpAttentionActive
-    ? (Math.sin(
-      helpAttentionPulseTime * Math.PI * 2 /
-        HELP_ATTENTION_PULSE_PERIOD,
-    ) + 1) / 2
-    : 0;
-
-  context.save();
-  context.beginPath();
-  context.roundRect(
-    panelX,
-    panelY,
-    panelWidth,
-    panelHeight,
-    Math.min(10, panelHeight / 2),
-  );
-  context.fillStyle = helpAttentionActive
-    ? `rgba(72, 58, 20, ${0.78 + attentionPulse * 0.1})`
-    : "rgba(14, 22, 34, 0.84)";
-  context.shadowColor = helpAttentionActive
-    ? `rgba(255, 209, 102, ${0.2 + attentionPulse * 0.3})`
-    : "transparent";
-  context.shadowBlur = helpAttentionActive ? 4 + attentionPulse * 8 : 0;
-  context.fill();
-  context.globalAlpha = helpAttentionActive ? 0.72 + attentionPulse * 0.28 : 1;
-  context.strokeStyle = helpAttentionActive
-    ? HELP_ATTENTION_COLOR
-    : "rgba(159, 220, 255, 0.65)";
-  context.lineWidth = 1;
-  context.stroke();
-  context.globalAlpha = 1;
-  context.shadowBlur = 0;
-
-  context.textAlign = "center";
+  const horizontalPadding = Math.min(16, Math.max(7, width * 0.12));
+  context.textAlign = "left";
   context.textBaseline = "middle";
-  context.fillStyle = helpAttentionActive ? "#fff4c7" : "#fff";
-  context.font = `600 ${RUNNING_HELP_FONT_SIZE}px system-ui, sans-serif`;
+  context.fillStyle = LCARS_BLACK;
+  context.font = `${FLIGHT_CONTROL_TITLE_WEIGHT} 21px ${LCARS_FONT_FAMILY}`;
   context.fillText(
-    ESSENTIAL_HELP_LINE,
-    width / 2,
-    panelY + panelHeight / 2,
-    textWidth,
+    title,
+    x + horizontalPadding,
+    y + 22,
+    width - horizontalPadding * 2,
+  );
+  context.font =
+    `${FLIGHT_CONTROL_DETAIL_WEIGHT} 12px ${LCARS_BODY_FONT_FAMILY}`;
+  context.fillText(
+    detail,
+    x + horizontalPadding,
+    y + 42,
+    width - horizontalPadding * 2,
   );
   context.restore();
 }
 
 /**
- * Draw a persistent, high-contrast mode badge. Autopilot stays visible over
- * pause, failure, and win treatments so a demonstration never leaves the
- * player guessing whether T is still active.
+ * Draw the persistent flight-control row. Gameplay buttons read the effective
+ * key set shared by manual helm and autopilot, so the interface visualizes the
+ * control source without adding a second state model.
  * @param {number} width The viewport width in CSS pixels.
  * @returns {void}
  */
-function drawAutopilotIndicator(width) {
-  if (!autopilotEnabled || width <= 0) {
+function drawFlightControls(width) {
+  if (width <= LCARS_FRAME_MARGIN * 2) {
     return;
   }
 
-  const badgeWidth = Math.min(246, Math.max(190, width - 32));
-  const badgeHeight = 58;
-  const badgeX = 16;
-  const badgeY = 16;
-
-  context.save();
-  context.beginPath();
-  context.roundRect(badgeX, badgeY, badgeWidth, badgeHeight, 14);
-  context.fillStyle = "rgba(70, 48, 12, 0.96)";
-  context.shadowColor = "rgba(255, 209, 102, 0.78)";
-  context.shadowBlur = 16;
-  context.fill();
-  context.shadowBlur = 0;
-  context.strokeStyle = "#ffd166";
-  context.lineWidth = 3;
-  context.stroke();
-
-  context.textAlign = "left";
-  context.textBaseline = "middle";
-  context.fillStyle = "#fff4c7";
-  context.font = "800 18px system-ui, sans-serif";
-  context.fillText("AUTOPILOT ACTIVE", badgeX + 14, badgeY + 22);
-  context.fillStyle = "#ffd166";
-  context.font = "600 12px system-ui, sans-serif";
-  context.fillText(
-    "T to disable · manual input takes over",
-    badgeX + 14,
-    badgeY + 42,
+  const titleWidth = Math.min(
+    LCARS_MODE_WIDTH,
+    Math.max(0, width - LCARS_FRAME_MARGIN * 2),
   );
+  const statusWidth = Math.min(
+    STATUS_POINTS_WIDTH + STATUS_POINTS_GAP + STATUS_BAR_WIDTH,
+    Math.max(0, width - LCARS_FRAME_MARGIN * 2 - titleWidth - 12),
+  );
+  const rowWidth = Math.max(
+    0,
+    width - LCARS_FRAME_MARGIN * 2 - statusWidth - FLIGHT_CONTROL_GAP,
+  );
+  const keyButtonCount = 7;
+  const desiredKeyWidth = FLIGHT_CONTROL_KEY_WIDTH;
+  const rowScale = Math.min(
+    1,
+    rowWidth /
+      (titleWidth + desiredKeyWidth * keyButtonCount +
+        FLIGHT_CONTROL_GAP * keyButtonCount),
+  );
+  const buttonHeight = STATUS_POINTS_HEIGHT;
+  let buttonX = LCARS_FRAME_MARGIN;
+  const controls = [
+    ["T", "AUTOPILOT", LCARS_AMBER, autopilotEnabled],
+    ["P", "PAUSE", LCARS_CORAL, gamePaused],
+    ["W⏶", "THRUST", LCARS_LILAC, pressedKeys.has("KeyW")],
+    ["S⏷", "BRAKE", LCARS_LAVENDER, pressedKeys.has("KeyS")],
+    ["A⏴", "TURN CCW", LCARS_LILAC, pressedKeys.has("KeyA")],
+    ["D⏵", "TURN CW", LCARS_LAVENDER, pressedKeys.has("KeyD")],
+    [FIRE_KEY_LABEL, "SHOOT", LCARS_AMBER, pressedKeys.has(FIRE_KEY)],
+  ];
+
+  drawFlightControlButton(
+    buttonX,
+    LCARS_CONSOLE_TOP,
+    titleWidth * rowScale,
+    buttonHeight,
+    "FLIGHT CONTROL",
+    autopilotEnabled ? "AUTOPILOT" : "MANUAL HELM",
+    autopilotEnabled ? LCARS_AMBER : LCARS_LILAC,
+    autopilotEnabled,
+    true,
+  );
+  buttonX += titleWidth * rowScale + FLIGHT_CONTROL_GAP * rowScale;
+
+  for (const [title, detail, color, active] of controls) {
+    drawFlightControlButton(
+      buttonX,
+      LCARS_CONSOLE_TOP,
+      desiredKeyWidth * rowScale,
+      buttonHeight,
+      title,
+      detail,
+      color,
+      active,
+    );
+    buttonX += desiredKeyWidth * rowScale + FLIGHT_CONTROL_GAP * rowScale;
+  }
+}
+
+/**
+ * Draw the shared, deliberately open LCARS treatment for modal information.
+ * Its asymmetric corners keep the window organic while a single perimeter
+ * leaves the message area completely free of decorative, functionless blocks.
+ * @param {number} panelWidth Overlay width in CSS pixels.
+ * @param {number} panelHeight Overlay height in CSS pixels.
+ * @param {string} accent Primary state color.
+ * @returns {void}
+ */
+function drawLCARSOverlayFrame(panelWidth, panelHeight, accent) {
+  context.save();
+  // A calm silhouette restores a clear window boundary. The asymmetric radius
+  // order avoids a generic card while keeping every edge unambiguous.
+  context.beginPath();
+  context.roundRect(0, 0, panelWidth, panelHeight, [52, 16, 52, 16]);
+  context.fillStyle = LCARS_PANEL;
+  context.fill();
+  context.lineWidth = 5;
+  context.strokeStyle = accent;
+  context.stroke();
   context.restore();
 }
 
@@ -2398,41 +2448,33 @@ function drawShipFailure(width, height) {
 
   context.translate(panelX, panelY);
   context.scale(failureScale, failureScale);
-  context.beginPath();
-  context.roundRect(
-    0,
-    0,
+  drawLCARSOverlayFrame(
     SHIP_FAILURE_PANEL_WIDTH,
     SHIP_FAILURE_PANEL_HEIGHT,
-    18,
+    LCARS_RED,
   );
-  context.fillStyle = `rgba(40, 18, 24, ${SHIP_FAILURE_PANEL_ALPHA})`;
-  context.fill();
-  context.strokeStyle = "rgba(255, 113, 125, 0.9)";
-  context.lineWidth = 2;
-  context.stroke();
 
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillStyle = "#ff7b85";
-  context.font = "700 32px system-ui, sans-serif";
-  context.fillText("SHIP DESTROYED", SHIP_FAILURE_PANEL_WIDTH / 2, 56);
-  context.fillStyle = "#fff";
-  context.font = "500 19px system-ui, sans-serif";
-  context.fillText(SHIP_FAILURE_REASON, SHIP_FAILURE_PANEL_WIDTH / 2, 105);
-  context.fillStyle = "#c6d1dc";
-  context.font = "400 16px system-ui, sans-serif";
+  context.fillStyle = LCARS_CORAL;
+  context.font = `700 42px ${LCARS_FONT_FAMILY}`;
+  context.fillText("SHIP DESTROYED", SHIP_FAILURE_PANEL_WIDTH / 2, 82);
+  context.fillStyle = LCARS_TEXT;
+  context.font = `500 22px ${LCARS_BODY_FONT_FAMILY}`;
+  context.fillText(SHIP_FAILURE_REASON, SHIP_FAILURE_PANEL_WIDTH / 2, 142);
+  context.fillStyle = LCARS_MUTED_TEXT;
+  context.font = `400 19px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
     "Keep clear of the asteroids.",
     SHIP_FAILURE_PANEL_WIDTH / 2,
-    137,
+    182,
   );
-  context.fillStyle = "#9fdcff";
-  context.font = "600 17px system-ui, sans-serif";
+  context.fillStyle = LCARS_AMBER;
+  context.font = `600 23px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
-    `New game in ${Math.max(1, Math.ceil(shipFailureTimeRemaining))}`,
+    `NEW FIELD IN ${Math.max(1, Math.ceil(shipFailureTimeRemaining))}`,
     SHIP_FAILURE_PANEL_WIDTH / 2,
-    185,
+    230,
   );
   context.restore();
 }
@@ -2468,41 +2510,35 @@ function drawWinScreen(width, height) {
 
   context.translate(panelX, panelY);
   context.scale(winScale, winScale);
-  context.beginPath();
-  context.roundRect(
-    0,
-    0,
+  drawLCARSOverlayFrame(
     WIN_SCREEN_PANEL_WIDTH,
     WIN_SCREEN_PANEL_HEIGHT,
-    18,
+    LCARS_LILAC,
   );
-  context.fillStyle = `rgba(14, 42, 34, ${WIN_SCREEN_PANEL_ALPHA})`;
-  context.fill();
-  context.strokeStyle = "rgba(102, 255, 183, 0.9)";
-  context.lineWidth = 2;
-  context.stroke();
 
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillStyle = "#66ffb7";
-  context.font = "700 38px system-ui, sans-serif";
-  context.fillText(WIN_SCREEN_TITLE, WIN_SCREEN_PANEL_WIDTH / 2, 58);
-  context.fillStyle = "#fff";
-  context.font = "500 19px system-ui, sans-serif";
-  context.fillText(WIN_SCREEN_REASON, WIN_SCREEN_PANEL_WIDTH / 2, 108);
-  context.fillStyle = "#9fdcff";
-  context.font = "600 17px system-ui, sans-serif";
+  context.fillStyle = LCARS_GOLD;
+  context.font = `700 46px ${LCARS_FONT_FAMILY}`;
+  context.fillText(WIN_SCREEN_TITLE, WIN_SCREEN_PANEL_WIDTH / 2, 86);
+  context.fillStyle = LCARS_TEXT;
+  context.font = `500 22px ${LCARS_BODY_FONT_FAMILY}`;
+  context.fillText(WIN_SCREEN_REASON, WIN_SCREEN_PANEL_WIDTH / 2, 144);
+  context.fillStyle = LCARS_AMBER;
+  context.font = `500 15px ${LCARS_BODY_FONT_FAMILY}`;
+  context.fillText("FINAL SCORE", WIN_SCREEN_PANEL_WIDTH / 2, 182);
+  context.font = `700 30px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
-    `Final score: ${Math.round(points)}`,
+    Math.round(points).toString(),
     WIN_SCREEN_PANEL_WIDTH / 2,
-    153,
+    212,
   );
-  context.fillStyle = "#c6d1dc";
-  context.font = "400 16px system-ui, sans-serif";
+  context.fillStyle = LCARS_MUTED_TEXT;
+  context.font = `500 20px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
-    `Press ${PAUSE_KEY_LABEL} to play again`,
+    `PRESS ${PAUSE_KEY_LABEL} TO PLAY AGAIN`,
     WIN_SCREEN_PANEL_WIDTH / 2,
-    204,
+    254,
   );
   context.restore();
 }
@@ -2543,53 +2579,55 @@ function drawPauseHelp(width, height) {
 
   context.translate(panelX, panelY);
   context.scale(helpScale, helpScale);
-  context.beginPath();
-  context.roundRect(0, 0, HELP_PANEL_WIDTH, HELP_PANEL_HEIGHT, 18);
-  context.fillStyle = `rgba(14, 22, 34, ${PAUSE_PANEL_ALPHA})`;
-  context.fill();
-  context.strokeStyle = "rgba(159, 220, 255, 0.8)";
-  context.lineWidth = 2;
-  context.stroke();
+  drawLCARSOverlayFrame(
+    HELP_PANEL_WIDTH,
+    HELP_PANEL_HEIGHT,
+    LCARS_LAVENDER,
+  );
 
   context.textAlign = "center";
   context.textBaseline = "middle";
-  context.fillStyle = "#fff";
-  context.font = "700 32px system-ui, sans-serif";
-  context.fillText("PAUSED", HELP_PANEL_WIDTH / 2, 58);
-  context.fillStyle = "#9fdcff";
-  context.font = "500 18px system-ui, sans-serif";
+  context.fillStyle = LCARS_GOLD;
+  context.font = `800 32px ${LCARS_FONT_FAMILY}`;
+  context.fillText("PAUSED", HELP_PANEL_WIDTH / 2, 82);
+  context.fillStyle = LCARS_LILAC;
+  context.font = `600 18px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
     `Press ${PAUSE_KEY_LABEL} to resume`,
     HELP_PANEL_WIDTH / 2,
-    94,
+    112,
   );
 
   context.textAlign = "left";
-  context.font = "600 18px system-ui, sans-serif";
+  context.font = `700 18px ${LCARS_FONT_FAMILY}`;
   for (let helpIndex = 0; helpIndex < PLAY_HELP.length; helpIndex += 1) {
     const helpItem = PLAY_HELP[helpIndex];
-    const rowY = 154 + helpIndex * 46;
+    const rowY = 166 + helpIndex * 42;
 
-    context.fillStyle = "#9fdcff";
-    context.fillText(helpItem.label, 88, rowY);
-    context.fillStyle = "#fff";
-    context.font = "400 18px system-ui, sans-serif";
-    context.fillText(helpItem.description, 218, rowY);
-    context.font = "600 18px system-ui, sans-serif";
+    context.fillStyle = helpIndex % 2 === 0 ? LCARS_AMBER : LCARS_LILAC;
+    context.beginPath();
+    context.roundRect(70, rowY - 16, 112, 30, [15, 3, 3, 15]);
+    context.fill();
+    context.fillStyle = LCARS_BLACK;
+    context.fillText(helpItem.label, 82, rowY);
+    context.fillStyle = LCARS_TEXT;
+    context.font = `500 18px ${LCARS_BODY_FONT_FAMILY}`;
+    context.fillText(helpItem.description, 208, rowY);
+    context.font = `700 18px ${LCARS_FONT_FAMILY}`;
   }
 
   context.textAlign = "center";
-  context.fillStyle = "#9aa8b8";
-  context.font = "400 15px system-ui, sans-serif";
+  context.fillStyle = LCARS_MUTED_TEXT;
+  context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
     "Shield regenerates; hull damage persists.",
     HELP_PANEL_WIDTH / 2,
-    390,
+    434,
   );
   context.fillText(
     "Walls damage the ship. Manual input disables autopilot.",
     HELP_PANEL_WIDTH / 2,
-    418,
+    464,
   );
   context.restore();
 }
@@ -4898,12 +4936,12 @@ function animate(frameTime) {
 
   const width = viewportWidth;
   const height = viewportHeight;
-  generateAsteroids(width, height);
-  updateHelpAttention(deltaTime);
+  const gameplayHeight = gameplayHeightForViewport(height);
+  generateAsteroids(width, gameplayHeight);
   if (shipFailureActive) {
-    updateShipFailure(deltaTime, width, height);
+    updateShipFailure(deltaTime, width, gameplayHeight);
   } else if (!gamePaused) {
-    updateGame(deltaTime, width, height);
+    updateGame(deltaTime, width, gameplayHeight);
   }
   updateSparks(deltaTime);
   updateDisplayedStatusBars(deltaTime);
@@ -4939,12 +4977,13 @@ document.addEventListener("keydown", (event) => {
 
   if (event.code === PAUSE_KEY && !event.repeat) {
     if (gameWon) {
-      restartGame(viewportWidth, viewportHeight);
+      restartGame(
+        viewportWidth,
+        gameplayHeightForViewport(viewportHeight),
+      );
       gamePaused = false;
     } else if (!shipFailureActive) {
       gamePaused = !gamePaused;
-      resetHelpAttention();
-
       if (gamePaused) {
         // A pause freezes gameplay input as well as simulation time. Requiring
         // a fresh Space press after resuming avoids a held key firing
@@ -4982,7 +5021,6 @@ document.addEventListener("keydown", (event) => {
       return;
     }
 
-    resetHelpAttention();
     if (controlKey === FIRE_KEY && !event.repeat) {
       emitBullet();
       bulletCooldown = BULLET_FIRE_INTERVAL;
