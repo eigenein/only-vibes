@@ -90,23 +90,58 @@ const PAUSE_KEY_LABEL = "P";
 const FIRE_KEY = "Space";
 const FIRE_KEY_LABEL = "SPACE";
 
-// Keep the help screen's controls in one compact table so every paused frame
-// describes the same W/A/S/D and firing semantics that the game consumes.
+// Keep every player-facing control in one compact table. The pause screen uses
+// the full descriptions, while the running HUD projects the essential entries
+// into one line, so the two help surfaces cannot drift apart.
 const PLAY_HELP = Object.freeze([
-  Object.freeze({ label: "W / S", description: "thrust / brake" }),
+  Object.freeze({
+    label: FIRE_KEY_LABEL,
+    description: "shoot",
+    compactDescription: "shoot",
+    essential: true,
+  }),
+  Object.freeze({
+    label: "W / S",
+    description: "thrust / brake",
+    compactDescription: "thrust / brake",
+    essential: true,
+  }),
   Object.freeze({
     label: "A / D",
     description: "turn counter-clockwise / clockwise",
+    compactDescription: "turn CCW / CW",
+    essential: true,
   }),
-  Object.freeze({ label: FIRE_KEY_LABEL, description: "fire" }),
-  Object.freeze({ label: PAUSE_KEY_LABEL, description: "pause / resume" }),
+  Object.freeze({
+    label: PAUSE_KEY_LABEL,
+    description: "pause / resume",
+    compactDescription: "pause",
+    essential: true,
+  }),
   Object.freeze({
     label: "COLOR",
     description: "redder asteroids are denser",
+    essential: false,
   }),
 ]);
+const ESSENTIAL_HELP_LINE = PLAY_HELP.filter(
+  (helpItem) => helpItem.essential,
+).map(
+  (helpItem) => `${helpItem.label} — ${helpItem.compactDescription}`,
+).join("   ·   ");
 const HELP_PANEL_WIDTH = 540;
 const HELP_PANEL_HEIGHT = 446;
+const RUNNING_HELP_PANEL_MAX_WIDTH = 760;
+const RUNNING_HELP_PANEL_HEIGHT = 34;
+const RUNNING_HELP_PANEL_MARGIN = 16;
+const RUNNING_HELP_TEXT_PADDING = 12;
+const RUNNING_HELP_FONT_SIZE = 13;
+// Give a player who has not touched a control a short, calm reminder before
+// drawing attention to the help. The pulse stays subtle so it cannot compete
+// with the ship or the asteroid field once the player starts playing.
+const HELP_ATTENTION_DELAY = 5;
+const HELP_ATTENTION_PULSE_PERIOD = 1.2;
+const HELP_ATTENTION_COLOR = "#ffd166";
 
 // A faint two-line chord font brands the arena behind the original random
 // asteroid field. Coordinates are in a one-by-one glyph box with y increasing
@@ -183,7 +218,9 @@ const ASTEROID_PHRASE_MAX_SPEED = 4;
 const ASTEROID_PHRASE_MAX_ANGULAR_SPEED = 0.04;
 const PAUSE_BACKDROP_ALPHA = 0.44;
 const PAUSE_PANEL_ALPHA = 0.74;
-const RANDOM_ASTEROID_COUNT = 9;
+// Three extra regular bodies add a little more pressure to the opening field
+// while keeping the decorative phrase asteroids as a separate composition.
+const RANDOM_ASTEROID_COUNT = 12;
 const ASTEROID_PHRASE_BODY_COUNT = ASTEROID_PHRASE_LINES.reduce(
   (bodyCount, phraseLine) =>
     bodyCount + Array.from(phraseLine).reduce(
@@ -265,6 +302,9 @@ let asteroidsGenerated = false;
 // Starting paused gives the player the controls before any movement begins.
 let gamePaused = true;
 let debugEnabled = false;
+let unactedPlayTime = 0;
+let helpAttentionActive = false;
+let helpAttentionPulseTime = 0;
 let lastCollisionCount = 0;
 let totalCollisionCount = 0;
 let lastMomentumDelta = { x: 0, y: 0 };
@@ -1062,6 +1102,7 @@ function restartGame(width, height) {
   bulletCooldown = 0;
   bullets.length = 0;
   pressedKeys.clear();
+  resetHelpAttention();
   asteroids.length = 0;
   asteroidsGenerated = false;
   generateAsteroids(width, height);
@@ -1139,6 +1180,47 @@ function drawStatusBars(width) {
 }
 
 /**
+ * Clear the running help reminder after a pause or player input.
+ * @returns {void}
+ */
+function resetHelpAttention() {
+  unactedPlayTime = 0;
+  helpAttentionActive = false;
+  helpAttentionPulseTime = 0;
+}
+
+/**
+ * Track an unacted play session and start the help pulse after its grace
+ * period. This uses simulation time, so the reminder does not advance while
+ * the game is paused.
+ * @param {number} deltaTime Elapsed simulation time in seconds.
+ * @returns {void}
+ */
+function updateHelpAttention(deltaTime) {
+  if (gamePaused) {
+    resetHelpAttention();
+    return;
+  }
+
+  if (!Number.isFinite(deltaTime)) {
+    return;
+  }
+
+  if (helpAttentionActive) {
+    helpAttentionPulseTime = (helpAttentionPulseTime + Math.max(0, deltaTime)) %
+      HELP_ATTENTION_PULSE_PERIOD;
+    return;
+  }
+
+  unactedPlayTime += Math.max(0, deltaTime);
+
+  if (unactedPlayTime >= HELP_ATTENTION_DELAY) {
+    helpAttentionActive = true;
+    helpAttentionPulseTime = 0;
+  }
+}
+
+/**
  * Draw the black space and the player in the bounded field.
  * The triangle points upward and has its tip and base endpoints on the hull's
  * circumference. Its base chord is intentionally shorter than its sides so
@@ -1189,9 +1271,85 @@ function drawGame(width, height) {
 
   if (gamePaused) {
     drawPauseHelp(width, height);
+  } else {
+    drawEssentialHelp(width, height);
   }
 
   drawStatusBars(width);
+}
+
+/**
+ * Draw the essential controls in a single line while the game is active.
+ * Keeping this projection derived from PLAY_HELP makes the first-play
+ * reminder match the more detailed paused help without covering the arena.
+ * @param {number} width The viewport width in CSS pixels.
+ * @param {number} height The viewport height in CSS pixels.
+ * @returns {void}
+ */
+function drawEssentialHelp(width, height) {
+  const panelWidth = Math.min(
+    RUNNING_HELP_PANEL_MAX_WIDTH,
+    Math.max(0, width - RUNNING_HELP_PANEL_MARGIN * 2),
+  );
+  const panelHeight = Math.min(
+    RUNNING_HELP_PANEL_HEIGHT,
+    Math.max(0, height - RUNNING_HELP_PANEL_MARGIN * 2),
+  );
+
+  if (panelWidth <= 0 || panelHeight <= 0) {
+    return;
+  }
+
+  const panelX = (width - panelWidth) / 2;
+  const panelY = height - panelHeight - RUNNING_HELP_PANEL_MARGIN;
+  const textWidth = Math.max(
+    0,
+    panelWidth - RUNNING_HELP_TEXT_PADDING * 2,
+  );
+  const attentionPulse = helpAttentionActive
+    ? (Math.sin(
+      helpAttentionPulseTime * Math.PI * 2 /
+        HELP_ATTENTION_PULSE_PERIOD,
+    ) + 1) / 2
+    : 0;
+
+  context.save();
+  context.beginPath();
+  context.roundRect(
+    panelX,
+    panelY,
+    panelWidth,
+    panelHeight,
+    Math.min(10, panelHeight / 2),
+  );
+  context.fillStyle = helpAttentionActive
+    ? `rgba(72, 58, 20, ${0.78 + attentionPulse * 0.1})`
+    : "rgba(14, 22, 34, 0.84)";
+  context.shadowColor = helpAttentionActive
+    ? `rgba(255, 209, 102, ${0.2 + attentionPulse * 0.3})`
+    : "transparent";
+  context.shadowBlur = helpAttentionActive ? 4 + attentionPulse * 8 : 0;
+  context.fill();
+  context.globalAlpha = helpAttentionActive ? 0.72 + attentionPulse * 0.28 : 1;
+  context.strokeStyle = helpAttentionActive
+    ? HELP_ATTENTION_COLOR
+    : "rgba(159, 220, 255, 0.65)";
+  context.lineWidth = 1;
+  context.stroke();
+  context.globalAlpha = 1;
+  context.shadowBlur = 0;
+
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = helpAttentionActive ? "#fff4c7" : "#fff";
+  context.font = `600 ${RUNNING_HELP_FONT_SIZE}px system-ui, sans-serif`;
+  context.fillText(
+    ESSENTIAL_HELP_LINE,
+    width / 2,
+    panelY + panelHeight / 2,
+    textWidth,
+  );
+  context.restore();
 }
 
 /**
@@ -3280,6 +3438,7 @@ function animate(frameTime) {
   const width = viewportWidth;
   const height = viewportHeight;
   generateAsteroids(width, height);
+  updateHelpAttention(deltaTime);
   if (!gamePaused) {
     updateGame(deltaTime, width, height);
   }
@@ -3309,6 +3468,7 @@ function controlKeyForEvent(event) {
 document.addEventListener("keydown", (event) => {
   if (event.code === PAUSE_KEY && !event.repeat) {
     gamePaused = !gamePaused;
+    resetHelpAttention();
 
     if (gamePaused) {
       // A pause freezes gameplay input as well as simulation time. Requiring a
@@ -3337,6 +3497,7 @@ document.addEventListener("keydown", (event) => {
       return;
     }
 
+    resetHelpAttention();
     if (controlKey === FIRE_KEY && !event.repeat) {
       emitBullet();
       bulletCooldown = BULLET_FIRE_INTERVAL;
