@@ -1,5 +1,9 @@
 const canvas = document.querySelector("#game-canvas");
-const context = canvas.getContext("2d");
+// Every frame paints the full playfield black, so the drawing buffer never
+// needs browser-page transparency. Asking for an opaque buffer avoids a
+// full-canvas compositing pass that can make Safari miss display refreshes and
+// fall back to a stable fraction of the screen rate (commonly 30 FPS).
+const context = canvas.getContext("2d", { alpha: false });
 
 /** @typedef {{ x: number, y: number }} Vector2 */
 /**
@@ -267,7 +271,6 @@ const PAUSE_PANEL_ALPHA = 0.74;
 // The arena boundary is a gameplay hazard, so its warm gradient and soft
 // bloom should be visible without obscuring the ship or asteroid silhouettes.
 const WALL_GLOW_THICKNESS = 14;
-const WALL_GLOW_BLUR = 18;
 const WALL_GLOW_COLOR = "rgba(255, 62, 92, 0.9)";
 const WALL_GLOW_FADE_COLOR = "rgba(255, 62, 92, 0)";
 const ASTEROID_COUNT = 8;
@@ -2110,9 +2113,10 @@ function drawDangerWalls(width, height) {
   );
 
   context.save();
-  context.shadowColor = WALL_GLOW_COLOR;
-  context.shadowBlur = WALL_GLOW_BLUR;
 
+  // Gradients provide the complete inward glow. A shadow on these full-edge
+  // rectangles duplicates that effect while forcing Safari to rasterize four
+  // large blur regions on every frame.
   const topGradient = context.createLinearGradient(0, 0, 0, thickness);
   topGradient.addColorStop(0, WALL_GLOW_COLOR);
   topGradient.addColorStop(1, WALL_GLOW_FADE_COLOR);
@@ -2147,7 +2151,6 @@ function drawDangerWalls(width, height) {
   context.fillStyle = rightGradient;
   context.fillRect(width - thickness, 0, thickness, height);
 
-  context.shadowBlur = 0;
   context.strokeStyle = WALL_GLOW_COLOR;
   context.lineWidth = 2;
   context.beginPath();
