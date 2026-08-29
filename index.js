@@ -278,7 +278,7 @@ const PLAY_HELP = Object.freeze([
   }),
   Object.freeze({
     label: "COLOR",
-    description: "redder asteroids are denser",
+    description: "redder asteroids are heavier and hit harder",
   }),
 ]);
 const HELP_PANEL_WIDTH = 540;
