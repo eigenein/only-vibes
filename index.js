@@ -139,6 +139,18 @@ const RED_ALERT_TEXT = "RED ALERT";
 const RED_ALERT_HULL_THRESHOLD = 20;
 const RED_ALERT_BLINK_INTERVAL_MILLISECONDS = 450;
 const RED_ALERT_EDGE_GAP = 12;
+// Sound effects retain a small number of independent voices so a rapid burst
+// of shots or impacts does not cut off the sound that preceded it.
+const SOUND_EFFECT_VOICE_COUNT = 3;
+const HEAVY_SHOT_SOUND_SOURCES = [
+  "HeavyShot_01.wav",
+  "HeavyShot_02.wav",
+  "HeavyShot_03.wav",
+];
+const EMP_SOUND_SOURCES = ["EMP_01.wav", "EMP_02.wav", "EMP_03.wav"];
+const RED_ALERT_SOUND_SOURCE = "Alarm_01.wav";
+const WIN_SOUND_SOURCE = "Alarm_02.wav";
+const DEFEAT_SOUND_SOURCE = "Shutdown.wav";
 // The command-console band encloses its two-row controls with matching
 // 10-pixel margins above and below.
 const LCARS_CONSOLE_HEIGHT = LCARS_CONSOLE_TOP * 2 + STATUS_POINTS_HEIGHT;
@@ -353,6 +365,8 @@ let shieldState = SHIELD_MAX_STATE;
 let shipState = SHIP_MAX_STATE;
 let displayedShieldState = SHIELD_MAX_STATE;
 let displayedShipState = SHIP_MAX_STATE;
+// The alarm is a transition cue, not a loop: one red alert per ship life.
+let redAlertSoundPlayed = false;
 let restartRequested = false;
 let shipFailureActive = false;
 let shipFailureTimeRemaining = 0;
@@ -424,6 +438,54 @@ let frameTimeSampleTotal = 0;
 let debugRefreshTimeRemaining = 0;
 let viewportWidth = 0;
 let viewportHeight = 0;
+
+/**
+ * Play randomly selected local sound effects without making audio availability
+ * a gameplay dependency. A blocked browser-autoplay request is deliberately
+ * ignored; the next player gesture can unlock the same already-loaded voices.
+ */
+class SoundEffect {
+  /**
+   * @param {string[]} sources Local audio-file paths for this effect.
+   * @param {number} voiceCount Number of overlapping voices for each source.
+   */
+  constructor(sources, voiceCount) {
+    this.voices = sources.flatMap((source) =>
+      Array.from({ length: voiceCount }, () => {
+        const audio = new Audio(source);
+        audio.preload = "auto";
+        // `preload` is only a browser hint. Explicitly loading every voice at
+        // startup keeps a newly selected variant from stalling its first hit.
+        audio.load();
+        return audio;
+      }),
+    );
+  }
+
+  /**
+   * Start one randomly selected voice, reusing the oldest available voice
+   * only when every voice is still active.
+   * @returns {void}
+   */
+  playRandom() {
+    const idleVoices = this.voices.filter((audio) => audio.paused);
+    const availableVoices = idleVoices.length > 0 ? idleVoices : this.voices;
+    const voiceIndex = Math.floor(Math.random() * availableVoices.length);
+    const audio = availableVoices[voiceIndex];
+
+    audio.currentTime = 0;
+    void audio.play().catch(() => undefined);
+  }
+}
+
+const heavyShotSound = new SoundEffect(
+  HEAVY_SHOT_SOUND_SOURCES,
+  SOUND_EFFECT_VOICE_COUNT,
+);
+const empSound = new SoundEffect(EMP_SOUND_SOURCES, SOUND_EFFECT_VOICE_COUNT);
+const redAlertSound = new SoundEffect([RED_ALERT_SOUND_SOURCE], 1);
+const winSound = new SoundEffect([WIN_SOUND_SOURCE], 1);
+const defeatSound = new SoundEffect([DEFEAT_SOUND_SOURCE], 1);
 
 // The debug panel is created only in JavaScript so index.html stays a minimal
 // canvas host. It is hidden by default and reports collision telemetry without
@@ -1005,6 +1067,7 @@ function emitBullet() {
     y: finalTotalImpulseY - initialShipImpulseY,
   };
 
+  heavyShotSound.playRandom();
   totalBulletsEmitted += 1;
   bullets.push(bullet);
 }
@@ -1800,6 +1863,15 @@ function applyCollisionDamage(collisionMomentum) {
   lastShieldDamage = shieldDamage;
   lastShipDamage = shipDamage;
 
+  if (
+    shipDamage > 0 &&
+    shipState <= RED_ALERT_HULL_THRESHOLD &&
+    !redAlertSoundPlayed
+  ) {
+    redAlertSoundPlayed = true;
+    redAlertSound.playRandom();
+  }
+
   if (shipState <= COLLISION_EPSILON) {
     shipState = 0;
     restartRequested = true;
@@ -1824,6 +1896,7 @@ function restartGame(width, height) {
   shipState = SHIP_MAX_STATE;
   displayedShieldState = SHIELD_MAX_STATE;
   displayedShipState = SHIP_MAX_STATE;
+  redAlertSoundPlayed = false;
   collisionDamageBudget = COLLISION_DAMAGE_BUDGET_CAP;
   restartRequested = false;
   shipFailureActive = false;
@@ -1862,6 +1935,7 @@ function beginShipFailure() {
   shipFailureActive = true;
   shipFailureTimeRemaining = SHIP_FAILURE_DISPLAY_SECONDS;
   restartRequested = false;
+  defeatSound.playRandom();
   clearPressedKeys();
   bulletCooldown = 0;
 }
@@ -1879,6 +1953,7 @@ function beginWin() {
 
   gameWon = true;
   gamePaused = true;
+  winSound.playRandom();
   for (const bullet of bullets) {
     emitSparksAt({ x: bullet.x, y: bullet.y }, bodyKineticEnergy(bullet));
   }
@@ -2821,6 +2896,7 @@ function resolveShipWallContact(ship, normal) {
 
   if (response.normalImpulse > COLLISION_EPSILON) {
     applyCollisionDamage(contactImpulseMagnitude(response));
+    empSound.playRandom();
   }
   applyShipCollisionAngleAdjustment(response);
   return response;
@@ -4069,6 +4145,9 @@ function resolveBulletCollisions(width, height) {
           y: -bulletImpulse.y,
         };
         applyCollisionDamage(contactImpulseMagnitude(bulletImpulse));
+        if (bulletImpulse.normalImpulse > COLLISION_EPSILON) {
+          empSound.playRandom();
+        }
         lastBulletLostMomentum = {
           x: -bulletImpulse.x,
           y: -bulletImpulse.y,
@@ -4696,6 +4775,9 @@ function resolveAsteroidCollisions() {
 
     if (response !== undefined) {
       applyCollisionDamage(contactImpulseMagnitude(response));
+      if (response.normalImpulse > COLLISION_EPSILON) {
+        empSound.playRandom();
+      }
       applyShipCollisionAngleAdjustment(response);
     }
   }
