@@ -143,14 +143,18 @@ const RED_ALERT_EDGE_GAP = 12;
 // of shots or impacts does not cut off the sound that preceded it.
 const SOUND_EFFECT_VOICE_COUNT = 3;
 const HEAVY_SHOT_SOUND_SOURCES = [
-  "HeavyShot_01.wav",
-  "HeavyShot_02.wav",
-  "HeavyShot_03.wav",
+  "sounds/HeavyShot_01.wav",
+  "sounds/HeavyShot_02.wav",
+  "sounds/HeavyShot_03.wav",
 ];
-const EMP_SOUND_SOURCES = ["EMP_01.wav", "EMP_02.wav", "EMP_03.wav"];
-const RED_ALERT_SOUND_SOURCE = "Alarm_01.wav";
-const WIN_SOUND_SOURCE = "Alarm_02.wav";
-const DEFEAT_SOUND_SOURCE = "Shutdown.wav";
+const EMP_SOUND_SOURCES = [
+  "sounds/EMP_01.wav",
+  "sounds/EMP_02.wav",
+  "sounds/EMP_03.wav",
+];
+const RED_ALERT_SOUND_SOURCE = "sounds/Alarm_01.wav";
+const WIN_SOUND_SOURCE = "sounds/Alarm_02.wav";
+const DEFEAT_SOUND_SOURCE = "sounds/Shutdown.wav";
 // The command-console band encloses its two-row controls with matching
 // 10-pixel margins above and below.
 const LCARS_CONSOLE_HEIGHT = LCARS_CONSOLE_TOP * 2 + STATUS_POINTS_HEIGHT;
