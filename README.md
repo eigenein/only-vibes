@@ -1,16 +1,15 @@
 # Only Vibes
 
-![Only Vibes screenshot](screenshot.png)
+A classic single-page Asteroids game in pure HTML and JavaScript, with an
+LCARS-like interface and a suspicious amount of enthusiasm, and code that boldly goes wherever the prompt takes it..
 
-> A classic single-page Asteroids game in pure HTML and JavaScript, with an
-> LCARS-like interface and a suspicious amount of enthusiasm.
+![Only Vibes screenshot](screenshot.png)
 
 This project was made for the [Kane CLI Hackathon](https://luma.com/kanecli-online).
 
-It is **146% vibe-coded for purpose**.
-
 > [!NOTE]
-> **The code quality is by no means attributed to me.** The point of this project
+> **The code quality is by no means attributed to me.** It is **146% vibe-coded for purpose**.
+> The point of this project
 > was the full loop: automated development, browser-based verification, and
 > iterating on what the running game actually did. The implementation is the
 > artifact of that loop.
