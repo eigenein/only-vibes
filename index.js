@@ -66,6 +66,9 @@ const STATUS_BAR_WIDTH = 220;
 const STATUS_BAR_HEIGHT = 22;
 const STATUS_BAR_GAP = 12;
 const STATUS_BAR_MARGIN = 16;
+const STATUS_POINTS_WIDTH = 92;
+const STATUS_POINTS_GAP = 16;
+const STATUS_POINTS_HEIGHT = STATUS_BAR_HEIGHT * 2 + STATUS_BAR_GAP;
 
 // Bullets are intentionally fast and short-lived. The frequency is expressed
 // in shots per second so holding Space feels regular at every frame rate.
@@ -311,6 +314,10 @@ let lastMomentumDelta = { x: 0, y: 0 };
 let lastKineticEnergyDelta = 0;
 let totalBulletCutCount = 0;
 let totalBulletShipCollisionCount = 0;
+// Points measure material that really leaves the playfield. A successful cut
+// preserves area across its retained fragments, while fragments below the
+// minimum area (and terminal asteroids) contribute the area that disappears.
+let points = 0;
 let lastBulletMomentumDelta = { x: 0, y: 0 };
 let lastBulletLostMomentum = { x: 0, y: 0 };
 let lastBulletKineticEnergyDelta = 0;
@@ -1109,6 +1116,44 @@ function restartGame(width, height) {
 }
 
 /**
+ * Add the area removed when a cut replaces one asteroid with its retained
+ * fragments. Keeping this calculation at the replacement boundary makes the
+ * score follow both the minimum-fragment rule and the terminal-asteroid rule.
+ * @param {Asteroid} asteroid Asteroid removed by the cut.
+ * @param {Asteroid[]} fragments Fragments that remain after the area cutoff.
+ * @returns {void}
+ */
+function countVanishedAsteroidArea(asteroid, fragments) {
+  const retainedArea = fragments.reduce(
+    (area, fragment) => area + fragment.surfaceArea,
+    0,
+  );
+  const vanishedArea = Math.max(0, asteroid.surfaceArea - retainedArea);
+
+  points += vanishedArea;
+}
+
+/**
+ * Render the score beside the health bars, with a stacked fallback for narrow
+ * viewports where a horizontal score block would overlap the canvas edge.
+ * @param {number} rightX Right edge of the score block in CSS pixels.
+ * @param {number} topY Top of the score block in CSS pixels.
+ * @returns {void}
+ */
+function drawPoints(rightX, topY) {
+  context.save();
+  context.textAlign = "right";
+  context.textBaseline = "middle";
+  context.fillStyle = "#9fdcff";
+  context.font = "600 11px system-ui, sans-serif";
+  context.fillText("POINTS", rightX, topY + 10);
+  context.fillStyle = "#fff";
+  context.font = "700 22px system-ui, sans-serif";
+  context.fillText(Math.round(points).toString(), rightX, topY + 37);
+  context.restore();
+}
+
+/**
  * Draw the two persistent ship-life indicators in the upper-right corner.
  * These are game UI, not debug output, so they remain visible when debugging
  * is disabled and while the paused help screen is open.
@@ -1126,6 +1171,17 @@ function drawStatusBars(width) {
   }
 
   const barX = width - barWidth - STATUS_BAR_MARGIN;
+  const pointsFitsBesideBars = barX - STATUS_BAR_MARGIN >=
+    STATUS_POINTS_WIDTH + STATUS_POINTS_GAP;
+  const barTop = pointsFitsBesideBars
+    ? STATUS_BAR_MARGIN
+    : STATUS_BAR_MARGIN + STATUS_POINTS_HEIGHT + STATUS_BAR_GAP;
+
+  drawPoints(
+    pointsFitsBesideBars ? barX - STATUS_POINTS_GAP : width - STATUS_BAR_MARGIN,
+    pointsFitsBesideBars ? STATUS_BAR_MARGIN : STATUS_BAR_MARGIN / 2,
+  );
+
   const bars = [
     { label: "SHIELD", state: shieldState, color: "#65d8ff" },
     { label: "SHIP", state: shipState, color: "#ffffff" },
@@ -1137,7 +1193,7 @@ function drawStatusBars(width) {
 
   for (let barIndex = 0; barIndex < bars.length; barIndex += 1) {
     const bar = bars[barIndex];
-    const barY = STATUS_BAR_MARGIN + barIndex *
+    const barY = barTop + barIndex *
         (STATUS_BAR_HEIGHT + STATUS_BAR_GAP);
     const fillWidth = barWidth * (bar.state / SHIELD_MAX_STATE);
 
@@ -2558,6 +2614,7 @@ function resolveBulletCollisions(width, height) {
           hitPoint,
           incomingDirection,
         );
+        countVanishedAsteroidArea(asteroid, fragments);
         asteroids.splice(hitAsteroidIndex, 1, ...fragments);
 
         for (const fragment of fragments) {
