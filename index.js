@@ -36,7 +36,7 @@ canvas.focus({ preventScroll: true });
 
 // The player uses one radius for both the circular hull and the triangle's
 // circumcircle, keeping the silhouette consistent as the game evolves.
-const PLAYER_RADIUS = 24;
+const PLAYER_RADIUS = 28;
 const PLAYER_TRIANGLE_HALF_ANGLE = Math.PI / 4;
 // Collision bodies use a mass rather than a gameplay health value. The ship is
 // intentionally heavier than a small asteroid, while still being light enough
@@ -44,13 +44,13 @@ const PLAYER_TRIANGLE_HALF_ANGLE = Math.PI / 4;
 const STARSHIP_MASS = 1000;
 // A global speed keeps the steering response easy to tune from one place and
 // makes rotation consistent across displays with different refresh rates.
-const ROTATION_SPEED = Math.PI * 1.5;
+const ROTATION_SPEED = Math.PI * 2;
 // Movement is deliberately expressed in CSS pixels per second so the game
 // behaves the same at different device pixel ratios and display refresh rates.
-const MAX_SPEED = 330;
+const MAX_SPEED = 360;
 // This is the rate at which the ship gains or loses speed while a throttle key
 // is held. Keeping it global makes the handling easy to tune.
-const MOVEMENT_RESPONSIVENESS = 400;
+const MOVEMENT_RESPONSIVENESS = 480;
 
 // The shield and hull are intentionally separate gameplay states. Collision
 // impulse is scaled into readable percentage points, while the different
@@ -58,10 +58,10 @@ const MOVEMENT_RESPONSIVENESS = 400;
 // unprotected hull would receive.
 const SHIELD_MAX_STATE = 100;
 const SHIP_MAX_STATE = 100;
-const SHIELD_REGENERATION_RATE = 3.5;
-const COLLISION_DAMAGE_SCALE = 1 / 6000;
-const SHIELD_DAMAGE_COEFFICIENT = 1.15;
-const SHIP_DAMAGE_COEFFICIENT = 1.1;
+const SHIELD_REGENERATION_RATE = 7.5;
+const COLLISION_DAMAGE_SCALE = 1 / 10000;
+const SHIELD_DAMAGE_COEFFICIENT = 1.1;
+const SHIP_DAMAGE_COEFFICIENT = 1.0;
 const STATUS_BAR_WIDTH = 220;
 const STATUS_BAR_HEIGHT = 22;
 const STATUS_BAR_GAP = 12;
@@ -89,7 +89,7 @@ const BULLET_FIRE_INTERVAL = 1 / BULLET_FREQUENCY;
 // A bullet's mass is deliberately independent of its visual length. The
 // collision response uses this value for both bullet momentum and bullet
 // kinetic energy while the projectile remains an independent body.
-const BULLET_MASS = 7;
+const BULLET_MASS = 10;
 const BULLET_SPEED = 720;
 const BULLET_HALF_LENGTH = 10;
 const BULLET_LINE_WIDTH = 3;
@@ -158,106 +158,33 @@ const HELP_ATTENTION_DELAY = 5;
 const HELP_ATTENTION_PULSE_PERIOD = 1.2;
 const HELP_ATTENTION_COLOR = "#ffd166";
 
-// A faint two-line chord font brands the arena behind the original random
-// asteroid field. Coordinates are in a one-by-one glyph box with y increasing
-// downward; every chord is a lightweight physical body.
-const ASTEROID_PHRASE_LINES = Object.freeze([
+// A faint two-line phrase brands the arena without participating in the game
+// simulation. It is ordinary canvas text rendered as background decoration.
+const PHRASE_LINES = Object.freeze([
   "KANE CLI",
   "HACKATHON",
 ]);
-const ASTEROID_PHRASE_GLYPHS = Object.freeze({
-  K: Object.freeze([
-    Object.freeze([0, 0, 0, 1]),
-    Object.freeze([0, 0.5, 1, 0]),
-    Object.freeze([0, 0.5, 1, 1]),
-  ]),
-  A: Object.freeze([
-    Object.freeze([0, 1, 0.5, 0]),
-    Object.freeze([0.5, 0, 1, 1]),
-    Object.freeze([0.2, 0.56, 0.8, 0.56]),
-  ]),
-  N: Object.freeze([
-    Object.freeze([0, 1, 0, 0]),
-    Object.freeze([0, 0, 1, 1]),
-    Object.freeze([1, 1, 1, 0]),
-  ]),
-  E: Object.freeze([
-    Object.freeze([1, 0, 0, 0]),
-    Object.freeze([0, 0, 0, 1]),
-    Object.freeze([0, 0.5, 0.78, 0.5]),
-    Object.freeze([0, 1, 1, 1]),
-  ]),
-  C: Object.freeze([
-    Object.freeze([1, 0, 0, 0]),
-    Object.freeze([0, 0, 0, 1]),
-    Object.freeze([0, 1, 1, 1]),
-  ]),
-  L: Object.freeze([
-    Object.freeze([0, 0, 0, 1]),
-    Object.freeze([0, 1, 1, 1]),
-  ]),
-  I: Object.freeze([
-    Object.freeze([0, 0, 1, 0]),
-    Object.freeze([0.5, 0, 0.5, 1]),
-    Object.freeze([0, 1, 1, 1]),
-  ]),
-  H: Object.freeze([
-    Object.freeze([0, 0, 0, 1]),
-    Object.freeze([1, 0, 1, 1]),
-    Object.freeze([0, 0.5, 1, 0.5]),
-  ]),
-  T: Object.freeze([
-    Object.freeze([0, 0, 1, 0]),
-    Object.freeze([0.5, 0, 0.5, 1]),
-  ]),
-  O: Object.freeze([
-    Object.freeze([0, 0, 1, 0]),
-    Object.freeze([1, 0, 1, 1]),
-    Object.freeze([1, 1, 0, 1]),
-    Object.freeze([0, 1, 0, 0]),
-  ]),
-});
-const ASTEROID_PHRASE_ADVANCE = 1.28;
-const ASTEROID_PHRASE_SPACE_ADVANCE = 0.62;
-const ASTEROID_PHRASE_LINE_GAP = 0.56;
-const ASTEROID_PHRASE_MARGIN = 48;
-// Phrase bodies are narrow, translucent, and much less dense than regular
-// asteroids. They remain cuttable collision bodies while reading as secondary
-// event branding instead of the main obstacle field.
-const ASTEROID_PHRASE_STROKE_WIDTH = 6;
-const ASTEROID_PHRASE_OPACITY = 0.22;
-const ASTEROID_PHRASE_MIN_DENSITY = 0.08;
-const ASTEROID_PHRASE_MAX_DENSITY = 0.16;
-const ASTEROID_PHRASE_MIN_SPEED = 1;
-const ASTEROID_PHRASE_MAX_SPEED = 4;
-const ASTEROID_PHRASE_MAX_ANGULAR_SPEED = 0.04;
+const PHRASE_FONT_FAMILY = "Arial, sans-serif";
+const PHRASE_FONT_WEIGHT = 700;
+const PHRASE_BASE_FONT_SIZE = 100;
+const PHRASE_LINE_GAP = 24;
+const PHRASE_MARGIN = 48;
+const PHRASE_OPACITY = 0.22;
 const PAUSE_BACKDROP_ALPHA = 0.44;
 const PAUSE_PANEL_ALPHA = 0.74;
-// Three extra regular bodies add a little more pressure to the opening field
-// while keeping the decorative phrase asteroids as a separate composition.
-const RANDOM_ASTEROID_COUNT = 12;
-const ASTEROID_PHRASE_BODY_COUNT = ASTEROID_PHRASE_LINES.reduce(
-  (bodyCount, phraseLine) =>
-    bodyCount + Array.from(phraseLine).reduce(
-      (lineBodyCount, character) =>
-        lineBodyCount + (ASTEROID_PHRASE_GLYPHS[character]?.length ?? 0),
-      0,
-    ),
-  0,
-);
-const ASTEROID_COUNT = RANDOM_ASTEROID_COUNT + ASTEROID_PHRASE_BODY_COUNT;
+const ASTEROID_COUNT = 8;
 const ASTEROID_MIN_RADIUS = 24;
 const ASTEROID_MAX_RADIUS = 52;
 const ASTEROID_MIN_VERTICES = 6;
 const ASTEROID_MAX_VERTICES = 10;
-const ASTEROID_MIN_SPEED = 75;
-const ASTEROID_MAX_SPEED = 180;
+const ASTEROID_MIN_SPEED = 70;
+const ASTEROID_MAX_SPEED = 170;
 const ASTEROID_MIN_ANGULAR_SPEED = -1.8;
 const ASTEROID_MAX_ANGULAR_SPEED = 1.8;
 // A grazing cut can produce a technically valid but visually meaningless
 // sliver. Discarding fragments below this area keeps the asteroid population
 // useful while leaving the cutoff easy to tune for the game's scale.
-const ASTEROID_MIN_FRAGMENT_AREA = 400;
+const ASTEROID_MIN_FRAGMENT_AREA = 500;
 // Geometric asteroid mass is density times the true area of the convex
 // polygon. The current density is the average material density; each new
 // asteroid samples a bounded variation around it so no two materials need to
@@ -271,13 +198,14 @@ const ASTEROID_MAX_DENSITY = 1.35;
 // communication so denser asteroids remain easy to see.
 const ASTEROID_MIN_COLOR_HUE = 210;
 const ASTEROID_MAX_COLOR_HUE = 0;
-// A value of one is a fully elastic collision. At 0.74, an impact loses about
-// 45% of the kinetic energy in the contact-normal component while preserving
-// enough motion to keep asteroid contacts and wall hits dynamic.
-const BOUNCINESS = 0.74;
+// A value of one is a fully elastic collision. At 0.9, an impact loses 19% of
+// the kinetic energy in the contact-normal component while preserving tangent
+// motion. The same coefficient is used for asteroid contacts and wall hits so
+// the field stays lively through the middle and end of a run.
+const BOUNCINESS = 0.9;
 // A modest Coulomb friction coefficient lets a shoulder scrape exchange spin
-// without draining so much tangential motion that contacts feel sticky.
-const FRICTION_COEFFICIENT = 0.25;
+// instead of making every contact behave like two frictionless billiard balls.
+const FRICTION_COEFFICIENT = 0.35;
 const COLLISION_EPSILON = 0.000001;
 const STATIC_WALL_BODY = Object.freeze({
   x: 0,
@@ -295,7 +223,7 @@ const FPS_SAMPLE_COUNT = 60;
 const pressedKeys = new Set();
 const asteroids = [];
 const bullets = [];
-let playerAngle = 0;
+let playerAngle = -Math.PI / 2;
 let playerVelocityX = 0;
 let playerVelocityY = 0;
 let playerX;
@@ -450,7 +378,6 @@ class Asteroid {
    * @param {number} [options.rotation]
    * @param {number} [options.angularVelocity]
    * @param {number} [options.additionalMass]
-   * @param {number} [options.opacity]
    */
   constructor({
     radius,
@@ -464,7 +391,6 @@ class Asteroid {
     rotation = 0,
     angularVelocity = 0,
     additionalMass = 0,
-    opacity = 1,
   }) {
     const sourceVertices = localVertices ?? angles.map((angle) => ({
       x: Math.cos(angle) * radius,
@@ -492,7 +418,6 @@ class Asteroid {
     this.density = density;
     this.rotation = rotation;
     this.angularVelocity = angularVelocity;
-    this.opacity = opacity;
     this.worldVertices = this.localVertices.map((vertex) => ({
       x: this.x + vertex.x,
       y: this.y + vertex.y,
@@ -570,7 +495,6 @@ class Asteroid {
     const vertices = this.collisionPolygon();
     const firstVertex = vertices[0];
 
-    context.save();
     context.beginPath();
     context.moveTo(firstVertex.x, firstVertex.y);
 
@@ -581,9 +505,7 @@ class Asteroid {
 
     context.closePath();
     context.fillStyle = asteroidColorForDensity(this.density);
-    context.globalAlpha = this.opacity;
     context.fill();
-    context.restore();
   }
 
   collisionPolygon() {
@@ -730,7 +652,6 @@ function createAsteroid(width, height) {
  * @param {number} density
  * @param {number} [rotation]
  * @param {number} [angularVelocity]
- * @param {number} [opacity]
  * @returns {Asteroid}
  */
 function createAsteroidFromPolygon(
@@ -741,7 +662,6 @@ function createAsteroidFromPolygon(
   density,
   rotation = 0,
   angularVelocity = 0,
-  opacity = 1,
 ) {
   const center = polygonCentroid(vertices);
   const cosine = Math.cos(rotation);
@@ -766,24 +686,7 @@ function createAsteroidFromPolygon(
     rotation,
     angularVelocity,
     additionalMass: mass - density * area,
-    opacity,
   });
-}
-
-/**
- * Return the width of a phrase line in the normalized glyph coordinate space.
- * @param {string} phraseLine
- * @returns {number}
- */
-function phraseLineWidth(phraseLine) {
-  return Array.from(phraseLine).reduce(
-    (width, character) =>
-      width +
-      (character === " "
-        ? ASTEROID_PHRASE_SPACE_ADVANCE
-        : ASTEROID_PHRASE_ADVANCE),
-    0,
-  );
 }
 
 /**
@@ -792,130 +695,22 @@ function phraseLineWidth(phraseLine) {
  * @param {number} height Viewport height in CSS pixels.
  * @returns {number}
  */
-function phraseScaleForViewport(width, height) {
+function phraseFontSizeForViewport(width, height) {
+  const availableWidth = Math.max(0, width - PHRASE_MARGIN * 2);
+  const availableHeight = Math.max(0, height - PHRASE_MARGIN * 2);
+  const baseLineHeight = PHRASE_BASE_FONT_SIZE + PHRASE_LINE_GAP;
+
+  context.save();
+  context.font =
+    `${PHRASE_FONT_WEIGHT} ${PHRASE_BASE_FONT_SIZE}px ${PHRASE_FONT_FAMILY}`;
   const widestLine = Math.max(
-    ...ASTEROID_PHRASE_LINES.map((phraseLine) => phraseLineWidth(phraseLine)),
+    ...PHRASE_LINES.map((phraseLine) => context.measureText(phraseLine).width),
   );
-  const phraseHeight = 2 + ASTEROID_PHRASE_LINE_GAP;
-  const availableWidth = Math.max(0, width - ASTEROID_PHRASE_MARGIN * 2);
-  const availableHeight = Math.max(0, height - ASTEROID_PHRASE_MARGIN * 2);
+  context.restore();
+
   return Math.min(
-    availableWidth / widestLine,
-    availableHeight / phraseHeight,
-  );
-}
-
-/**
- * Convert the two hard-coded phrase lines into viewport-sized chord endpoints.
- * @param {number} width Viewport width in CSS pixels.
- * @param {number} height Viewport height in CSS pixels.
- * @returns {{ start: Vector2, end: Vector2 }[]}
- */
-function phraseChordsForViewport(width, height) {
-  const phraseHeight = 2 + ASTEROID_PHRASE_LINE_GAP;
-  const scale = phraseScaleForViewport(width, height);
-  const phraseChords = [];
-  const blockHeight = phraseHeight * scale;
-  const blockTop = (height - blockHeight) / 2;
-
-  for (
-    let lineIndex = 0;
-    lineIndex < ASTEROID_PHRASE_LINES.length;
-    lineIndex += 1
-  ) {
-    const phraseLine = ASTEROID_PHRASE_LINES[lineIndex];
-    const lineWidth = phraseLineWidth(phraseLine) * scale;
-    const lineLeft = (width - lineWidth) / 2;
-    const lineTop = blockTop +
-      lineIndex * (1 + ASTEROID_PHRASE_LINE_GAP) * scale;
-    let characterLeft = lineLeft;
-
-    for (const character of phraseLine) {
-      const glyph = ASTEROID_PHRASE_GLYPHS[character];
-      const characterAdvance = (character === " "
-        ? ASTEROID_PHRASE_SPACE_ADVANCE
-        : ASTEROID_PHRASE_ADVANCE) * scale;
-
-      if (glyph !== undefined) {
-        for (const [startX, startY, endX, endY] of glyph) {
-          phraseChords.push({
-            start: {
-              x: characterLeft + startX * scale,
-              y: lineTop + startY * scale,
-            },
-            end: {
-              x: characterLeft + endX * scale,
-              y: lineTop + endY * scale,
-            },
-          });
-        }
-      }
-
-      characterLeft += characterAdvance;
-    }
-  }
-
-  return phraseChords;
-}
-
-/**
- * Turn one phrase chord into a narrow, lightweight physical asteroid.
- * @param {Vector2} start Chord start point in viewport coordinates.
- * @param {Vector2} end Chord end point in viewport coordinates.
- * @returns {Asteroid | undefined}
- */
-function createPhraseAsteroid(start, end) {
-  const directionX = end.x - start.x;
-  const directionY = end.y - start.y;
-  const chordLength = Math.hypot(directionX, directionY);
-
-  if (chordLength <= COLLISION_EPSILON) {
-    return undefined;
-  }
-
-  const axisX = directionX / chordLength;
-  const axisY = directionY / chordLength;
-  const normalX = -axisY;
-  const normalY = axisX;
-  const halfLength = chordLength * 0.46;
-  const halfWidth = ASTEROID_PHRASE_STROKE_WIDTH / 2;
-  const centerX = (start.x + end.x) / 2;
-  const centerY = (start.y + end.y) / 2;
-  const vertex = (along, across) => ({
-    x: centerX + axisX * along + normalX * across,
-    y: centerY + axisY * along + normalY * across,
-  });
-  const vertices = [
-    vertex(-halfLength, -halfWidth * 0.72),
-    vertex(-halfLength * 0.84, -halfWidth),
-    vertex(halfLength * 0.88, -halfWidth * 0.82),
-    vertex(halfLength, -halfWidth * 0.3),
-    vertex(halfLength * 0.84, halfWidth),
-    vertex(-halfLength * 0.9, halfWidth * 0.8),
-  ];
-  const density = randomBetween(
-    ASTEROID_PHRASE_MIN_DENSITY,
-    ASTEROID_PHRASE_MAX_DENSITY,
-  );
-  const speed = randomBetween(
-    ASTEROID_PHRASE_MIN_SPEED,
-    ASTEROID_PHRASE_MAX_SPEED,
-  );
-  const movementDirection = randomBetween(0, Math.PI * 2);
-  const area = polygonArea(vertices);
-
-  return createAsteroidFromPolygon(
-    vertices,
-    Math.cos(movementDirection) * speed,
-    Math.sin(movementDirection) * speed,
-    density * area,
-    density,
-    0,
-    randomBetween(
-      -ASTEROID_PHRASE_MAX_ANGULAR_SPEED,
-      ASTEROID_PHRASE_MAX_ANGULAR_SPEED,
-    ),
-    ASTEROID_PHRASE_OPACITY,
+    PHRASE_BASE_FONT_SIZE * availableWidth / widestLine,
+    PHRASE_BASE_FONT_SIZE * availableHeight / baseLineHeight,
   );
 }
 
@@ -924,16 +719,9 @@ function generateAsteroids(width, height) {
     return;
   }
 
-  const phraseAsteroids = phraseChordsForViewport(width, height)
-    .map(({ start, end }) => createPhraseAsteroid(start, end))
-    .filter((asteroid) => asteroid !== undefined);
-
-  // Phrase bodies are inserted first so regular opaque asteroids remain the
-  // dominant visual layer whenever the two compositions overlap.
   asteroids.push(
-    ...phraseAsteroids,
     ...Array.from(
-      { length: RANDOM_ASTEROID_COUNT },
+      { length: ASTEROID_COUNT },
       () => createAsteroid(width, height),
     ),
   );
@@ -1023,9 +811,7 @@ function resizeCanvas() {
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
 
   if (playerX === undefined || playerY === undefined) {
-    // Start on the left edge so the opening phrase remains unobstructed and
-    // the ship can face into the field as the asteroids fly apart.
-    playerX = constrainPosition(width * 0.08, PLAYER_RADIUS, width);
+    playerX = width / 2;
     playerY = height / 2;
   } else {
     playerX = constrainPosition(playerX, PLAYER_RADIUS, width);
@@ -1113,7 +899,7 @@ function applyCollisionDamage(collisionMomentum) {
  * @returns {void}
  */
 function restartGame(width, height) {
-  playerX = constrainPosition(width * 0.08, PLAYER_RADIUS, width);
+  playerX = width / 2;
   playerY = height / 2;
   playerAngle = 0;
   playerVelocityX = 0;
@@ -1380,6 +1166,35 @@ function updateHelpAttention(deltaTime) {
 }
 
 /**
+ * Draw the event phrase as a quiet, non-physical arena background.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @returns {void}
+ */
+function drawPhraseBackground(width, height) {
+  const fontSize = phraseFontSizeForViewport(width, height);
+  const lineHeight = fontSize + PHRASE_LINE_GAP;
+  const blockTop = (height - lineHeight * PHRASE_LINES.length) / 2;
+
+  context.save();
+  context.font = `${PHRASE_FONT_WEIGHT} ${fontSize}px ${PHRASE_FONT_FAMILY}`;
+  context.fillStyle = "#8aa8c2";
+  context.globalAlpha = PHRASE_OPACITY;
+  context.textAlign = "center";
+  context.textBaseline = "top";
+
+  for (let lineIndex = 0; lineIndex < PHRASE_LINES.length; lineIndex += 1) {
+    context.fillText(
+      PHRASE_LINES[lineIndex],
+      width / 2,
+      blockTop + lineIndex * lineHeight,
+    );
+  }
+
+  context.restore();
+}
+
+/**
  * Draw the black space and the player in the bounded field.
  * The triangle points upward and has its tip and base endpoints on the hull's
  * circumference. Its base chord is intentionally shorter than its sides so
@@ -1393,8 +1208,11 @@ function drawGame(width, height) {
 
   context.fillStyle = "#000";
   context.fillRect(0, 0, width, height);
-  // Asteroids are drawn first so the player remains visually legible when the
-  // two shapes overlap. The overlap is resolved by the physics update.
+  drawPhraseBackground(width, height);
+
+  // Asteroids are drawn after the background so the player remains visually
+  // legible when the two shapes overlap. The phrase itself is never a physics
+  // body and cannot be collided with, cut, or counted in telemetry.
   for (const asteroid of asteroids) {
     asteroid.draw();
   }
@@ -2357,7 +2175,6 @@ function splitAsteroid(
         asteroid.density,
         asteroid.rotation,
         asteroid.angularVelocity,
-        asteroid.opacity,
       ),
     },
     {
@@ -2370,7 +2187,6 @@ function splitAsteroid(
         asteroid.density,
         asteroid.rotation,
         asteroid.angularVelocity,
-        asteroid.opacity,
       ),
     },
   ]
