@@ -907,6 +907,31 @@ function createAsteroidFromPolygon(
 }
 
 /**
+ * Measure the phrase with the browser's actual font metrics. Canvas engines
+ * do not agree on where `textBaseline = "top"` places Antonio's visible cap
+ * height, so centering uses these bounds instead of nominal font pixels.
+ * @param {number} fontSize Requested font size in CSS pixels.
+ * @returns {{ ascent: number, lineHeight: number, widestLine: number }}
+ */
+function phraseTextMetrics(fontSize) {
+  context.save();
+  context.font = `${PHRASE_FONT_WEIGHT} ${fontSize}px ${PHRASE_FONT_FAMILY}`;
+  const firstLineMetrics = context.measureText(PHRASE_LINES[0]);
+  const widestLine = Math.max(
+    ...PHRASE_LINES.map((phraseLine) => context.measureText(phraseLine).width),
+  );
+  context.restore();
+  const ascent = Number.isFinite(firstLineMetrics.actualBoundingBoxAscent)
+    ? firstLineMetrics.actualBoundingBoxAscent
+    : fontSize;
+  const descent = Number.isFinite(firstLineMetrics.actualBoundingBoxDescent)
+    ? firstLineMetrics.actualBoundingBoxDescent
+    : 0;
+
+  return { ascent, lineHeight: Math.max(1, ascent + descent), widestLine };
+}
+
+/**
  * Choose one scale that keeps the background phrase inside the viewport.
  * @param {number} width Viewport width in CSS pixels.
  * @param {number} height Viewport height in CSS pixels.
@@ -915,21 +940,13 @@ function createAsteroidFromPolygon(
 function phraseFontSizeForViewport(width, height) {
   const availableWidth = Math.max(0, width - PHRASE_MARGIN * 2);
   const availableHeight = Math.max(0, height - PHRASE_MARGIN * 2);
-  // Only the gaps *between* lines consume vertical space. Counting one after
-  // the final line made the centered block extend beyond its reserved arena.
+  const baseMetrics = phraseTextMetrics(PHRASE_BASE_FONT_SIZE);
   const baseBlockHeight =
-    PHRASE_BASE_FONT_SIZE * PHRASE_LINES.length +
+    baseMetrics.lineHeight * PHRASE_LINES.length +
     PHRASE_LINE_GAP * (PHRASE_LINES.length - 1);
 
-  context.save();
-  context.font = `${PHRASE_FONT_WEIGHT} ${PHRASE_BASE_FONT_SIZE}px ${PHRASE_FONT_FAMILY}`;
-  const widestLine = Math.max(
-    ...PHRASE_LINES.map((phraseLine) => context.measureText(phraseLine).width),
-  );
-  context.restore();
-
   return Math.min(
-    (PHRASE_BASE_FONT_SIZE * availableWidth) / widestLine,
+    (PHRASE_BASE_FONT_SIZE * availableWidth) / baseMetrics.widestLine,
     (PHRASE_BASE_FONT_SIZE * availableHeight) / baseBlockHeight,
   );
 }
@@ -2057,21 +2074,25 @@ function drawStatusBars(width) {
  */
 function drawPhraseBackground(width, height) {
   const fontSize = phraseFontSizeForViewport(width, height);
-  const lineHeight = fontSize + PHRASE_LINE_GAP;
-  const blockTop = (height - lineHeight * PHRASE_LINES.length) / 2;
+  const metrics = phraseTextMetrics(fontSize);
+  const lineHeight = metrics.lineHeight + PHRASE_LINE_GAP;
+  const blockHeight =
+    metrics.lineHeight * PHRASE_LINES.length +
+    PHRASE_LINE_GAP * (PHRASE_LINES.length - 1);
+  const firstBaseline = (height - blockHeight) / 2 + metrics.ascent;
 
   context.save();
   context.font = `${PHRASE_FONT_WEIGHT} ${fontSize}px ${PHRASE_FONT_FAMILY}`;
   context.fillStyle = LCARS_LAVENDER;
   context.globalAlpha = PHRASE_OPACITY;
   context.textAlign = "center";
-  context.textBaseline = "top";
+  context.textBaseline = "alphabetic";
 
   for (let lineIndex = 0; lineIndex < PHRASE_LINES.length; lineIndex += 1) {
     context.fillText(
       PHRASE_LINES[lineIndex],
       width / 2,
-      blockTop + lineIndex * lineHeight,
+      firstBaseline + lineIndex * lineHeight,
     );
   }
 
