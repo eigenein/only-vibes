@@ -31,6 +31,9 @@ const context = canvas.getContext("2d");
 
 // Keep keyboard control available after the player clicks the play field.
 canvas.tabIndex = 0;
+// The canvas remains keyboard-focusable, but its native focus ring is a
+// distracting one-pixel blue frame around the game arena.
+canvas.style.outline = "none";
 canvas.addEventListener("pointerdown", () => canvas.focus());
 canvas.focus({ preventScroll: true });
 
@@ -198,6 +201,12 @@ const PHRASE_MARGIN = 48;
 const PHRASE_OPACITY = 0.22;
 const PAUSE_BACKDROP_ALPHA = 0.44;
 const PAUSE_PANEL_ALPHA = 0.74;
+// The arena boundary is a gameplay hazard, so its warm gradient and soft
+// bloom should be visible without obscuring the ship or asteroid silhouettes.
+const WALL_GLOW_THICKNESS = 14;
+const WALL_GLOW_BLUR = 18;
+const WALL_GLOW_COLOR = "rgba(255, 62, 92, 0.9)";
+const WALL_GLOW_FADE_COLOR = "rgba(255, 62, 92, 0)";
 const ASTEROID_COUNT = 8;
 const ASTEROID_MIN_RADIUS = 24;
 const ASTEROID_MAX_RADIUS = 52;
@@ -1271,6 +1280,67 @@ function drawPhraseBackground(width, height) {
 }
 
 /**
+ * Draw the four physical arena boundaries as a restrained danger glow. The
+ * gradients fade inward so the edge remains legible while the play field
+ * stays clear; this is presentation only and does not change wall physics.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @returns {void}
+ */
+function drawDangerWalls(width, height) {
+  const thickness = Math.min(
+    WALL_GLOW_THICKNESS,
+    Math.max(1, Math.min(width, height) / 2),
+  );
+
+  context.save();
+  context.shadowColor = WALL_GLOW_COLOR;
+  context.shadowBlur = WALL_GLOW_BLUR;
+
+  const topGradient = context.createLinearGradient(0, 0, 0, thickness);
+  topGradient.addColorStop(0, WALL_GLOW_COLOR);
+  topGradient.addColorStop(1, WALL_GLOW_FADE_COLOR);
+  context.fillStyle = topGradient;
+  context.fillRect(0, 0, width, thickness);
+
+  const bottomGradient = context.createLinearGradient(
+    0,
+    height,
+    0,
+    height - thickness,
+  );
+  bottomGradient.addColorStop(0, WALL_GLOW_COLOR);
+  bottomGradient.addColorStop(1, WALL_GLOW_FADE_COLOR);
+  context.fillStyle = bottomGradient;
+  context.fillRect(0, height - thickness, width, thickness);
+
+  const leftGradient = context.createLinearGradient(0, 0, thickness, 0);
+  leftGradient.addColorStop(0, WALL_GLOW_COLOR);
+  leftGradient.addColorStop(1, WALL_GLOW_FADE_COLOR);
+  context.fillStyle = leftGradient;
+  context.fillRect(0, 0, thickness, height);
+
+  const rightGradient = context.createLinearGradient(
+    width,
+    0,
+    width - thickness,
+    0,
+  );
+  rightGradient.addColorStop(0, WALL_GLOW_COLOR);
+  rightGradient.addColorStop(1, WALL_GLOW_FADE_COLOR);
+  context.fillStyle = rightGradient;
+  context.fillRect(width - thickness, 0, thickness, height);
+
+  context.shadowBlur = 0;
+  context.strokeStyle = WALL_GLOW_COLOR;
+  context.lineWidth = 2;
+  context.beginPath();
+  context.rect(1, 1, Math.max(0, width - 2), Math.max(0, height - 2));
+  context.stroke();
+  context.restore();
+}
+
+/**
  * Draw the black space and the player in the bounded field.
  * The triangle points upward and has its tip and base endpoints on the hull's
  * circumference. Its base chord is intentionally shorter than its sides so
@@ -1285,6 +1355,7 @@ function drawGame(width, height) {
   context.fillStyle = "#000";
   context.fillRect(0, 0, width, height);
   drawPhraseBackground(width, height);
+  drawDangerWalls(width, height);
 
   // Asteroids are drawn after the background so the player remains visually
   // legible when the two shapes overlap. The phrase itself is never a physics
@@ -1630,7 +1701,7 @@ function drawPauseHelp(width, height) {
     390,
   );
   context.fillText(
-    "Walls are harmless. Navigate, cut, survive.",
+    "Walls damage the ship. Navigate, cut, survive.",
     HELP_PANEL_WIDTH / 2,
     418,
   );
@@ -1705,7 +1776,9 @@ function advanceAndReflect(
  * Resolve one ship-to-wall contact at the shield rim. The shared contact
  * solver applies restitution along the wall normal and a Coulomb-limited
  * friction impulse along the wall. Because the impulse is off-center, its
- * magnitude—and therefore the resulting turn—depends on ship momentum.
+ * magnitude—and therefore the resulting turn and damage—depends on ship
+ * momentum. The static wall has zero velocity and infinite mass, so it adds
+ * no momentum of its own.
  * @param {PhysicsBody} ship
  * @param {Vector2} normal Normal pointing from the ship toward the wall.
  * @returns {ContactResponse}
@@ -1724,6 +1797,9 @@ function resolveShipWallContact(ship, normal) {
     SHIELD_WALL_FRICTION_COEFFICIENT,
   );
 
+  if (response.normalImpulse > COLLISION_EPSILON) {
+    applyCollisionDamage(contactImpulseMagnitude(response));
+  }
   applyShipCollisionAngleAdjustment(response);
   return response;
 }
