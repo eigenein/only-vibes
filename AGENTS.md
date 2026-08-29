@@ -19,6 +19,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must use JSDoc to annotate type and purpose of the parameters; must properly format and respect the annotations.
 - Must document all world constants.
 - Must group all world constants.
+- Should comment on the purpose and choices made.
 
 # Implementation instructions
 
@@ -30,6 +31,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must keep the paused-game help screen up-to-date at all times.
 - Must keep the game user-friendly.
 - Must not tolerate any visual bugs.
+- Must keep calculations safe and numerically stable.
 
 # How to verify
 
@@ -43,7 +45,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must declutter the debug interface before adding new items.
 - Must not display any debug elements when the debug UI is off.
 - May add debug console output.
-- Must prefer Kane CLI to Node VM or `deno eval`.
+- Must prefer Kane CLI to Node VM or `deno eval` or Chrome DevTools.
 - Must document actionable Kane bug findings that resulted in code changes in `AUDIT.md`.
 - Must not rely merely on code analysis.
 - Must use W/A/S/D keys instead of the arrow keys when the spaceship control is needed.

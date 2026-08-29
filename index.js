@@ -126,6 +126,29 @@ const BULLET_LINE_WIDTH = 3;
 // of useful asteroid cuts without becoming an unbounded simulation object.
 const MAX_BULLET_REFLECTIONS = 3;
 const BULLET_COLLISION_OFFSET = 0.01;
+
+// Sparks turn dissipated kinetic energy into a readable, non-gameplay visual.
+// One spark represents a fixed slice of energy so larger impacts create denser
+// bursts while the cap keeps a single destruction event inexpensive to draw.
+const SPARK_ENERGY_PER_PARTICLE = 150000;
+const MAX_SPARKS_PER_INTERACTION = 64;
+// Keep the visual queue bounded when several bodies collide in one frame.
+// This cap affects only presentation; collision response and energy state
+// continue to run for every body regardless of particle availability.
+const MAX_ACTIVE_SPARKS = 360;
+const SPARK_MIN_LIFETIME = 0.12;
+const SPARK_MAX_LIFETIME = 0.24;
+const SPARK_MIN_SPEED = 80;
+const SPARK_MAX_SPEED = 125;
+const SPARK_VELOCITY_DAMPING = 0.72;
+// Narrow intensity bounds keep the burst coherent while preserving a little
+// organic variation between individual sparks.
+const SPARK_MIN_INTENSITY = 0.84;
+const SPARK_MAX_INTENSITY = 1.0;
+const SPARK_CORE_RADIUS = 1.5;
+const SPARK_GLOW_RADIUS = 5;
+const SPARK_GLOW_ALPHA = 0.18;
+const SPARK_COLOR = "#ffd166";
 // Backquote is an uncommon gameplay key and is separate from the ship's
 // letter-key controls, so it leaves D available for clockwise rotation.
 const DEBUG_TOGGLE_KEY = "Backquote";
@@ -261,6 +284,7 @@ const FPS_SAMPLE_COUNT = 60;
 const pressedKeys = new Set();
 const asteroids = [];
 const bullets = [];
+const sparks = [];
 let playerAngle = -Math.PI / 2;
 let playerVelocityX = 0;
 let playerVelocityY = 0;
@@ -317,6 +341,9 @@ let lastFiringImpulseDelta = { x: 0, y: 0 };
 let lastFiringRecoilVelocity = { x: 0, y: 0 };
 let lastAngularMomentumDelta = 0;
 let lastAngularKineticEnergyDelta = 0;
+let totalSparksEmitted = 0;
+let lastFrameSparkCount = 0;
+let lastFrameSparkEnergy = 0;
 let frameRate = 0;
 let minimumFrameRate = Infinity;
 const frameTimeSamples = new Float64Array(FPS_SAMPLE_COUNT);
@@ -613,12 +640,18 @@ class Bullet {
     this.angle = Math.atan2(this.velocityY, this.velocityX);
   }
 
-  reflect(normal) {
+  /**
+   * Reflect from a wall and lose the normal component's dissipated energy.
+   * @param {Vector2} normal Wall normal pointing along the incoming travel.
+   * @param {number} [bounceCoefficient] Normal restitution coefficient.
+   * @returns {void}
+   */
+  reflect(normal, bounceCoefficient = BOUNCINESS) {
     const normalVelocity = this.velocityX * normal.x +
       this.velocityY * normal.y;
 
-    this.velocityX -= 2 * normalVelocity * normal.x;
-    this.velocityY -= 2 * normalVelocity * normal.y;
+    this.velocityX -= (1 + bounceCoefficient) * normalVelocity * normal.x;
+    this.velocityY -= (1 + bounceCoefficient) * normalVelocity * normal.y;
     this.syncAngle();
     this.recordReflection();
   }
@@ -652,6 +685,78 @@ class Bullet {
     context.lineCap = "butt";
     context.stroke();
     context.restore();
+  }
+}
+
+/**
+ * A short-lived visual particle emitted by a dissipative contact. Sparks have
+ * no collision body and therefore cannot change gameplay state.
+ */
+class Spark {
+  /**
+   * @param {Vector2} origin Contact position where the spark begins.
+   */
+  constructor({ x, y }) {
+    const direction = randomBetween(0, Math.PI * 2);
+    const speed = randomBetween(SPARK_MIN_SPEED, SPARK_MAX_SPEED);
+
+    this.x = x;
+    this.y = y;
+    this.velocityX = Math.cos(direction) * speed;
+    this.velocityY = Math.sin(direction) * speed;
+    this.lifetime = randomBetween(SPARK_MIN_LIFETIME, SPARK_MAX_LIFETIME);
+    this.lifeRemaining = this.lifetime;
+    this.intensity = randomBetween(
+      SPARK_MIN_INTENSITY,
+      SPARK_MAX_INTENSITY,
+    );
+  }
+
+  /**
+   * Advance the particle and apply only presentation-level drag.
+   * @param {number} deltaTime Elapsed real time in seconds.
+   * @returns {void}
+   */
+  update(deltaTime) {
+    if (!Number.isFinite(deltaTime)) {
+      return;
+    }
+
+    const safeDeltaTime = Math.max(0, deltaTime);
+    const damping = Math.exp(-SPARK_VELOCITY_DAMPING * safeDeltaTime);
+    this.x += this.velocityX * safeDeltaTime;
+    this.y += this.velocityY * safeDeltaTime;
+    this.velocityX *= damping;
+    this.velocityY *= damping;
+    this.lifeRemaining -= safeDeltaTime;
+  }
+
+  /**
+   * @returns {boolean} Whether the particle still has visible lifetime.
+   */
+  get isAlive() {
+    return this.lifeRemaining > 0;
+  }
+
+  /**
+   * Draw the particle as a small bright core with a soft additive glow.
+   * @returns {void}
+   */
+  draw() {
+    const lifeRatio = Math.max(0, this.lifeRemaining / this.lifetime);
+    const alpha = this.intensity * lifeRatio ** 2;
+
+    // The caller batches the canvas state for all particles. A translucent
+    // outer disc provides a cheap additive glow without per-particle
+    // save/restore or shadow-blur rasterization.
+    context.globalAlpha = alpha * SPARK_GLOW_ALPHA;
+    context.beginPath();
+    context.arc(this.x, this.y, SPARK_GLOW_RADIUS, 0, Math.PI * 2);
+    context.fill();
+    context.globalAlpha = alpha;
+    context.beginPath();
+    context.arc(this.x, this.y, SPARK_CORE_RADIUS, 0, Math.PI * 2);
+    context.fill();
   }
 }
 
@@ -821,6 +926,24 @@ function updateBullets(deltaTime) {
   }
 }
 
+/**
+ * Advance and prune sparks independently from the gameplay simulation. This
+ * lets an impact finish its visual fade while the player is reading a pause
+ * or failure screen without giving the particles any gameplay influence.
+ * @param {number} deltaTime Elapsed real time in seconds.
+ * @returns {void}
+ */
+function updateSparks(deltaTime) {
+  for (let sparkIndex = sparks.length - 1; sparkIndex >= 0; sparkIndex -= 1) {
+    const spark = sparks[sparkIndex];
+    spark.update(deltaTime);
+
+    if (!spark.isAlive) {
+      sparks.splice(sparkIndex, 1);
+    }
+  }
+}
+
 function updateBulletFiring(deltaTime) {
   // Keep firing paused even if the key was held before the game was paused.
   // The simulation normally skips this function while paused, but this guard
@@ -980,6 +1103,7 @@ function restartGame(width, height) {
   totalShipRestartCount += 1;
   bulletCooldown = 0;
   bullets.length = 0;
+  sparks.length = 0;
   pressedKeys.clear();
   resetHelpAttention();
   asteroids.length = 0;
@@ -1018,6 +1142,12 @@ function beginWin() {
 
   gameWon = true;
   gamePaused = true;
+  for (const bullet of bullets) {
+    emitSparksAt(
+      { x: bullet.x, y: bullet.y },
+      bodyKineticEnergy(bullet),
+    );
+  }
   bullets.length = 0;
   pressedKeys.clear();
   bulletCooldown = 0;
@@ -1341,6 +1471,26 @@ function drawDangerWalls(width, height) {
 }
 
 /**
+ * Draw all active impact particles above the bodies and below any help or
+ * status overlay, keeping the burst visible without obscuring player-facing
+ * instructions.
+ * @returns {void}
+ */
+function drawSparks() {
+  if (sparks.length === 0) {
+    return;
+  }
+
+  context.save();
+  context.globalCompositeOperation = "lighter";
+  context.fillStyle = SPARK_COLOR;
+  for (const spark of sparks) {
+    spark.draw();
+  }
+  context.restore();
+}
+
+/**
  * Draw the black space and the player in the bounded field.
  * The triangle points upward and has its tip and base endpoints on the hull's
  * circumference. Its base chord is intentionally shorter than its sides so
@@ -1392,6 +1542,8 @@ function drawGame(width, height) {
   context.closePath();
   context.fillStyle = "#fff";
   context.fill();
+
+  drawSparks();
 
   if (shipFailureActive) {
     drawShipFailure(width, height);
@@ -1788,6 +1940,7 @@ function resolveShipWallContact(ship, normal) {
     x: ship.x + normal.x * PLAYER_RADIUS,
     y: ship.y + normal.y * PLAYER_RADIUS,
   };
+  const beforeEnergy = bodyKineticEnergy(ship);
 
   const response = applyContactImpulse(
     ship,
@@ -1795,6 +1948,12 @@ function resolveShipWallContact(ship, normal) {
     normal,
     contactPoint,
     SHIELD_WALL_FRICTION_COEFFICIENT,
+  );
+  const afterEnergy = bodyKineticEnergy(ship);
+
+  emitSparksAt(
+    contactPoint,
+    interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
   );
 
   if (response.normalImpulse > COLLISION_EPSILON) {
@@ -1853,11 +2012,18 @@ function resolveAsteroidWallCollisions(asteroid, width, height) {
 
       asteroid.collisionPolygon();
       const contactPoint = supportPoint(asteroid.worldVertices, normal);
+      const beforeEnergy = bodyKineticEnergy(asteroid);
       const response = applyContactImpulse(
         asteroid,
         STATIC_WALL_BODY,
         normal,
         contactPoint,
+      );
+      const afterEnergy = bodyKineticEnergy(asteroid);
+
+      emitSparksAt(
+        contactPoint,
+        interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
       );
       changed ||= response.normalImpulse > COLLISION_EPSILON;
     };
@@ -2764,6 +2930,76 @@ function contactImpulseMagnitude(response) {
   return Math.hypot(response.x, response.y);
 }
 
+/**
+ * Convert an interaction's energy bookkeeping into a non-negative spark
+ * budget. Energy from bodies that are removed is added after the physical
+ * response, so a disappearing body contributes its full remaining energy.
+ * @param {number} beforeEnergy Total kinetic energy before the interaction.
+ * @param {number} afterEnergy Total kinetic energy after the response.
+ * @param {number} [removedEnergy] Kinetic energy of bodies removed afterward.
+ * @returns {number} Kinetic energy converted into the visual effect.
+ */
+function interactionKineticEnergyLoss(
+  beforeEnergy,
+  afterEnergy,
+  removedEnergy = 0,
+) {
+  const safeBeforeEnergy = Number.isFinite(beforeEnergy)
+    ? Math.max(0, beforeEnergy)
+    : 0;
+  const safeAfterEnergy = Number.isFinite(afterEnergy)
+    ? Math.max(0, afterEnergy)
+    : 0;
+  const safeRemovedEnergy = Number.isFinite(removedEnergy)
+    ? Math.max(0, removedEnergy)
+    : 0;
+
+  return Math.max(0, safeBeforeEnergy - safeAfterEnergy + safeRemovedEnergy);
+}
+
+/**
+ * Keep spark density proportional to dissipated energy while ensuring even a
+ * small real loss produces a visible hit. The cap protects the frame budget
+ * when the full energy of a large asteroid is converted at once.
+ * @param {number} kineticEnergyLoss Energy converted into sparks.
+ * @returns {number} Number of particles to emit.
+ */
+function sparkCountForEnergyLoss(kineticEnergyLoss) {
+  if (!Number.isFinite(kineticEnergyLoss) || kineticEnergyLoss <= 0) {
+    return 0;
+  }
+
+  return Math.min(
+    MAX_SPARKS_PER_INTERACTION,
+    Math.max(1, Math.round(kineticEnergyLoss / SPARK_ENERGY_PER_PARTICLE)),
+  );
+}
+
+/**
+ * Emit a random-direction burst at a contact point. The particles are
+ * presentation-only, so this function intentionally does not touch bodies,
+ * scores, damage, or any other gameplay state.
+ * @param {Vector2} contactPoint Position of the interaction.
+ * @param {number} kineticEnergyLoss Energy available for the burst.
+ * @returns {void}
+ */
+function emitSparksAt(contactPoint, kineticEnergyLoss) {
+  const safeKineticEnergyLoss = Number.isFinite(kineticEnergyLoss)
+    ? Math.max(0, kineticEnergyLoss)
+    : 0;
+  const sparkCount = sparkCountForEnergyLoss(safeKineticEnergyLoss);
+  const availableSparkSlots = Math.max(0, MAX_ACTIVE_SPARKS - sparks.length);
+  const emittedSparkCount = Math.min(sparkCount, availableSparkSlots);
+
+  lastFrameSparkCount += emittedSparkCount;
+  lastFrameSparkEnergy += safeKineticEnergyLoss;
+  totalSparksEmitted += emittedSparkCount;
+
+  for (let sparkIndex = 0; sparkIndex < emittedSparkCount; sparkIndex += 1) {
+    sparks.push(new Spark(contactPoint));
+  }
+}
+
 function resolveBulletCollisions(width, height) {
   const ship = playerBody();
 
@@ -2856,6 +3092,9 @@ function resolveBulletCollisions(width, height) {
       const canReflect = bullet.reflectionCount < MAX_BULLET_REFLECTIONS;
 
       let normal = bodyIsFirst ? undefined : wallHit.normal;
+      let interactionBeforeEnergy = bodyKineticEnergy(bullet);
+      let interactionAfterEnergy = interactionBeforeEnergy;
+      let removedEnergy = 0;
 
       if (asteroidIsFirst) {
         const asteroid = asteroids[hitAsteroidIndex];
@@ -2871,6 +3110,7 @@ function resolveBulletCollisions(width, height) {
           bodyAngularMomentum(bullet);
         const beforeEnergy = bodyKineticEnergy(asteroid) +
           bodyKineticEnergy(bullet);
+        interactionBeforeEnergy = beforeEnergy;
 
         normal = polygonNormalAtPoint(
           asteroid.collisionPolygon(),
@@ -2909,6 +3149,14 @@ function resolveBulletCollisions(width, height) {
           hitPoint,
           incomingDirection,
         );
+        const afterEnergy = fragments.reduce(
+          (energy, fragment) => energy + bodyKineticEnergy(fragment),
+          bodyKineticEnergy(bullet),
+        ) + (fragments.length === 0 ? bodyKineticEnergy(asteroid) : 0);
+        interactionAfterEnergy = afterEnergy;
+        if (fragments.length === 0) {
+          removedEnergy += bodyKineticEnergy(asteroid);
+        }
         countVanishedAsteroidArea(asteroid, fragments);
         asteroids.splice(hitAsteroidIndex, 1, ...fragments);
 
@@ -2933,11 +3181,6 @@ function resolveBulletCollisions(width, height) {
               angularMomentum + bodyAngularMomentum(fragment),
             bodyAngularMomentum(bullet),
           );
-          const afterEnergy = fragments.reduce(
-            (energy, fragment) => energy + bodyKineticEnergy(fragment),
-            bodyKineticEnergy(bullet),
-          );
-
           lastBulletMomentumDelta = {
             x: afterMomentum.x - beforeMomentum.x,
             y: afterMomentum.y - beforeMomentum.y,
@@ -2955,6 +3198,7 @@ function resolveBulletCollisions(width, height) {
         };
         const beforeEnergy = bodyKineticEnergy(ship) +
           bodyKineticEnergy(bullet);
+        interactionBeforeEnergy = beforeEnergy;
 
         normal = circleNormalAtPoint(
           ship,
@@ -2992,6 +3236,7 @@ function resolveBulletCollisions(width, height) {
         };
         const afterEnergy = bodyKineticEnergy(ship) +
           bodyKineticEnergy(bullet);
+        interactionAfterEnergy = afterEnergy;
 
         totalBulletShipCollisionCount += 1;
         lastBulletShipImpulse = shipImpulse;
@@ -3004,13 +3249,31 @@ function resolveBulletCollisions(width, height) {
       }
 
       if (!canReflect) {
+        removedEnergy += bodyKineticEnergy(bullet);
+        emitSparksAt(
+          hitPoint,
+          interactionKineticEnergyLoss(
+            interactionBeforeEnergy,
+            interactionAfterEnergy,
+            removedEnergy,
+          ),
+        );
         bullets.splice(bulletIndex, 1);
         break;
       }
 
       if (!bodyIsFirst) {
         bullet.reflect(normal);
+        interactionAfterEnergy = bodyKineticEnergy(bullet);
       }
+      emitSparksAt(
+        hitPoint,
+        interactionKineticEnergyLoss(
+          interactionBeforeEnergy,
+          interactionAfterEnergy,
+          removedEnergy,
+        ),
+      );
       const direction = normalizedVector(bullet.velocityX, bullet.velocityY);
       const travelDistance = Math.max(
         0,
@@ -3458,11 +3721,12 @@ function physicsSnapshot(ship, includeBullets = false) {
 /**
  * @param {PhysicsBody} firstBody
  * @param {PhysicsBody} secondBody
+ * @param {CollisionManifold} [existingManifold] Precomputed contact geometry.
  * @returns {ContactResponse | undefined} Contact response, or undefined when
  *   the bodies do not overlap.
  */
-function resolveCollision(firstBody, secondBody) {
-  const manifold = collisionManifold(firstBody, secondBody);
+function resolveCollision(firstBody, secondBody, existingManifold) {
+  const manifold = existingManifold ?? collisionManifold(firstBody, secondBody);
 
   if (manifold === undefined) {
     return undefined;
@@ -3498,6 +3762,38 @@ function resolveCollision(firstBody, secondBody) {
     x: offsetX,
     y: offsetY,
   }, contactPoint);
+
+  return response;
+}
+
+/**
+ * Resolve an asteroid contact and turn the measured kinetic-energy loss into
+ * sparks at the same manifold point. The physics solver remains the single
+ * source of collision response behavior.
+ * @param {PhysicsBody} firstBody
+ * @param {PhysicsBody} secondBody
+ * @returns {ContactResponse | undefined} Contact response, or undefined when
+ *   the bodies do not overlap.
+ */
+function resolveCollisionWithSparks(firstBody, secondBody) {
+  const manifold = collisionManifold(firstBody, secondBody);
+
+  if (manifold === undefined) {
+    return undefined;
+  }
+
+  const beforeEnergy = bodyKineticEnergy(firstBody) +
+    bodyKineticEnergy(secondBody);
+  const response = resolveCollision(firstBody, secondBody, manifold);
+
+  if (response !== undefined) {
+    const afterEnergy = bodyKineticEnergy(firstBody) +
+      bodyKineticEnergy(secondBody);
+    emitSparksAt(
+      manifold.contactPoint,
+      interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
+    );
+  }
 
   return response;
 }
@@ -3540,7 +3836,7 @@ function resolveAsteroidCollisions() {
       }
 
       collisionCount += Number(
-        resolveCollision(firstAsteroid, secondAsteroid) !== undefined,
+        resolveCollisionWithSparks(firstAsteroid, secondAsteroid) !== undefined,
       );
     }
   }
@@ -3550,7 +3846,7 @@ function resolveAsteroidCollisions() {
       continue;
     }
 
-    const response = resolveCollision(ship, asteroid);
+    const response = resolveCollisionWithSparks(ship, asteroid);
     collisionCount += Number(response !== undefined);
 
     if (response !== undefined) {
@@ -3671,7 +3967,9 @@ function updateDebugOutput() {
     `Material: e=${BOUNCINESS.toFixed(2)}, friction=${
       FRICTION_COEFFICIENT.toFixed(2)
     }`,
-    `Bullets: ${totalBulletsEmitted} fired, ${bullets.length} active, ${totalBulletCutCount} cuts`,
+    `Bullets: ${totalBulletsEmitted} fired, ${bullets.length} active, ${totalBulletCutCount} cuts | Sparks: ${sparks.length} active, ${totalSparksEmitted} emitted (${lastFrameSparkCount}, ${
+      lastFrameSparkEnergy.toFixed(0)
+    }E)`,
     `Bullet mass/reflections: ${
       BULLET_MASS.toFixed(2)
     }/${totalBulletReflectionCount}`,
@@ -3720,6 +4018,8 @@ function updateDebugOutput() {
  * rather than steering the ship toward its nose.
  */
 function updateGame(deltaTime, width, height) {
+  lastFrameSparkCount = 0;
+  lastFrameSparkEnergy = 0;
   refillCollisionDamageBudget(deltaTime);
   regenerateShield(deltaTime);
 
@@ -3825,6 +4125,7 @@ function animate(frameTime) {
   } else if (!gamePaused) {
     updateGame(deltaTime, width, height);
   }
+  updateSparks(deltaTime);
   updateDisplayedStatusBars(deltaTime);
   updateDebugOutput();
   drawGame(width, height);
