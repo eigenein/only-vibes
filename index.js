@@ -183,8 +183,8 @@ const SPARK_VELOCITY_DAMPING = 0.72;
 // organic variation between individual sparks.
 const SPARK_MIN_INTENSITY = 0.84;
 const SPARK_MAX_INTENSITY = 1.0;
-const SPARK_CORE_RADIUS = 1.5;
-const SPARK_GLOW_RADIUS = 5;
+const SPARK_CORE_RADIUS = 3;
+const SPARK_GLOW_RADIUS = 10;
 const SPARK_GLOW_ALPHA = 0.18;
 const SPARK_COLOR = "#ffd166";
 // Backquote is an uncommon gameplay key and is separate from the ship's
