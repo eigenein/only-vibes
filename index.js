@@ -52,7 +52,8 @@ const STARSHIP_MASS = 1000;
 // This inertia is only the scale used to convert a collision's angular impulse
 // into one immediate heading adjustment; the ship does not retain angular
 // velocity or intrinsic angular momentum after the contact.
-const STARSHIP_COLLISION_TURN_INERTIA = STARSHIP_MASS * PLAYER_RADIUS ** 2 / 2;
+const STARSHIP_COLLISION_TURN_INERTIA =
+  (STARSHIP_MASS * PLAYER_RADIUS ** 2) / 2;
 // Collision turning is intentionally a subtle heading nudge rather than a
 // physical spin replacement. The cap prevents a high-speed scrape from
 // producing a chaotic turn-around in ordinary play.
@@ -118,8 +119,8 @@ const SHIP_DAMAGE_COEFFICIENT = 1.0;
 // harmless.
 const COLLISION_DAMAGE_BUDGET_CAP = 34;
 const COLLISION_DAMAGE_BUDGET_WINDOW_SECONDS = 0.45;
-const COLLISION_DAMAGE_BUDGET_REFILL_RATE = COLLISION_DAMAGE_BUDGET_CAP /
-  COLLISION_DAMAGE_BUDGET_WINDOW_SECONDS;
+const COLLISION_DAMAGE_BUDGET_REFILL_RATE =
+  COLLISION_DAMAGE_BUDGET_CAP / COLLISION_DAMAGE_BUDGET_WINDOW_SECONDS;
 const STATUS_BAR_WIDTH = 220;
 const STATUS_BAR_HEIGHT = 26;
 const STATUS_BAR_GAP = 10;
@@ -262,10 +263,7 @@ const HELP_PANEL_HEIGHT = 500;
 
 // A faint two-line phrase brands the arena without participating in the game
 // simulation. It is ordinary canvas text rendered as background decoration.
-const PHRASE_LINES = Object.freeze([
-  "KANE CLI",
-  "HACKATHON",
-]);
+const PHRASE_LINES = Object.freeze(["KANE CLI", "HACKATHON"]);
 const PHRASE_FONT_FAMILY = LCARS_FONT_FAMILY;
 const PHRASE_FONT_WEIGHT = 700;
 const PHRASE_BASE_FONT_SIZE = 100;
@@ -466,9 +464,8 @@ function randomCoordinate(extent, radius) {
  * @returns {readonly number[]}
  */
 function createOrderedAngles(vertexCount) {
-  const angles = Array.from(
-    { length: vertexCount },
-    () => randomBetween(0, Math.PI * 2),
+  const angles = Array.from({ length: vertexCount }, () =>
+    randomBetween(0, Math.PI * 2),
   );
 
   angles.sort((firstAngle, secondAngle) => firstAngle - secondAngle);
@@ -483,13 +480,15 @@ function createOrderedAngles(vertexCount) {
  */
 function asteroidColorForDensity(density) {
   const densityRange = ASTEROID_MAX_DENSITY - ASTEROID_MIN_DENSITY;
-  const densityRatio = densityRange > 0
-    ? Math.max(
-      0,
-      Math.min(1, (density - ASTEROID_MIN_DENSITY) / densityRange),
-    )
-    : 0.5;
-  const hue = ASTEROID_MIN_COLOR_HUE +
+  const densityRatio =
+    densityRange > 0
+      ? Math.max(
+          0,
+          Math.min(1, (density - ASTEROID_MIN_DENSITY) / densityRange),
+        )
+      : 0.5;
+  const hue =
+    ASTEROID_MIN_COLOR_HUE +
     (ASTEROID_MAX_COLOR_HUE - ASTEROID_MIN_COLOR_HUE) * densityRatio;
 
   return `hsl(${hue} 72% 68%)`;
@@ -529,15 +528,17 @@ class Asteroid {
     angularVelocity = 0,
     additionalMass = 0,
   }) {
-    const sourceVertices = localVertices ?? angles.map((angle) => ({
-      x: Math.cos(angle) * radius,
-      y: Math.sin(angle) * radius,
-    }));
+    const sourceVertices =
+      localVertices ??
+      angles.map((angle) => ({
+        x: Math.cos(angle) * radius,
+        y: Math.sin(angle) * radius,
+      }));
     const localCenter = polygonCentroid(sourceVertices);
 
     this.radius = Math.max(
       ...sourceVertices.map((vertex) =>
-        Math.hypot(vertex.x - localCenter.x, vertex.y - localCenter.y)
+        Math.hypot(vertex.x - localCenter.x, vertex.y - localCenter.y),
       ),
     );
     this.localVertices = Object.freeze(
@@ -545,7 +546,7 @@ class Asteroid {
         Object.freeze({
           x: vertex.x - localCenter.x,
           y: vertex.y - localCenter.y,
-        })
+        }),
       ),
     );
     this.x = x;
@@ -565,10 +566,11 @@ class Asteroid {
     // vertices. Scaling the unit-density value by mass/area also treats any
     // absorbed mass as material spread through the fragment, keeping the
     // parallel-axis relationship exact when a parent asteroid is cut.
-    this.momentOfInertiaValue = this.surfaceAreaValue > COLLISION_EPSILON
-      ? polygonMassMomentOfInertia(this.localVertices) *
-        (this.massValue / this.surfaceAreaValue)
-      : this.massValue * this.radius ** 2 / 2;
+    this.momentOfInertiaValue =
+      this.surfaceAreaValue > COLLISION_EPSILON
+        ? polygonMassMomentOfInertia(this.localVertices) *
+          (this.massValue / this.surfaceAreaValue)
+        : (this.massValue * this.radius ** 2) / 2;
     // Translation does not change edge normals, so cache these axes once per
     // asteroid instead of rebuilding them during every SAT collision test.
     // The cached local axes are rotated into world space whenever the body
@@ -597,9 +599,7 @@ class Asteroid {
    * shoulder can reach a wall even when the center of mass is stationary.
    */
   update(width, height, deltaTime) {
-    this.rotation = wrapAngle(
-      this.rotation + this.angularVelocity * deltaTime,
-    );
+    this.rotation = wrapAngle(this.rotation + this.angularVelocity * deltaTime);
     this.x += this.velocityX * deltaTime;
     this.y += this.velocityY * deltaTime;
     resolveAsteroidWallCollisions(this, width, height);
@@ -611,20 +611,24 @@ class Asteroid {
     const bodyWidth = bounds.maximumX - bounds.minimumX;
     const bodyHeight = bounds.maximumY - bounds.minimumY;
 
-    this.x = bodyWidth >= width
-      ? width / 2
-      : this.x + (bounds.minimumX < 0
-        ? -bounds.minimumX
-        : bounds.maximumX > width
-        ? width - bounds.maximumX
-        : 0);
-    this.y = bodyHeight >= height
-      ? height / 2
-      : this.y + (bounds.minimumY < 0
-        ? -bounds.minimumY
-        : bounds.maximumY > height
-        ? height - bounds.maximumY
-        : 0);
+    this.x =
+      bodyWidth >= width
+        ? width / 2
+        : this.x +
+          (bounds.minimumX < 0
+            ? -bounds.minimumX
+            : bounds.maximumX > width
+              ? width - bounds.maximumX
+              : 0);
+    this.y =
+      bodyHeight >= height
+        ? height / 2
+        : this.y +
+          (bounds.minimumY < 0
+            ? -bounds.minimumY
+            : bounds.maximumY > height
+              ? height - bounds.maximumY
+              : 0);
     this.collisionPolygon();
   }
 
@@ -721,8 +725,8 @@ class Bullet {
    * @returns {void}
    */
   reflect(normal, bounceCoefficient = BOUNCINESS) {
-    const normalVelocity = this.velocityX * normal.x +
-      this.velocityY * normal.y;
+    const normalVelocity =
+      this.velocityX * normal.x + this.velocityY * normal.y;
 
     this.velocityX -= (1 + bounceCoefficient) * normalVelocity * normal.x;
     this.velocityY -= (1 + bounceCoefficient) * normalVelocity * normal.y;
@@ -737,12 +741,7 @@ class Bullet {
     const startY = this.y - directionY * BULLET_HALF_LENGTH;
     const endX = this.x + directionX * BULLET_HALF_LENGTH;
     const endY = this.y + directionY * BULLET_HALF_LENGTH;
-    const gradient = context.createLinearGradient(
-      startX,
-      startY,
-      endX,
-      endY,
-    );
+    const gradient = context.createLinearGradient(startX, startY, endX, endY);
 
     // A symmetric gradient makes a bullet read as a luminous moving streak:
     // both ends fade to black while the midpoint carries the full brightness.
@@ -780,10 +779,7 @@ class Spark {
     this.velocityY = Math.sin(direction) * speed;
     this.lifetime = randomBetween(SPARK_MIN_LIFETIME, SPARK_MAX_LIFETIME);
     this.lifeRemaining = this.lifetime;
-    this.intensity = randomBetween(
-      SPARK_MIN_INTENSITY,
-      SPARK_MAX_INTENSITY,
-    );
+    this.intensity = randomBetween(SPARK_MIN_INTENSITY, SPARK_MAX_INTENSITY);
   }
 
   /**
@@ -919,19 +915,22 @@ function createAsteroidFromPolygon(
 function phraseFontSizeForViewport(width, height) {
   const availableWidth = Math.max(0, width - PHRASE_MARGIN * 2);
   const availableHeight = Math.max(0, height - PHRASE_MARGIN * 2);
-  const baseLineHeight = PHRASE_BASE_FONT_SIZE + PHRASE_LINE_GAP;
+  // Only the gaps *between* lines consume vertical space. Counting one after
+  // the final line made the centered block extend beyond its reserved arena.
+  const baseBlockHeight =
+    PHRASE_BASE_FONT_SIZE * PHRASE_LINES.length +
+    PHRASE_LINE_GAP * (PHRASE_LINES.length - 1);
 
   context.save();
-  context.font =
-    `${PHRASE_FONT_WEIGHT} ${PHRASE_BASE_FONT_SIZE}px ${PHRASE_FONT_FAMILY}`;
+  context.font = `${PHRASE_FONT_WEIGHT} ${PHRASE_BASE_FONT_SIZE}px ${PHRASE_FONT_FAMILY}`;
   const widestLine = Math.max(
     ...PHRASE_LINES.map((phraseLine) => context.measureText(phraseLine).width),
   );
   context.restore();
 
   return Math.min(
-    PHRASE_BASE_FONT_SIZE * availableWidth / widestLine,
-    PHRASE_BASE_FONT_SIZE * availableHeight / baseLineHeight,
+    (PHRASE_BASE_FONT_SIZE * availableWidth) / widestLine,
+    (PHRASE_BASE_FONT_SIZE * availableHeight) / baseBlockHeight,
   );
 }
 
@@ -941,9 +940,8 @@ function generateAsteroids(width, height) {
   }
 
   asteroids.push(
-    ...Array.from(
-      { length: ASTEROID_COUNT },
-      () => createAsteroid(width, height),
+    ...Array.from({ length: ASTEROID_COUNT }, () =>
+      createAsteroid(width, height),
     ),
   );
   asteroidsGenerated = true;
@@ -976,10 +974,8 @@ function emitBullet() {
     y: recoilVelocityY,
   };
 
-  const finalTotalImpulseX = STARSHIP_MASS * playerVelocityX +
-    bulletImpulseX;
-  const finalTotalImpulseY = STARSHIP_MASS * playerVelocityY +
-    bulletImpulseY;
+  const finalTotalImpulseX = STARSHIP_MASS * playerVelocityX + bulletImpulseX;
+  const finalTotalImpulseY = STARSHIP_MASS * playerVelocityY + bulletImpulseY;
   lastFiringImpulseDelta = {
     x: finalTotalImpulseX - initialShipImpulseX,
     y: finalTotalImpulseY - initialShipImpulseY,
@@ -1116,8 +1112,11 @@ function setAutopilotInput(keys) {
  */
 function shortestAngleDifference(desiredAngle, currentAngle) {
   const fullTurn = Math.PI * 2;
-  return ((desiredAngle - currentAngle + Math.PI) % fullTurn + fullTurn) %
-      fullTurn - Math.PI;
+  return (
+    ((((desiredAngle - currentAngle + Math.PI) % fullTurn) + fullTurn) %
+      fullTurn) -
+    Math.PI
+  );
 }
 
 /**
@@ -1127,10 +1126,7 @@ function shortestAngleDifference(desiredAngle, currentAngle) {
  * @returns {number} Additional safe distance in CSS pixels.
  */
 function autopilotHealthSafetyMargin() {
-  const shieldRatio = Math.max(
-    0,
-    Math.min(1, shieldState / SHIELD_MAX_STATE),
-  );
+  const shieldRatio = Math.max(0, Math.min(1, shieldState / SHIELD_MAX_STATE));
   const hullRatio = Math.max(0, Math.min(1, shipState / SHIP_MAX_STATE));
   const shieldRecoveryRatio = Math.max(
     0,
@@ -1139,8 +1135,10 @@ function autopilotHealthSafetyMargin() {
   );
   const hullDamageRatio = 1 - hullRatio;
 
-  return shieldRecoveryRatio * AUTOPILOT_SHIELD_RECOVERY_MARGIN +
-    hullDamageRatio * AUTOPILOT_HULL_DAMAGE_MARGIN;
+  return (
+    shieldRecoveryRatio * AUTOPILOT_SHIELD_RECOVERY_MARGIN +
+    hullDamageRatio * AUTOPILOT_HULL_DAMAGE_MARGIN
+  );
 }
 
 /**
@@ -1170,7 +1168,8 @@ function applyAutopilotTurnInput(input, desiredAngle, deltaTime) {
     requestedDirection = autopilotTurnDirection;
   }
 
-  const reversesCommittedTurn = requestedDirection !== 0 &&
+  const reversesCommittedTurn =
+    requestedDirection !== 0 &&
     autopilotLastTurnDirection !== 0 &&
     requestedDirection !== autopilotLastTurnDirection;
 
@@ -1205,9 +1204,10 @@ function autopilotTargetScore(asteroid) {
   const distance = Math.hypot(offsetX, offsetY);
   const targetAngle = Math.atan2(offsetY, offsetX);
   const speed = Math.hypot(playerVelocityX, playerVelocityY);
-  const flowAngle = speed >= AUTOPILOT_FLOW_HEADING_SPEED
-    ? Math.atan2(playerVelocityY, playerVelocityX)
-    : playerAngle;
+  const flowAngle =
+    speed >= AUTOPILOT_FLOW_HEADING_SPEED
+      ? Math.atan2(playerVelocityY, playerVelocityX)
+      : playerAngle;
   const flowTurn = Math.abs(shortestAngleDifference(targetAngle, flowAngle));
   const noseTurn = Math.abs(shortestAngleDifference(targetAngle, playerAngle));
 
@@ -1226,23 +1226,26 @@ function autopilotTarget(deltaTime) {
     0,
     autopilotTargetLockTimeRemaining - Math.max(0, deltaTime),
   );
-  const lockedTargetIsPresent = autopilotTargetLock !== undefined &&
+  const lockedTargetIsPresent =
+    autopilotTargetLock !== undefined &&
     asteroids.includes(autopilotTargetLock);
   const isEndgame = asteroids.length <= 2;
   const speed = Math.hypot(playerVelocityX, playerVelocityY);
-  const flowAngle = speed >= AUTOPILOT_FLOW_HEADING_SPEED
-    ? Math.atan2(playerVelocityY, playerVelocityX)
-    : playerAngle;
+  const flowAngle =
+    speed >= AUTOPILOT_FLOW_HEADING_SPEED
+      ? Math.atan2(playerVelocityY, playerVelocityX)
+      : playerAngle;
   const lockedTargetAngle = lockedTargetIsPresent
     ? Math.atan2(
-      autopilotTargetLock.y - playerY,
-      autopilotTargetLock.x - playerX,
-    )
+        autopilotTargetLock.y - playerY,
+        autopilotTargetLock.x - playerX,
+      )
     : flowAngle;
-  const lockedTargetIsBehind = lockedTargetIsPresent &&
+  const lockedTargetIsBehind =
+    lockedTargetIsPresent &&
     speed >= AUTOPILOT_FLOW_HEADING_SPEED &&
     Math.abs(shortestAngleDifference(lockedTargetAngle, flowAngle)) >
-      Math.PI * 2 / 3;
+      (Math.PI * 2) / 3;
 
   if (
     lockedTargetIsPresent &&
@@ -1290,10 +1293,10 @@ function autopilotFiringTarget() {
 
   for (const asteroid of asteroids) {
     const distance = Math.hypot(asteroid.x - playerX, asteroid.y - playerY);
-    const leadTime = distance <= PLAYER_RADIUS + asteroid.radius +
-        AUTOPILOT_POINT_BLANK_MARGIN
-      ? 0
-      : Math.min(AUTOPILOT_LEAD_TIME_CAP, distance / BULLET_SPEED);
+    const leadTime =
+      distance <= PLAYER_RADIUS + asteroid.radius + AUTOPILOT_POINT_BLANK_MARGIN
+        ? 0
+        : Math.min(AUTOPILOT_LEAD_TIME_CAP, distance / BULLET_SPEED);
     const aimAngle = Math.atan2(
       asteroid.y + asteroid.velocityY * leadTime - playerY,
       asteroid.x + asteroid.velocityX * leadTime - playerX,
@@ -1302,10 +1305,7 @@ function autopilotFiringTarget() {
       Math.min(1, asteroid.radius / Math.max(distance, asteroid.radius)),
     );
     const aimError = Math.abs(shortestAngleDifference(aimAngle, playerAngle));
-    const tolerance = Math.max(
-      AUTOPILOT_AIM_TOLERANCE,
-      angularRadius * 0.8,
-    );
+    const tolerance = Math.max(AUTOPILOT_AIM_TOLERANCE, angularRadius * 0.8);
 
     if (aimError > tolerance) {
       continue;
@@ -1330,8 +1330,7 @@ function autopilotFiringTarget() {
  *   distance: number, closingSpeed: number } | undefined}
  */
 function autopilotThreat() {
-  const safeMargin = AUTOPILOT_BASE_SAFE_MARGIN +
-    autopilotHealthSafetyMargin();
+  const safeMargin = AUTOPILOT_BASE_SAFE_MARGIN + autopilotHealthSafetyMargin();
   let selectedThreat;
   let selectedScore = Infinity;
 
@@ -1343,25 +1342,28 @@ function autopilotThreat() {
     const distance = Math.hypot(relativeX, relativeY);
     const safeDistance = PLAYER_RADIUS + asteroid.radius + safeMargin;
     const velocitySquared = relativeVelocityX ** 2 + relativeVelocityY ** 2;
-    const closestTime = velocitySquared > COLLISION_EPSILON
-      ? Math.max(
-        0,
-        Math.min(
-          AUTOPILOT_MAX_LOOKAHEAD_SECONDS,
-          -(relativeX * relativeVelocityX + relativeY * relativeVelocityY) /
-            velocitySquared,
-        ),
-      )
-      : 0;
+    const closestTime =
+      velocitySquared > COLLISION_EPSILON
+        ? Math.max(
+            0,
+            Math.min(
+              AUTOPILOT_MAX_LOOKAHEAD_SECONDS,
+              -(relativeX * relativeVelocityX + relativeY * relativeVelocityY) /
+                velocitySquared,
+            ),
+          )
+        : 0;
     const futureX = relativeX + relativeVelocityX * closestTime;
     const futureY = relativeY + relativeVelocityY * closestTime;
     const futureDistance = Math.hypot(futureX, futureY);
-    const closingSpeed = distance > COLLISION_EPSILON
-      ? -(relativeX * relativeVelocityX + relativeY * relativeVelocityY) /
-        distance
-      : 0;
+    const closingSpeed =
+      distance > COLLISION_EPSILON
+        ? -(relativeX * relativeVelocityX + relativeY * relativeVelocityY) /
+          distance
+        : 0;
     const isNearNow = distance <= safeDistance;
-    const isPredictedNear = closingSpeed > 0 &&
+    const isPredictedNear =
+      closingSpeed > 0 &&
       futureDistance <= safeDistance &&
       closestTime <= AUTOPILOT_MAX_LOOKAHEAD_SECONDS;
 
@@ -1397,8 +1399,7 @@ function autopilotThreat() {
  *   movingOutward: boolean } | undefined}
  */
 function autopilotWallThreat(width, height) {
-  const safeMargin = AUTOPILOT_WALL_SAFE_MARGIN +
-    autopilotHealthSafetyMargin();
+  const safeMargin = AUTOPILOT_WALL_SAFE_MARGIN + autopilotHealthSafetyMargin();
   const edgeDistances = [
     { distance: playerX, inwardX: 1, inwardY: 0 },
     { distance: width - playerX, inwardX: -1, inwardY: 0 },
@@ -1406,14 +1407,15 @@ function autopilotWallThreat(width, height) {
     { distance: height - playerY, inwardX: 0, inwardY: -1 },
   ];
   const nearestEdge = edgeDistances.reduce((closestEdge, edge) =>
-    edge.distance < closestEdge.distance ? edge : closestEdge
+    edge.distance < closestEdge.distance ? edge : closestEdge,
   );
 
   if (nearestEdge.distance > safeMargin) {
     return undefined;
   }
 
-  const velocityInward = playerVelocityX * nearestEdge.inwardX +
+  const velocityInward =
+    playerVelocityX * nearestEdge.inwardX +
     playerVelocityY * nearestEdge.inwardY;
 
   return {
@@ -1462,37 +1464,40 @@ function updateAutopilotInput(deltaTime, width, height) {
   const wallThreat = autopilotWallThreat(width, height);
   const threat = wallThreat === undefined ? autopilotThreat() : undefined;
   const target = autopilotTarget(decisionDeltaTime);
-  const targetDistance = target === undefined
-    ? Infinity
-    : Math.hypot(target.x - playerX, target.y - playerY);
-  const targetCollisionDistance = target === undefined
-    ? Infinity
-    : PLAYER_RADIUS + target.radius;
-  const pointBlankDistance = targetCollisionDistance +
-    AUTOPILOT_POINT_BLANK_MARGIN;
-  const targetIsPointBlank = target !== undefined &&
-    targetDistance <= pointBlankDistance;
-  const targetLeadTime = targetIsPointBlank ? 0 : Math.min(
-    AUTOPILOT_LEAD_TIME_CAP,
-    targetDistance / BULLET_SPEED,
-  );
-  const targetAimAngle = target === undefined ? playerAngle : Math.atan2(
-    target.y + target.velocityY * targetLeadTime - playerY,
-    target.x + target.velocityX * targetLeadTime - playerX,
-  );
+  const targetDistance =
+    target === undefined
+      ? Infinity
+      : Math.hypot(target.x - playerX, target.y - playerY);
+  const targetCollisionDistance =
+    target === undefined ? Infinity : PLAYER_RADIUS + target.radius;
+  const pointBlankDistance =
+    targetCollisionDistance + AUTOPILOT_POINT_BLANK_MARGIN;
+  const targetIsPointBlank =
+    target !== undefined && targetDistance <= pointBlankDistance;
+  const targetLeadTime = targetIsPointBlank
+    ? 0
+    : Math.min(AUTOPILOT_LEAD_TIME_CAP, targetDistance / BULLET_SPEED);
+  const targetAimAngle =
+    target === undefined
+      ? playerAngle
+      : Math.atan2(
+          target.y + target.velocityY * targetLeadTime - playerY,
+          target.x + target.velocityX * targetLeadTime - playerX,
+        );
   let desiredAngle = playerAngle;
-  const targetRelativeVelocityX = target === undefined
-    ? 0
-    : target.velocityX - playerVelocityX;
-  const targetRelativeVelocityY = target === undefined
-    ? 0
-    : target.velocityY - playerVelocityY;
-  const targetClosingSpeed = target === undefined ||
-      targetDistance <= COLLISION_EPSILON
-    ? 0
-    : -((target.x - playerX) * targetRelativeVelocityX +
-      (target.y - playerY) * targetRelativeVelocityY) / targetDistance;
-  const targetIsEmergency = target !== undefined &&
+  const targetRelativeVelocityX =
+    target === undefined ? 0 : target.velocityX - playerVelocityX;
+  const targetRelativeVelocityY =
+    target === undefined ? 0 : target.velocityY - playerVelocityY;
+  const targetClosingSpeed =
+    target === undefined || targetDistance <= COLLISION_EPSILON
+      ? 0
+      : -(
+          (target.x - playerX) * targetRelativeVelocityX +
+          (target.y - playerY) * targetRelativeVelocityY
+        ) / targetDistance;
+  const targetIsEmergency =
+    target !== undefined &&
     targetDistance <= targetCollisionDistance + AUTOPILOT_BASE_SAFE_MARGIN &&
     targetClosingSpeed > AUTOPILOT_CLOSE_TARGET_BRAKE_SPEED;
   const threatIsTarget = threat !== undefined && threat.asteroid === target;
@@ -1512,8 +1517,7 @@ function updateAutopilotInput(deltaTime, width, height) {
     ) {
       input.add("KeyS");
     } else if (
-      Math.abs(wallAngleDifference) <=
-        AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
+      Math.abs(wallAngleDifference) <= AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
     ) {
       input.add("KeyW");
     }
@@ -1522,14 +1526,15 @@ function updateAutopilotInput(deltaTime, width, height) {
     const escapeX = playerX - threat.futureX;
     const escapeY = playerY - threat.futureY;
     const escapeLength = Math.hypot(escapeX, escapeY);
-    desiredAngle = escapeLength > COLLISION_EPSILON
-      ? Math.atan2(escapeY, escapeX)
-      : Math.atan2(-playerVelocityY, -playerVelocityX);
+    desiredAngle =
+      escapeLength > COLLISION_EPSILON
+        ? Math.atan2(escapeY, escapeX)
+        : Math.atan2(-playerVelocityY, -playerVelocityX);
 
     const escapeDirectionX = Math.cos(desiredAngle);
     const escapeDirectionY = Math.sin(desiredAngle);
-    const velocityAwayFromThreat = playerVelocityX * escapeDirectionX +
-      playerVelocityY * escapeDirectionY;
+    const velocityAwayFromThreat =
+      playerVelocityX * escapeDirectionX + playerVelocityY * escapeDirectionY;
     const escapeAngleDifference = shortestAngleDifference(
       desiredAngle,
       playerAngle,
@@ -1541,15 +1546,13 @@ function updateAutopilotInput(deltaTime, width, height) {
         threat.distance < AUTOPILOT_BASE_SAFE_MARGIN * 2)
     ) {
       if (
-        Math.hypot(playerVelocityX, playerVelocityY) >
-          AUTOPILOT_MIN_COAST_SPEED
+        Math.hypot(playerVelocityX, playerVelocityY) > AUTOPILOT_MIN_COAST_SPEED
       ) {
         input.add("KeyS");
       }
     } else if (
       velocityAwayFromThreat < AUTOPILOT_CRUISE_SPEED &&
-      Math.abs(escapeAngleDifference) <=
-        AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
+      Math.abs(escapeAngleDifference) <= AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
     ) {
       input.add("KeyW");
     }
@@ -1561,11 +1564,13 @@ function updateAutopilotInput(deltaTime, width, height) {
       desiredAngle,
       playerAngle,
     );
-    const velocityTowardTarget = playerVelocityX * Math.cos(desiredAngle) +
+    const velocityTowardTarget =
+      playerVelocityX * Math.cos(desiredAngle) +
       playerVelocityY * Math.sin(desiredAngle);
-    const desiredCruiseSpeed = asteroids.length <= 2
-      ? AUTOPILOT_ENDGAME_CRUISE_SPEED
-      : AUTOPILOT_CRUISE_SPEED;
+    const desiredCruiseSpeed =
+      asteroids.length <= 2
+        ? AUTOPILOT_ENDGAME_CRUISE_SPEED
+        : AUTOPILOT_CRUISE_SPEED;
 
     if (
       targetIsPointBlank &&
@@ -1576,11 +1581,10 @@ function updateAutopilotInput(deltaTime, width, height) {
       // opportunity while speed is removed before it becomes a ram.
       input.add("KeyS");
     } else if (
-      targetDistance > targetCollisionDistance +
-          AUTOPILOT_POINT_BLANK_MARGIN * 0.6 &&
+      targetDistance >
+        targetCollisionDistance + AUTOPILOT_POINT_BLANK_MARGIN * 0.6 &&
       velocityTowardTarget < desiredCruiseSpeed &&
-      Math.abs(aimAngleDifference) <=
-        AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
+      Math.abs(aimAngleDifference) <= AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
     ) {
       input.add("KeyW");
     }
@@ -1591,7 +1595,8 @@ function updateAutopilotInput(deltaTime, width, height) {
   applyAutopilotTurnInput(input, desiredAngle, decisionDeltaTime);
 
   const speed = Math.hypot(playerVelocityX, playerVelocityY);
-  const burstTargetIsPresent = autopilotBurstTarget !== undefined &&
+  const burstTargetIsPresent =
+    autopilotBurstTarget !== undefined &&
     asteroids.includes(autopilotBurstTarget);
 
   if (!burstTargetIsPresent) {
@@ -1600,16 +1605,19 @@ function updateAutopilotInput(deltaTime, width, height) {
   }
 
   if (
-    autopilotBurstTimeRemaining <= 0 && autopilotShotCooldown <= 0 &&
+    autopilotBurstTimeRemaining <= 0 &&
+    autopilotShotCooldown <= 0 &&
     wallThreat === undefined
   ) {
     const firingTarget = autopilotFiringTarget();
-    const firingDistance = firingTarget === undefined
-      ? Infinity
-      : Math.hypot(firingTarget.x - playerX, firingTarget.y - playerY);
-    const firingTargetIsPointBlank = firingTarget !== undefined &&
-      firingDistance <= PLAYER_RADIUS + firingTarget.radius +
-          AUTOPILOT_POINT_BLANK_MARGIN;
+    const firingDistance =
+      firingTarget === undefined
+        ? Infinity
+        : Math.hypot(firingTarget.x - playerX, firingTarget.y - playerY);
+    const firingTargetIsPointBlank =
+      firingTarget !== undefined &&
+      firingDistance <=
+        PLAYER_RADIUS + firingTarget.radius + AUTOPILOT_POINT_BLANK_MARGIN;
 
     if (
       firingTarget !== undefined &&
@@ -1623,7 +1631,8 @@ function updateAutopilotInput(deltaTime, width, height) {
 
   if (
     autopilotBurstTimeRemaining > 0 &&
-    autopilotBurstTarget !== undefined && wallThreat === undefined
+    autopilotBurstTarget !== undefined &&
+    wallThreat === undefined
   ) {
     input.add(FIRE_KEY);
   }
@@ -1745,8 +1754,7 @@ function applyCollisionDamage(collisionMomentum) {
   const safeCollisionMomentum = Number.isFinite(collisionMomentum)
     ? Math.max(0, collisionMomentum)
     : 0;
-  const rawImpactDamage = safeCollisionMomentum *
-    COLLISION_DAMAGE_SCALE;
+  const rawImpactDamage = safeCollisionMomentum * COLLISION_DAMAGE_SCALE;
   const impactDamage = Math.min(rawImpactDamage, collisionDamageBudget);
   const shieldFraction = shieldState / SHIELD_MAX_STATE;
   const transmittedFraction = 1 - shieldFraction;
@@ -1848,10 +1856,7 @@ function beginWin() {
   gameWon = true;
   gamePaused = true;
   for (const bullet of bullets) {
-    emitSparksAt(
-      { x: bullet.x, y: bullet.y },
-      bodyKineticEnergy(bullet),
-    );
+    emitSparksAt({ x: bullet.x, y: bullet.y }, bodyKineticEnergy(bullet));
   }
   bullets.length = 0;
   clearPressedKeys();
@@ -1990,8 +1995,8 @@ function drawStatusBars(width) {
   }
 
   const barX = width - barWidth - STATUS_BAR_MARGIN;
-  const pointsFitsBesideBars = barX - STATUS_BAR_MARGIN >=
-    STATUS_POINTS_WIDTH + STATUS_POINTS_GAP;
+  const pointsFitsBesideBars =
+    barX - STATUS_BAR_MARGIN >= STATUS_POINTS_WIDTH + STATUS_POINTS_GAP;
   const barTop = pointsFitsBesideBars
     ? LCARS_CONSOLE_TOP
     : LCARS_CONSOLE_TOP + STATUS_POINTS_HEIGHT + STATUS_BAR_GAP;
@@ -2012,35 +2017,28 @@ function drawStatusBars(width) {
 
   for (let barIndex = 0; barIndex < bars.length; barIndex += 1) {
     const bar = bars[barIndex];
-    const barY = barTop + barIndex *
-        (STATUS_BAR_HEIGHT + STATUS_BAR_GAP);
+    const barY = barTop + barIndex * (STATUS_BAR_HEIGHT + STATUS_BAR_GAP);
     const fillWidth = barWidth * (bar.state / SHIELD_MAX_STATE);
 
     context.beginPath();
     context.roundRect(barX, barY, barWidth, STATUS_BAR_HEIGHT, 11);
-    context.fillStyle = "rgba(30, 20, 34, 0.94)";
+    // A quiet tinted track keeps the indicator in the same filled, borderless
+    // LCARS vocabulary as the command strip; the previous outlined lettering
+    // read like a legacy widget beside the solid controls.
+    context.fillStyle = bar.color;
+    context.globalAlpha = 0.35;
     context.fill();
+    context.globalAlpha = 1;
     context.save();
     context.clip();
     context.fillStyle = bar.color;
     context.fillRect(barX, barY, fillWidth, STATUS_BAR_HEIGHT);
     context.restore();
 
-    // Outline the light text so labels remain readable when a bar is nearly
-    // empty (dark track) as well as when the fill passes underneath them.
-    context.strokeStyle = "rgba(0, 0, 0, 0.9)";
-    context.lineWidth = 3;
-    context.lineJoin = "round";
-    context.fillStyle = LCARS_TEXT;
+    context.fillStyle = LCARS_BLACK;
     context.textAlign = "left";
-    context.strokeText(bar.label, barX + 8, barY + STATUS_BAR_HEIGHT / 2);
     context.fillText(bar.label, barX + 8, barY + STATUS_BAR_HEIGHT / 2);
     context.textAlign = "right";
-    context.strokeText(
-      `${Math.round(bar.state)}%`,
-      barX + barWidth - 8,
-      barY + STATUS_BAR_HEIGHT / 2,
-    );
     context.fillText(
       `${Math.round(bar.state)}%`,
       barX + barWidth - 8,
@@ -2208,9 +2206,8 @@ function drawGame(width, height) {
   // The circle remains unfilled so the black space is visible inside the hull.
   context.beginPath();
   context.arc(playerX, playerY, PLAYER_RADIUS, 0, Math.PI * 2);
-  context.strokeStyle = shieldState > 0
-    ? LCARS_LILAC
-    : "rgba(153, 153, 255, 0.3)";
+  context.strokeStyle =
+    shieldState > 0 ? LCARS_LILAC : "rgba(153, 153, 255, 0.3)";
   context.lineWidth = 3;
   context.stroke();
 
@@ -2310,8 +2307,7 @@ function drawFlightControlButton(
     y + 22,
     width - horizontalPadding * 2,
   );
-  context.font =
-    `${FLIGHT_CONTROL_DETAIL_WEIGHT} 12px ${LCARS_BODY_FONT_FAMILY}`;
+  context.font = `${FLIGHT_CONTROL_DETAIL_WEIGHT} 12px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
     detail,
     x + horizontalPadding,
@@ -2323,8 +2319,9 @@ function drawFlightControlButton(
 
 /**
  * Draw the persistent flight-control row. Gameplay buttons read the effective
- * key set shared by manual helm and autopilot, so the interface visualizes the
- * control source without adding a second state model.
+ * key set shared by manual helm and autopilot. Each cap recognizes both keys
+ * for its gameplay action, so arrow-key input is represented as faithfully as
+ * the labelled WASD shortcut without adding a second state model.
  * @param {number} width The viewport width in CSS pixels.
  * @returns {void}
  */
@@ -2350,7 +2347,8 @@ function drawFlightControls(width) {
   const rowScale = Math.min(
     1,
     rowWidth /
-      (titleWidth + desiredKeyWidth * keyButtonCount +
+      (titleWidth +
+        desiredKeyWidth * keyButtonCount +
         FLIGHT_CONTROL_GAP * keyButtonCount),
   );
   const buttonHeight = STATUS_POINTS_HEIGHT;
@@ -2358,10 +2356,30 @@ function drawFlightControls(width) {
   const controls = [
     ["T", "AUTOPILOT", LCARS_AMBER, autopilotEnabled],
     ["P", "PAUSE", LCARS_CORAL, gamePaused],
-    ["W⏶", "THRUST", LCARS_LILAC, pressedKeys.has("KeyW")],
-    ["S⏷", "BRAKE", LCARS_LAVENDER, pressedKeys.has("KeyS")],
-    ["A⏴", "TURN CCW", LCARS_LILAC, pressedKeys.has("KeyA")],
-    ["D⏵", "TURN CW", LCARS_LAVENDER, pressedKeys.has("KeyD")],
+    [
+      "W⏶",
+      "THRUST",
+      LCARS_LILAC,
+      pressedKeys.has("KeyW") || pressedKeys.has("ArrowUp"),
+    ],
+    [
+      "S⏷",
+      "BRAKE",
+      LCARS_LAVENDER,
+      pressedKeys.has("KeyS") || pressedKeys.has("ArrowDown"),
+    ],
+    [
+      "A⏴",
+      "TURN CCW",
+      LCARS_LILAC,
+      pressedKeys.has("KeyA") || pressedKeys.has("ArrowLeft"),
+    ],
+    [
+      "D⏵",
+      "TURN CW",
+      LCARS_LAVENDER,
+      pressedKeys.has("KeyD") || pressedKeys.has("ArrowRight"),
+    ],
     [FIRE_KEY_LABEL, "SHOOT", LCARS_AMBER, pressedKeys.has(FIRE_KEY)],
   ];
 
@@ -2579,11 +2597,7 @@ function drawPauseHelp(width, height) {
 
   context.translate(panelX, panelY);
   context.scale(helpScale, helpScale);
-  drawLCARSOverlayFrame(
-    HELP_PANEL_WIDTH,
-    HELP_PANEL_HEIGHT,
-    LCARS_LAVENDER,
-  );
+  drawLCARSOverlayFrame(HELP_PANEL_WIDTH, HELP_PANEL_HEIGHT, LCARS_LAVENDER);
 
   context.textAlign = "center";
   context.textBaseline = "middle";
@@ -2744,8 +2758,9 @@ function resolveShipWallContact(ship, normal) {
  * @returns {void}
  */
 function applyShipCollisionAngleAdjustment(response) {
-  const uncappedAngleAdjustment = response.firstAngularImpulse /
-    STARSHIP_COLLISION_TURN_INERTIA * SHIP_COLLISION_TURN_RESPONSE;
+  const uncappedAngleAdjustment =
+    (response.firstAngularImpulse / STARSHIP_COLLISION_TURN_INERTIA) *
+    SHIP_COLLISION_TURN_RESPONSE;
   const angleAdjustment = Math.max(
     -MAX_SHIP_COLLISION_TURN_ANGLE,
     Math.min(MAX_SHIP_COLLISION_TURN_ANGLE, uncappedAngleAdjustment),
@@ -2801,31 +2816,19 @@ function resolveAsteroidWallCollisions(asteroid, width, height) {
     };
 
     if (bounds.minimumX <= COLLISION_EPSILON) {
-      resolveWall(
-        { x: -1, y: 0 },
-        Math.max(0, -bounds.minimumX),
-      );
+      resolveWall({ x: -1, y: 0 }, Math.max(0, -bounds.minimumX));
     }
 
     if (bounds.maximumX >= width - COLLISION_EPSILON) {
-      resolveWall(
-        { x: 1, y: 0 },
-        Math.max(0, bounds.maximumX - width),
-      );
+      resolveWall({ x: 1, y: 0 }, Math.max(0, bounds.maximumX - width));
     }
 
     if (bounds.minimumY <= COLLISION_EPSILON) {
-      resolveWall(
-        { x: 0, y: -1 },
-        Math.max(0, -bounds.minimumY),
-      );
+      resolveWall({ x: 0, y: -1 }, Math.max(0, -bounds.minimumY));
     }
 
     if (bounds.maximumY >= height - COLLISION_EPSILON) {
-      resolveWall(
-        { x: 0, y: 1 },
-        Math.max(0, bounds.maximumY - height),
-      );
+      resolveWall({ x: 0, y: 1 }, Math.max(0, bounds.maximumY - height));
     }
 
     if (!changed) {
@@ -2861,7 +2864,7 @@ function bodyInverseMass(body) {
 /** @param {PhysicsBody} body @returns {number} */
 function bodyInverseMomentOfInertia(body) {
   return Number.isFinite(body.momentOfInertia) &&
-      body.momentOfInertia > COLLISION_EPSILON
+    body.momentOfInertia > COLLISION_EPSILON
     ? 1 / body.momentOfInertia
     : 0;
 }
@@ -2895,8 +2898,8 @@ function bodyAngularMomentum(body, originX = 0, originY = 0) {
 
 /** @param {PhysicsBody} body @returns {number} */
 function bodyKineticEnergy(body) {
-  const linearEnergy = 0.5 * body.mass *
-    (body.velocityX ** 2 + body.velocityY ** 2);
+  const linearEnergy =
+    0.5 * body.mass * (body.velocityX ** 2 + body.velocityY ** 2);
   const rotationalEnergy = Number.isFinite(body.momentOfInertia)
     ? 0.5 * body.momentOfInertia * bodyAngularVelocity(body) ** 2
     : 0;
@@ -2933,12 +2936,8 @@ function applyBodyImpulse(body, impulseX, impulseY, contactPoint) {
   if (inverseMomentOfInertia > 0 && body.angularVelocity !== undefined) {
     const offsetX = contactPoint.x - body.x;
     const offsetY = contactPoint.y - body.y;
-    body.angularVelocity += cross2D(
-      offsetX,
-      offsetY,
-      impulseX,
-      impulseY,
-    ) * inverseMomentOfInertia;
+    body.angularVelocity +=
+      cross2D(offsetX, offsetY, impulseX, impulseY) * inverseMomentOfInertia;
   }
 }
 
@@ -2953,10 +2952,10 @@ function restoreAngularMomentumAfterPositionCorrection(
   secondBody,
   angularMomentumBefore,
 ) {
-  const angularMomentumAfter = bodyAngularMomentum(firstBody) +
-    bodyAngularMomentum(secondBody);
-  const angularMomentumCorrection = angularMomentumBefore -
-    angularMomentumAfter;
+  const angularMomentumAfter =
+    bodyAngularMomentum(firstBody) + bodyAngularMomentum(secondBody);
+  const angularMomentumCorrection =
+    angularMomentumBefore - angularMomentumAfter;
   const firstMoment = Number.isFinite(firstBody.momentOfInertia)
     ? firstBody.momentOfInertia
     : 0;
@@ -3019,7 +3018,8 @@ function polygonMassMomentOfInertia(vertices) {
       secondVertex.x,
       secondVertex.y,
     );
-    const squaredRadiusSum = firstVertex.x ** 2 +
+    const squaredRadiusSum =
+      firstVertex.x ** 2 +
       firstVertex.x * secondVertex.x +
       secondVertex.x ** 2 +
       firstVertex.y ** 2 +
@@ -3127,7 +3127,7 @@ function cleanPolygon(vertices) {
 
     if (
       Math.hypot(lastVertex.x - firstVertex.x, lastVertex.y - firstVertex.y) <=
-        COLLISION_EPSILON
+      COLLISION_EPSILON
     ) {
       cleanedVertices.pop();
     }
@@ -3154,14 +3154,16 @@ function clipPolygonByLine(
   for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
     const firstVertex = vertices[vertexIndex];
     const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
-    const firstSide = sideMultiplier *
+    const firstSide =
+      sideMultiplier *
       cross2D(
         lineDirection.x,
         lineDirection.y,
         firstVertex.x - linePoint.x,
         firstVertex.y - linePoint.y,
       );
-    const secondSide = sideMultiplier *
+    const secondSide =
+      sideMultiplier *
       cross2D(
         lineDirection.x,
         lineDirection.y,
@@ -3177,9 +3179,11 @@ function clipPolygonByLine(
       if (Math.abs(sideDifference) > COLLISION_EPSILON) {
         const intersectionRatio = firstSide / sideDifference;
         clippedVertices.push({
-          x: firstVertex.x +
+          x:
+            firstVertex.x +
             (secondVertex.x - firstVertex.x) * intersectionRatio,
-          y: firstVertex.y +
+          y:
+            firstVertex.y +
             (secondVertex.y - firstVertex.y) * intersectionRatio,
         });
       }
@@ -3233,15 +3237,11 @@ function segmentPolygonIntersectionParameter(start, end, vertices) {
     const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
     const edgeX = secondVertex.x - firstVertex.x;
     const edgeY = secondVertex.y - firstVertex.y;
-    const startSide = orientation *
-      cross2D(
-        edgeX,
-        edgeY,
-        start.x - firstVertex.x,
-        start.y - firstVertex.y,
-      );
-    const sideRate = orientation *
-      cross2D(edgeX, edgeY, direction.x, direction.y);
+    const startSide =
+      orientation *
+      cross2D(edgeX, edgeY, start.x - firstVertex.x, start.y - firstVertex.y);
+    const sideRate =
+      orientation * cross2D(edgeX, edgeY, direction.x, direction.y);
 
     if (Math.abs(sideRate) <= COLLISION_EPSILON) {
       if (startSide < -COLLISION_EPSILON) {
@@ -3291,7 +3291,8 @@ function segmentCircleIntersectionParameter(start, end, circle) {
   }
 
   const projectedOffset = offsetX * directionX + offsetY * directionY;
-  const discriminant = projectedOffset ** 2 -
+  const discriminant =
+    projectedOffset ** 2 -
     directionLengthSquared * (offsetX ** 2 + offsetY ** 2 - radiusSquared);
 
   if (discriminant < -COLLISION_EPSILON) {
@@ -3299,10 +3300,10 @@ function segmentCircleIntersectionParameter(start, end, circle) {
   }
 
   const squareRootDiscriminant = Math.sqrt(Math.max(0, discriminant));
-  const firstParameter = (-projectedOffset - squareRootDiscriminant) /
-    directionLengthSquared;
-  const secondParameter = (-projectedOffset + squareRootDiscriminant) /
-    directionLengthSquared;
+  const firstParameter =
+    (-projectedOffset - squareRootDiscriminant) / directionLengthSquared;
+  const secondParameter =
+    (-projectedOffset + squareRootDiscriminant) / directionLengthSquared;
 
   if (firstParameter >= -COLLISION_EPSILON && firstParameter <= 1) {
     return Math.max(0, firstParameter);
@@ -3499,26 +3500,27 @@ function polygonNormalAtPoint(
       Math.max(
         0,
         ((point.x - firstVertex.x) * edgeX +
-          (point.y - firstVertex.y) * edgeY) / (edgeLength ** 2),
+          (point.y - firstVertex.y) * edgeY) /
+          edgeLength ** 2,
       ),
     );
     const closestX = firstVertex.x + edgeX * pointAlongEdge;
     const closestY = firstVertex.y + edgeY * pointAlongEdge;
-    const distanceSquared = (point.x - closestX) ** 2 +
-      (point.y - closestY) ** 2;
+    const distanceSquared =
+      (point.x - closestX) ** 2 + (point.y - closestY) ** 2;
 
     if (distanceSquared < nearestDistanceSquared) {
       nearestDistanceSquared = distanceSquared;
-      nearestNormal = polygonTwiceArea >= 0
-        ? { x: edgeY / edgeLength, y: -edgeX / edgeLength }
-        : { x: -edgeY / edgeLength, y: edgeX / edgeLength };
+      nearestNormal =
+        polygonTwiceArea >= 0
+          ? { x: edgeY / edgeLength, y: -edgeX / edgeLength }
+          : { x: -edgeY / edgeLength, y: edgeX / edgeLength };
     }
   }
 
   if (
-    incomingVelocityX * nearestNormal.x +
-        incomingVelocityY * nearestNormal.y >
-      0
+    incomingVelocityX * nearestNormal.x + incomingVelocityY * nearestNormal.y >
+    0
   ) {
     nearestNormal.x *= -1;
     nearestNormal.y *= -1;
@@ -3593,24 +3595,21 @@ function applyContactImpulse(
     normal.x,
     normal.y,
   );
-  const normalEffectiveMass = inverseFirstMass + inverseSecondMass +
+  const normalEffectiveMass =
+    inverseFirstMass +
+    inverseSecondMass +
     firstNormalLever ** 2 * inverseFirstMoment +
     secondNormalLever ** 2 * inverseSecondMoment;
   const firstContactVelocity = velocityAtPoint(firstBody, contactPoint);
   const secondContactVelocity = velocityAtPoint(secondBody, contactPoint);
-  const relativeVelocityX = secondContactVelocity.x -
-    firstContactVelocity.x;
-  const relativeVelocityY = secondContactVelocity.y -
-    firstContactVelocity.y;
-  const relativeNormalVelocity = relativeVelocityX * normal.x +
-    relativeVelocityY * normal.y;
+  const relativeVelocityX = secondContactVelocity.x - firstContactVelocity.x;
+  const relativeVelocityY = secondContactVelocity.y - firstContactVelocity.y;
+  const relativeNormalVelocity =
+    relativeVelocityX * normal.x + relativeVelocityY * normal.y;
 
   // A separating contact needs no impulse. Applying a response to only one
   // body would change both linear and angular momentum without a counterpart.
-  if (
-    relativeNormalVelocity >= 0 ||
-    normalEffectiveMass <= COLLISION_EPSILON
-  ) {
+  if (relativeNormalVelocity >= 0 || normalEffectiveMass <= COLLISION_EPSILON) {
     return {
       x: 0,
       y: 0,
@@ -3621,8 +3620,8 @@ function applyContactImpulse(
     };
   }
 
-  const normalImpulseMagnitude = -(1 + BOUNCINESS) * relativeNormalVelocity /
-    normalEffectiveMass;
+  const normalImpulseMagnitude =
+    (-(1 + BOUNCINESS) * relativeNormalVelocity) / normalEffectiveMass;
   const normalImpulseX = normalImpulseMagnitude * normal.x;
   const normalImpulseY = normalImpulseMagnitude * normal.y;
 
@@ -3645,7 +3644,9 @@ function applyContactImpulse(
     tangent.x,
     tangent.y,
   );
-  const tangentEffectiveMass = inverseFirstMass + inverseSecondMass +
+  const tangentEffectiveMass =
+    inverseFirstMass +
+    inverseSecondMass +
     firstNormalTangentLever ** 2 * inverseFirstMoment +
     secondNormalTangentLever ** 2 * inverseSecondMoment;
   const firstPostNormalVelocity = velocityAtPoint(firstBody, contactPoint);
@@ -3653,12 +3654,11 @@ function applyContactImpulse(
   const relativeTangentVelocity =
     (secondPostNormalVelocity.x - firstPostNormalVelocity.x) * tangent.x +
     (secondPostNormalVelocity.y - firstPostNormalVelocity.y) * tangent.y;
-  const unconstrainedTangentImpulse = tangentEffectiveMass >
-      COLLISION_EPSILON
-    ? -relativeTangentVelocity / tangentEffectiveMass
-    : 0;
-  const maximumTangentImpulse = frictionCoefficient *
-    normalImpulseMagnitude;
+  const unconstrainedTangentImpulse =
+    tangentEffectiveMass > COLLISION_EPSILON
+      ? -relativeTangentVelocity / tangentEffectiveMass
+      : 0;
+  const maximumTangentImpulse = frictionCoefficient * normalImpulseMagnitude;
   const tangentImpulseMagnitude = Math.min(
     maximumTangentImpulse,
     Math.max(-maximumTangentImpulse, unconstrainedTangentImpulse),
@@ -3824,22 +3824,21 @@ function resolveBulletCollisions(width, height) {
           asteroid.collisionPolygon(),
         );
 
-        if (
-          hitParameter !== undefined &&
-          hitParameter < nearestHitParameter
-        ) {
+        if (hitParameter !== undefined && hitParameter < nearestHitParameter) {
           nearestHitParameter = hitParameter;
           hitAsteroidIndex = asteroidIndex;
         }
       }
 
       const wallHit = boundaryHit(segmentStart, segmentEnd, width, height);
-      const asteroidIsFirst = hitAsteroidIndex >= 0 &&
+      const asteroidIsFirst =
+        hitAsteroidIndex >= 0 &&
         nearestHitParameter <= (wallHit?.parameter ?? Infinity);
       const shipHitParameter = shipIgnored
         ? Infinity
         : segmentCircleIntersectionParameter(segmentStart, segmentEnd, ship);
-      const shipIsFirst = shipHitParameter !== undefined &&
+      const shipIsFirst =
+        shipHitParameter !== undefined &&
         shipHitParameter < nearestHitParameter &&
         shipHitParameter <= (wallHit?.parameter ?? Infinity);
       const bodyIsFirst = asteroidIsFirst || shipIsFirst;
@@ -3851,16 +3850,18 @@ function resolveBulletCollisions(width, height) {
       const hitParameter = asteroidIsFirst
         ? nearestHitParameter
         : shipIsFirst
-        ? shipHitParameter
-        : wallHit.parameter;
+          ? shipHitParameter
+          : wallHit.parameter;
       const hitPoint = {
         x: segmentStart.x + (segmentEnd.x - segmentStart.x) * hitParameter,
         y: segmentStart.y + (segmentEnd.y - segmentStart.y) * hitParameter,
       };
-      const remainingDistance = Math.hypot(
-        segmentEnd.x - segmentStart.x,
-        segmentEnd.y - segmentStart.y,
-      ) * (1 - hitParameter);
+      const remainingDistance =
+        Math.hypot(
+          segmentEnd.x - segmentStart.x,
+          segmentEnd.y - segmentStart.y,
+        ) *
+        (1 - hitParameter);
       const canReflect = bullet.reflectionCount < MAX_BULLET_REFLECTIONS;
 
       let normal = bodyIsFirst ? undefined : wallHit.normal;
@@ -3873,15 +3874,15 @@ function resolveBulletCollisions(width, height) {
         bullet.x = hitPoint.x;
         bullet.y = hitPoint.y;
         const beforeMomentum = {
-          x: asteroid.mass * asteroid.velocityX +
-            bullet.mass * bullet.velocityX,
-          y: asteroid.mass * asteroid.velocityY +
-            bullet.mass * bullet.velocityY,
+          x:
+            asteroid.mass * asteroid.velocityX + bullet.mass * bullet.velocityX,
+          y:
+            asteroid.mass * asteroid.velocityY + bullet.mass * bullet.velocityY,
         };
-        const beforeAngularMomentum = bodyAngularMomentum(asteroid) +
-          bodyAngularMomentum(bullet);
-        const beforeEnergy = bodyKineticEnergy(asteroid) +
-          bodyKineticEnergy(bullet);
+        const beforeAngularMomentum =
+          bodyAngularMomentum(asteroid) + bodyAngularMomentum(bullet);
+        const beforeEnergy =
+          bodyKineticEnergy(asteroid) + bodyKineticEnergy(bullet);
         interactionBeforeEnergy = beforeEnergy;
 
         normal = polygonNormalAtPoint(
@@ -3921,10 +3922,11 @@ function resolveBulletCollisions(width, height) {
           hitPoint,
           incomingDirection,
         );
-        const afterEnergy = fragments.reduce(
-          (energy, fragment) => energy + bodyKineticEnergy(fragment),
-          bodyKineticEnergy(bullet),
-        ) + (fragments.length === 0 ? bodyKineticEnergy(asteroid) : 0);
+        const afterEnergy =
+          fragments.reduce(
+            (energy, fragment) => energy + bodyKineticEnergy(fragment),
+            bodyKineticEnergy(bullet),
+          ) + (fragments.length === 0 ? bodyKineticEnergy(asteroid) : 0);
         interactionAfterEnergy = afterEnergy;
         if (fragments.length === 0) {
           removedEnergy += bodyKineticEnergy(asteroid);
@@ -3957,8 +3959,8 @@ function resolveBulletCollisions(width, height) {
             x: afterMomentum.x - beforeMomentum.x,
             y: afterMomentum.y - beforeMomentum.y,
           };
-          lastBulletAngularMomentumDelta = afterAngularMomentum -
-            beforeAngularMomentum;
+          lastBulletAngularMomentumDelta =
+            afterAngularMomentum - beforeAngularMomentum;
           lastBulletKineticEnergyDelta = afterEnergy - beforeEnergy;
         }
       } else if (shipIsFirst) {
@@ -3968,8 +3970,8 @@ function resolveBulletCollisions(width, height) {
           x: ship.mass * ship.velocityX + bullet.mass * bullet.velocityX,
           y: ship.mass * ship.velocityY + bullet.mass * bullet.velocityY,
         };
-        const beforeEnergy = bodyKineticEnergy(ship) +
-          bodyKineticEnergy(bullet);
+        const beforeEnergy =
+          bodyKineticEnergy(ship) + bodyKineticEnergy(bullet);
         interactionBeforeEnergy = beforeEnergy;
 
         normal = circleNormalAtPoint(
@@ -4006,8 +4008,7 @@ function resolveBulletCollisions(width, height) {
           x: ship.mass * ship.velocityX + bullet.mass * bullet.velocityX,
           y: ship.mass * ship.velocityY + bullet.mass * bullet.velocityY,
         };
-        const afterEnergy = bodyKineticEnergy(ship) +
-          bodyKineticEnergy(bullet);
+        const afterEnergy = bodyKineticEnergy(ship) + bodyKineticEnergy(bullet);
         interactionAfterEnergy = afterEnergy;
 
         totalBulletShipCollisionCount += 1;
@@ -4159,18 +4160,20 @@ function contactPointForBodies(
   firstVertices,
   secondVertices,
 ) {
-  const firstPoint = firstVertices === undefined
-    ? {
-      x: firstBody.x + normal.x * firstBody.radius,
-      y: firstBody.y + normal.y * firstBody.radius,
-    }
-    : supportPoint(firstVertices, normal);
-  const secondPoint = secondVertices === undefined
-    ? {
-      x: secondBody.x - normal.x * secondBody.radius,
-      y: secondBody.y - normal.y * secondBody.radius,
-    }
-    : supportPoint(secondVertices, { x: -normal.x, y: -normal.y });
+  const firstPoint =
+    firstVertices === undefined
+      ? {
+          x: firstBody.x + normal.x * firstBody.radius,
+          y: firstBody.y + normal.y * firstBody.radius,
+        }
+      : supportPoint(firstVertices, normal);
+  const secondPoint =
+    secondVertices === undefined
+      ? {
+          x: secondBody.x - normal.x * secondBody.radius,
+          y: secondBody.y - normal.y * secondBody.radius,
+        }
+      : supportPoint(secondVertices, { x: -normal.x, y: -normal.y });
 
   return {
     x: (firstPoint.x + secondPoint.x) / 2,
@@ -4191,12 +4194,14 @@ function projectionOverlap(firstProjection, secondProjection) {
 }
 
 function collisionAxis(firstBody, secondBody, axis, firstShape, secondShape) {
-  const firstProjection = firstShape.type === "polygon"
-    ? projectPolygon(firstShape.vertices, axis)
-    : projectCircle(firstBody, axis);
-  const secondProjection = secondShape.type === "polygon"
-    ? projectPolygon(secondShape.vertices, axis)
-    : projectCircle(secondBody, axis);
+  const firstProjection =
+    firstShape.type === "polygon"
+      ? projectPolygon(firstShape.vertices, axis)
+      : projectCircle(firstBody, axis);
+  const secondProjection =
+    secondShape.type === "polygon"
+      ? projectPolygon(secondShape.vertices, axis)
+      : projectCircle(secondBody, axis);
   const overlap = projectionOverlap(firstProjection, secondProjection);
 
   return overlap < -COLLISION_EPSILON ? undefined : overlap;
@@ -4220,9 +4225,7 @@ function orientCollisionAxis(firstBody, secondBody, axis) {
       firstBody.velocityY - secondBody.velocityY,
     );
 
-    if (
-      relativeDirection.x * axis.x + relativeDirection.y * axis.y < 0
-    ) {
+    if (relativeDirection.x * axis.x + relativeDirection.y * axis.y < 0) {
       return { x: -axis.x, y: -axis.y };
     }
   }
@@ -4341,14 +4344,8 @@ function closestPointOnPolygon(point, vertices) {
  * @param {Vector2[]} polygonVertices
  * @returns {CollisionManifold | undefined}
  */
-function circlePolygonManifold(
-  circleBody,
-  polygonBody,
-  polygonVertices,
-) {
-  const axes = [
-    ...(polygonBody.collisionAxes ?? polygonAxes(polygonVertices)),
-  ];
+function circlePolygonManifold(circleBody, polygonBody, polygonVertices) {
+  const axes = [...(polygonBody.collisionAxes ?? polygonAxes(polygonVertices))];
   const closestPoint = closestPointOnPolygon(
     { x: circleBody.x, y: circleBody.y },
     polygonVertices,
@@ -4361,10 +4358,8 @@ function circlePolygonManifold(
   );
 
   if (
-    Math.hypot(
-      closestPoint.x - circleBody.x,
-      closestPoint.y - circleBody.y,
-    ) > COLLISION_EPSILON
+    Math.hypot(closestPoint.x - circleBody.x, closestPoint.y - circleBody.y) >
+    COLLISION_EPSILON
   ) {
     axes.push(closestPointAxis);
   }
@@ -4454,11 +4449,7 @@ function collisionManifold(firstBody, secondBody) {
  * @returns {{momentumX: number, momentumY: number, kineticEnergy: number, angularMomentum: number, angularKineticEnergy: number}}
  */
 function physicsSnapshot(ship, includeBullets = false) {
-  const bodies = [
-    ship,
-    ...asteroids,
-    ...(includeBullets ? bullets : []),
-  ];
+  const bodies = [ship, ...asteroids, ...(includeBullets ? bullets : [])];
   let momentumX = 0;
   let momentumY = 0;
   let kineticEnergy = 0;
@@ -4511,8 +4502,8 @@ function resolveCollision(firstBody, secondBody, existingManifold) {
   const inverseFirstMass = bodyInverseMass(firstBody);
   const inverseSecondMass = bodyInverseMass(secondBody);
   const inverseMassSum = inverseFirstMass + inverseSecondMass;
-  const angularMomentumBeforeSeparation = bodyAngularMomentum(firstBody) +
-    bodyAngularMomentum(secondBody);
+  const angularMomentumBeforeSeparation =
+    bodyAngularMomentum(firstBody) + bodyAngularMomentum(secondBody);
 
   // Separate overlap proportionally to inverse mass. This keeps a large
   // asteroid from teleporting the ship while preventing repeated impulses
@@ -4530,10 +4521,15 @@ function resolveCollision(firstBody, secondBody, existingManifold) {
     );
   }
 
-  const response = applyContactImpulse(firstBody, secondBody, {
-    x: offsetX,
-    y: offsetY,
-  }, contactPoint);
+  const response = applyContactImpulse(
+    firstBody,
+    secondBody,
+    {
+      x: offsetX,
+      y: offsetY,
+    },
+    contactPoint,
+  );
 
   return response;
 }
@@ -4554,13 +4550,13 @@ function resolveCollisionWithSparks(firstBody, secondBody) {
     return undefined;
   }
 
-  const beforeEnergy = bodyKineticEnergy(firstBody) +
-    bodyKineticEnergy(secondBody);
+  const beforeEnergy =
+    bodyKineticEnergy(firstBody) + bodyKineticEnergy(secondBody);
   const response = resolveCollision(firstBody, secondBody, manifold);
 
   if (response !== undefined) {
-    const afterEnergy = bodyKineticEnergy(firstBody) +
-      bodyKineticEnergy(secondBody);
+    const afterEnergy =
+      bodyKineticEnergy(firstBody) + bodyKineticEnergy(secondBody);
     emitSparksAt(
       manifold.contactPoint,
       interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
@@ -4634,12 +4630,12 @@ function resolveAsteroidCollisions() {
     x: afterCollision.momentumX - beforeCollision.momentumX,
     y: afterCollision.momentumY - beforeCollision.momentumY,
   };
-  lastKineticEnergyDelta = afterCollision.kineticEnergy -
-    beforeCollision.kineticEnergy;
-  lastAngularMomentumDelta = afterCollision.angularMomentum -
-    beforeCollision.angularMomentum;
-  lastAngularKineticEnergyDelta = afterCollision.angularKineticEnergy -
-    beforeCollision.angularKineticEnergy;
+  lastKineticEnergyDelta =
+    afterCollision.kineticEnergy - beforeCollision.kineticEnergy;
+  lastAngularMomentumDelta =
+    afterCollision.angularMomentum - beforeCollision.angularMomentum;
+  lastAngularKineticEnergyDelta =
+    afterCollision.angularKineticEnergy - beforeCollision.angularKineticEnergy;
   applyPlayerBody(ship);
 }
 
@@ -4706,15 +4702,17 @@ function updateDebugOutput(deltaTime) {
   const displayedMinimumFrameRate = Number.isFinite(minimumFrameRate)
     ? minimumFrameRate.toFixed(1)
     : "--";
-  const autopilotTargetIndex = autopilotTargetLock === undefined
-    ? -1
-    : asteroids.indexOf(autopilotTargetLock);
-  const autopilotTargetDistance = autopilotTargetLock === undefined
-    ? 0
-    : Math.hypot(
-      autopilotTargetLock.x - playerX,
-      autopilotTargetLock.y - playerY,
-    );
+  const autopilotTargetIndex =
+    autopilotTargetLock === undefined
+      ? -1
+      : asteroids.indexOf(autopilotTargetLock);
+  const autopilotTargetDistance =
+    autopilotTargetLock === undefined
+      ? 0
+      : Math.hypot(
+          autopilotTargetLock.x - playerX,
+          autopilotTargetLock.y - playerY,
+        );
   const autopilotShieldRatio = shieldState / SHIELD_MAX_STATE;
   const autopilotHullRatio = shipState / SHIP_MAX_STATE;
 
@@ -4722,17 +4720,15 @@ function updateDebugOutput(deltaTime) {
     `PHYSICS DEBUG  (${DEBUG_TOGGLE_KEY} toggles)`,
     `Game: ${
       shipFailureActive
-        ? `ship destroyed (new game in ${
-          Math.max(
+        ? `ship destroyed (new game in ${Math.max(
             1,
             Math.ceil(shipFailureTimeRemaining),
-          )
-        })`
+          )})`
         : gameWon
-        ? "won (P starts a new game)"
-        : gamePaused
-        ? `${PAUSE_KEY_LABEL} toggles`
-        : "running"
+          ? "won (P starts a new game)"
+          : gamePaused
+            ? `${PAUSE_KEY_LABEL} toggles`
+            : "running"
     }`,
     `Autopilot: ${
       autopilotEnabled ? "ON" : "OFF"
@@ -4743,85 +4739,83 @@ function updateDebugOutput(deltaTime) {
       autopilotTurnDirection > 0
         ? "CW"
         : autopilotTurnDirection < 0
-        ? "CCW"
-        : "hold"
+          ? "CCW"
+          : "hold"
     }`,
     `Autopilot maneuver: ${autopilotManeuverMode}; burst ${
       autopilotBurstTimeRemaining > 0 ? "active" : "ready"
     }`,
-    `Autopilot shield policy: shield ${
-      (autopilotShieldRatio * 100).toFixed(0)
-    }%, hull ${(autopilotHullRatio * 100).toFixed(0)}%, margin ${
-      autopilotHealthSafetyMargin().toFixed(0)
-    }px`,
-    `Shield/ship: ${shieldState.toFixed(2)}%/${shipState.toFixed(2)}% (regen ${
-      SHIELD_REGENERATION_RATE.toFixed(1)
-    }/s)`,
-    `Damage: momentum ${lastCollisionMomentum.toFixed(2)}, raw/applied ${
-      lastRawCollisionDamage.toFixed(2)
-    }/${lastAppliedCollisionDamage.toFixed(2)}, shield ${
-      lastShieldDamage.toFixed(
-        2,
-      )
-    }, ship ${lastShipDamage.toFixed(2)}`,
-    `Damage budget: ${collisionDamageBudget.toFixed(2)}/${
-      COLLISION_DAMAGE_BUDGET_CAP.toFixed(2)
-    } (refill ${COLLISION_DAMAGE_BUDGET_REFILL_RATE.toFixed(1)}/s)`,
-    `Damage coefficients: shield ${
-      SHIELD_DAMAGE_COEFFICIENT.toFixed(2)
-    }, ship ${SHIP_DAMAGE_COEFFICIENT.toFixed(2)}`,
+    `Autopilot shield policy: shield ${(autopilotShieldRatio * 100).toFixed(
+      0,
+    )}%, hull ${(autopilotHullRatio * 100).toFixed(0)}%, margin ${autopilotHealthSafetyMargin().toFixed(
+      0,
+    )}px`,
+    `Shield/ship: ${shieldState.toFixed(2)}%/${shipState.toFixed(2)}% (regen ${SHIELD_REGENERATION_RATE.toFixed(
+      1,
+    )}/s)`,
+    `Damage: momentum ${lastCollisionMomentum.toFixed(2)}, raw/applied ${lastRawCollisionDamage.toFixed(
+      2,
+    )}/${lastAppliedCollisionDamage.toFixed(2)}, shield ${lastShieldDamage.toFixed(
+      2,
+    )}, ship ${lastShipDamage.toFixed(2)}`,
+    `Damage budget: ${collisionDamageBudget.toFixed(2)}/${COLLISION_DAMAGE_BUDGET_CAP.toFixed(
+      2,
+    )} (refill ${COLLISION_DAMAGE_BUDGET_REFILL_RATE.toFixed(1)}/s)`,
+    `Damage coefficients: shield ${SHIELD_DAMAGE_COEFFICIENT.toFixed(
+      2,
+    )}, ship ${SHIP_DAMAGE_COEFFICIENT.toFixed(2)}`,
     `Ship restarts: ${totalShipRestartCount}`,
     `Asteroids: ${asteroids.length} (target: ${ASTEROID_COUNT})`,
     `FPS: ${displayedFrameRate} (rolling ${FPS_SAMPLE_COUNT}-frame avg)`,
     `FPS minimum: ${displayedMinimumFrameRate} (rolling window)`,
-    `Asteroid: ${asteroidMass.toFixed(2)} mass, ${
-      asteroidArea.toFixed(2)
-    } area, density ${(firstAsteroid?.density ?? 0).toFixed(3)}`,
-    `Spin: ${(firstAsteroid?.angularVelocity ?? 0).toFixed(5)} rad/s, inertia ${
-      (firstAsteroid?.momentOfInertia ?? 0).toFixed(2)
-    }`,
+    `Asteroid: ${asteroidMass.toFixed(2)} mass, ${asteroidArea.toFixed(
+      2,
+    )} area, density ${(firstAsteroid?.density ?? 0).toFixed(3)}`,
+    `Spin: ${(firstAsteroid?.angularVelocity ?? 0).toFixed(5)} rad/s, inertia ${(
+      firstAsteroid?.momentOfInertia ?? 0
+    ).toFixed(2)}`,
     `Collision: ${lastCollisionCount}/frame, ${totalCollisionCount} total`,
-    `Material: e=${BOUNCINESS.toFixed(2)}, friction=${
-      FRICTION_COEFFICIENT.toFixed(2)
-    }`,
-    `Bullets: ${totalBulletsEmitted} fired, ${bullets.length} active, ${totalBulletCutCount} cuts | Sparks: ${sparks.length} active, ${totalSparksEmitted} emitted (${lastFrameSparkCount}, ${
-      lastFrameSparkEnergy.toFixed(0)
-    }E)`,
-    `Bullet mass/reflections: ${
-      BULLET_MASS.toFixed(2)
-    }/${totalBulletReflectionCount}`,
-    `Bullet lost Δp: (${lastBulletLostMomentum.x.toFixed(5)}, ${
-      lastBulletLostMomentum.y.toFixed(5)
-    })`,
-    `Bullet shoulder/ΔL: ${lastBulletShoulder.toFixed(5)}/${
-      lastBulletAngularImpulse.toFixed(5)
-    }`,
-    `Last cut Δp: (${lastBulletMomentumDelta.x.toFixed(5)}, ${
-      lastBulletMomentumDelta.y.toFixed(5)
-    })`,
-    `Last cut ΔL/ΔE: ${lastBulletAngularMomentumDelta.toFixed(5)}/${
-      lastBulletKineticEnergyDelta.toFixed(5)
-    }`,
-    `Ship contacts: ${totalBulletShipCollisionCount}, last impulse (${
-      lastBulletShipImpulse.x.toFixed(5)
-    }, ${lastBulletShipImpulse.y.toFixed(5)})`,
-    `Ship Δp/ΔE: (${lastBulletShipMomentumDelta.x.toFixed(5)}, ${
-      lastBulletShipMomentumDelta.y.toFixed(5)
-    })/${lastBulletShipKineticEnergyDelta.toFixed(5)}`,
-    `Firing Δp/recoil: (${lastFiringImpulseDelta.x.toFixed(5)}, ${
-      lastFiringImpulseDelta.y.toFixed(5)
-    })/(${lastFiringRecoilVelocity.x.toFixed(5)}, ${
-      lastFiringRecoilVelocity.y.toFixed(5)
-    })`,
-    `Contact Δp: (${lastMomentumDelta.x.toFixed(5)}, ${
-      lastMomentumDelta.y.toFixed(5)
-    })`,
-    `Contact ΔL/ΔE: ${lastAngularMomentumDelta.toFixed(5)}/${
-      lastKineticEnergyDelta.toFixed(5)
-    }`,
-    `Total p: (${totalPhysics.momentumX.toFixed(2)}, ${
-      totalPhysics.momentumY.toFixed(2)
-    })`,
+    `Material: e=${BOUNCINESS.toFixed(2)}, friction=${FRICTION_COEFFICIENT.toFixed(
+      2,
+    )}`,
+    `Bullets: ${totalBulletsEmitted} fired, ${bullets.length} active, ${totalBulletCutCount} cuts | Sparks: ${sparks.length} active, ${totalSparksEmitted} emitted (${lastFrameSparkCount}, ${lastFrameSparkEnergy.toFixed(
+      0,
+    )}E)`,
+    `Bullet mass/reflections: ${BULLET_MASS.toFixed(
+      2,
+    )}/${totalBulletReflectionCount}`,
+    `Bullet lost Δp: (${lastBulletLostMomentum.x.toFixed(5)}, ${lastBulletLostMomentum.y.toFixed(
+      5,
+    )})`,
+    `Bullet shoulder/ΔL: ${lastBulletShoulder.toFixed(5)}/${lastBulletAngularImpulse.toFixed(
+      5,
+    )}`,
+    `Last cut Δp: (${lastBulletMomentumDelta.x.toFixed(5)}, ${lastBulletMomentumDelta.y.toFixed(
+      5,
+    )})`,
+    `Last cut ΔL/ΔE: ${lastBulletAngularMomentumDelta.toFixed(5)}/${lastBulletKineticEnergyDelta.toFixed(
+      5,
+    )}`,
+    `Ship contacts: ${totalBulletShipCollisionCount}, last impulse (${lastBulletShipImpulse.x.toFixed(
+      5,
+    )}, ${lastBulletShipImpulse.y.toFixed(5)})`,
+    `Ship Δp/ΔE: (${lastBulletShipMomentumDelta.x.toFixed(5)}, ${lastBulletShipMomentumDelta.y.toFixed(
+      5,
+    )})/${lastBulletShipKineticEnergyDelta.toFixed(5)}`,
+    `Firing Δp/recoil: (${lastFiringImpulseDelta.x.toFixed(5)}, ${lastFiringImpulseDelta.y.toFixed(
+      5,
+    )})/(${lastFiringRecoilVelocity.x.toFixed(5)}, ${lastFiringRecoilVelocity.y.toFixed(
+      5,
+    )})`,
+    `Contact Δp: (${lastMomentumDelta.x.toFixed(5)}, ${lastMomentumDelta.y.toFixed(
+      5,
+    )})`,
+    `Contact ΔL/ΔE: ${lastAngularMomentumDelta.toFixed(5)}/${lastKineticEnergyDelta.toFixed(
+      5,
+    )}`,
+    `Total p: (${totalPhysics.momentumX.toFixed(2)}, ${totalPhysics.momentumY.toFixed(
+      2,
+    )})`,
     `Total angular momentum: ${totalPhysics.angularMomentum.toFixed(2)}`,
     `Total kinetic energy: ${totalPhysics.kineticEnergy.toFixed(2)}`,
   ].join("\n");
@@ -4841,12 +4835,12 @@ function updateGame(deltaTime, width, height) {
   regenerateShield(deltaTime);
   updateAutopilotInput(deltaTime, width, height);
 
-  const turnsCounterClockwise = pressedKeys.has("ArrowLeft") ||
-    pressedKeys.has("KeyA");
-  const turnsClockwise = pressedKeys.has("ArrowRight") ||
-    pressedKeys.has("KeyD");
-  const rotationDirection = Number(turnsClockwise) -
-    Number(turnsCounterClockwise);
+  const turnsCounterClockwise =
+    pressedKeys.has("ArrowLeft") || pressedKeys.has("KeyA");
+  const turnsClockwise =
+    pressedKeys.has("ArrowRight") || pressedKeys.has("KeyD");
+  const rotationDirection =
+    Number(turnsClockwise) - Number(turnsCounterClockwise);
 
   playerAngle += rotationDirection * ROTATION_SPEED * deltaTime;
 
@@ -4859,10 +4853,7 @@ function updateGame(deltaTime, width, height) {
       playerVelocityX += Math.cos(playerAngle) * acceleration;
       playerVelocityY += Math.sin(playerAngle) * acceleration;
 
-      const acceleratedSpeed = Math.hypot(
-        playerVelocityX,
-        playerVelocityY,
-      );
+      const acceleratedSpeed = Math.hypot(playerVelocityX, playerVelocityY);
 
       if (acceleratedSpeed > MAX_SPEED) {
         const speedRatio = MAX_SPEED / acceleratedSpeed;
@@ -4929,9 +4920,10 @@ function updateGame(deltaTime, width, height) {
 
 function animate(frameTime) {
   updateFrameRate(frameTime);
-  const deltaTime = previousFrameTime === undefined
-    ? 0
-    : Math.min((frameTime - previousFrameTime) / 1000, 0.1);
+  const deltaTime =
+    previousFrameTime === undefined
+      ? 0
+      : Math.min((frameTime - previousFrameTime) / 1000, 0.1);
   previousFrameTime = frameTime;
 
   const width = viewportWidth;
@@ -4957,8 +4949,8 @@ function controlKeyForEvent(event) {
 
   if (event.key.startsWith("Arrow")) {
     return ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
-        event.key,
-      )
+      event.key,
+    )
       ? event.key
       : undefined;
   }
@@ -4977,10 +4969,7 @@ document.addEventListener("keydown", (event) => {
 
   if (event.code === PAUSE_KEY && !event.repeat) {
     if (gameWon) {
-      restartGame(
-        viewportWidth,
-        gameplayHeightForViewport(viewportHeight),
-      );
+      restartGame(viewportWidth, gameplayHeightForViewport(viewportHeight));
       gamePaused = false;
     } else if (!shipFailureActive) {
       gamePaused = !gamePaused;
