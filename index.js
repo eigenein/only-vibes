@@ -136,7 +136,7 @@ const STATUS_POINTS_HEIGHT = STATUS_BAR_HEIGHT * 2 + STATUS_BAR_GAP;
 // The alert lives only in the deliberate gap between the fire key and score;
 // compact consoles keep their existing layout instead of squeezing in text.
 const RED_ALERT_TEXT = "RED ALERT";
-const RED_ALERT_HULL_THRESHOLD = 20;
+const RED_ALERT_HULL_THRESHOLD = 30;
 const RED_ALERT_BLINK_INTERVAL_MILLISECONDS = 450;
 const RED_ALERT_EDGE_GAP = 12;
 // Sound effects retain a small number of independent voices so a rapid burst
