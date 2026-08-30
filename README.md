@@ -34,6 +34,7 @@ Play the hosted version on [GitHub Pages](https://eigenein.github.io/only-vibes/
 ### Shield and hull
 
 - The ship starts with a full shield and hull.
+- The collision damage is proportional to the momentum.
 - Collision damage is split proportionally between the shield and hull based
   on the shield remaining at the moment of impact. The shield regenerates
   while the game is running.
