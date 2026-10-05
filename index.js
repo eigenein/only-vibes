@@ -41,10 +41,9 @@ canvas.style.outline = "none";
 canvas.addEventListener("pointerdown", () => canvas.focus());
 canvas.focus({ preventScroll: true });
 
-// The player uses one radius for both the circular hull and the triangle's
-// circumcircle, keeping the silhouette consistent as the game evolves.
+// The shield circle is the collision boundary. The saucer and nacelles stay
+// inside it at every heading, so the new silhouette preserves familiar handling.
 const PLAYER_RADIUS = 28;
-const PLAYER_TRIANGLE_HALF_ANGLE = Math.PI / 4;
 // Collision bodies use a mass rather than a gameplay health value. The ship is
 // intentionally heavier than a small asteroid, while still being light enough
 // for a large asteroid to noticeably change its trajectory.
@@ -91,7 +90,7 @@ const LCARS_FONT_FAMILY = 'Antonio, "Arial Narrow", "Aptos Narrow", sans-serif';
 const LCARS_BODY_FONT_FAMILY = LCARS_FONT_FAMILY;
 const LCARS_FRAME_MARGIN = 14;
 const LCARS_CONSOLE_TOP = 10;
-// This is the smallest fixed width that keeps “FLIGHT CONTROL” and its
+// This is the smallest fixed width that keeps “HELM CONTROL” and its
 // horizontal padding legible at the command-strip title size.
 const LCARS_MODE_WIDTH = 164;
 // The command strip turns the keyboard map into persistent LCARS controls.
@@ -200,10 +199,11 @@ const SHIP_FAILURE_REASON = "Hull depleted by a collision.";
 const WIN_SCREEN_PANEL_WIDTH = 560;
 const WIN_SCREEN_PANEL_HEIGHT = 300;
 const WIN_SCREEN_BACKDROP_ALPHA = 0.58;
-const WIN_SCREEN_TITLE = "YOU WIN";
-const WIN_SCREEN_REASON = "All asteroids destroyed.";
+const WIN_SCREEN_TITLE = "SECTOR CLEAR";
+const WIN_SCREEN_REASON =
+  "Tactical simulation complete. All asteroids cleared.";
 
-// Bullets are intentionally fast and short-lived. The frequency is expressed
+// Phaser pulses are intentionally fast and short-lived. The frequency is expressed
 // in shots per second so holding Space feels regular at every frame rate.
 const BULLET_FREQUENCY = 8;
 const BULLET_FIRE_INTERVAL = 1 / BULLET_FREQUENCY;
@@ -285,7 +285,7 @@ const FIRE_KEY_LABEL = "SPACE";
 const PLAY_HELP = Object.freeze([
   Object.freeze({
     label: FIRE_KEY_LABEL,
-    description: "shoot",
+    description: "fire phaser pulses",
   }),
   Object.freeze({
     label: "W / S",
@@ -311,15 +311,42 @@ const PLAY_HELP = Object.freeze([
 const HELP_PANEL_WIDTH = 540;
 const HELP_PANEL_HEIGHT = 500;
 
-// A faint two-line phrase brands the arena without participating in the game
-// simulation. It is ordinary canvas text rendered as background decoration.
-const PHRASE_LINES = Object.freeze(["KANE CLI", "HACKATHON"]);
+// The training-simulator identity sits quietly behind gameplay. Capping its
+// type size avoids a full-arena billboard on large bridge displays.
+const PHRASE_LINES = Object.freeze(["STARFLEET", "TACTICAL SIMULATION"]);
 const PHRASE_FONT_FAMILY = LCARS_FONT_FAMILY;
 const PHRASE_FONT_WEIGHT = 700;
-const PHRASE_BASE_FONT_SIZE = 100;
-const PHRASE_LINE_GAP = 24;
+const PHRASE_BASE_FONT_SIZE = 56;
+const PHRASE_LINE_GAP = 16;
 const PHRASE_MARGIN = 48;
-const PHRASE_OPACITY = 0.22;
+const PHRASE_OPACITY = 0.09;
+// A sparse, stationary starfield establishes space without competing with
+// moving hazards. Two cached paths cost two fills per frame, with no twinkle,
+// blur, random sampling, or particle updates in the animation loop.
+const STARFIELD_COUNT = 96;
+const STARFIELD_OPACITY = 0.3;
+// Irrational spacing ratios distribute repeatable positions across the arena.
+const STARFIELD_X_STEP = 0.618033988749895;
+const STARFIELD_Y_STEP = 0.754877666246693;
+// Alternate tiny CSS-pixel sizes to distinguish stars from phaser pulses.
+const STARFIELD_SMALL_SIZE = 1;
+const STARFIELD_LARGE_SIZE = 1.5;
+// Unit-radius ship paths point along +x; drawStarship rotates them to match the
+// simulation heading. The silhouette uses a forward saucer, aft engineering
+// hull, and paired nacelles, with a nose marker for unambiguous steering.
+const STARSHIP_SILHOUETTE = new Path2D(
+  "M -.72 -.13 L -.05 -.13 L -.05 .13 L -.72 .13 Z " +
+    "M -.45 -.12 L -.55 -.48 L -.38 -.48 L -.22 -.12 Z " +
+    "M -.45 .12 L -.55 .48 L -.38 .48 L -.22 .12 Z " +
+    "M .78 0 A .43 .43 0 1 0 -.08 0 A .43 .43 0 1 0 .78 0 Z " +
+    "M -.72 -.68 L .02 -.68 L .02 -.46 L -.72 -.46 Z " +
+    "M -.72 .46 L .02 .46 L .02 .68 L -.72 .68 Z",
+);
+const STARSHIP_DETAILS = new Path2D(
+  "M .58 0 A .23 .23 0 1 0 .12 0 A .23 .23 0 1 0 .58 0 " +
+    "M -.69 -.57 L -.13 -.57 M -.69 .57 L -.13 .57",
+);
+const STARSHIP_HEADING_MARKER = new Path2D("M .7 -.08 L .94 0 L .7 .08 Z");
 const PAUSE_BACKDROP_ALPHA = 0.44;
 // The arena boundary is a gameplay hazard, so its warm gradient and soft
 // bloom should be visible without obscuring the ship or asteroid silhouettes.
@@ -422,7 +449,8 @@ let points = 0;
 let viewportWidth = 0;
 let viewportHeight = 0;
 const phraseMetricsCache = new Map();
-let dangerWallGradients;
+let dangerWallGradients = undefined;
+let starfieldPaths = [new Path2D(), new Path2D()];
 
 /**
  * Decode short effects once and mix inexpensive buffer sources. Safari's
@@ -955,10 +983,12 @@ class Bullet {
     const endY = this.y + directionY * BULLET_HALF_LENGTH;
     const gradient = context.createLinearGradient(startX, startY, endX, endY);
 
-    // A symmetric gradient makes a bullet read as a luminous moving streak:
+    // A symmetric orange gradient presents the projectile as a phaser pulse:
     // both ends fade to black while the midpoint carries the full brightness.
     gradient.addColorStop(0, "rgba(255, 153, 0, 0)");
+    gradient.addColorStop(0.3, LCARS_AMBER);
     gradient.addColorStop(0.5, LCARS_GOLD);
+    gradient.addColorStop(0.7, LCARS_AMBER);
     gradient.addColorStop(1, "rgba(255, 153, 0, 0)");
 
     context.save();
@@ -1175,9 +1205,13 @@ function phraseFontSizeForViewport(width, height) {
     baseMetrics.lineHeight * PHRASE_LINES.length +
     PHRASE_LINE_GAP * (PHRASE_LINES.length - 1);
 
-  return Math.min(
-    (PHRASE_BASE_FONT_SIZE * availableWidth) / baseMetrics.widestLine,
-    (PHRASE_BASE_FONT_SIZE * availableHeight) / baseBlockHeight,
+  return Math.max(
+    1,
+    Math.min(
+      PHRASE_BASE_FONT_SIZE,
+      (PHRASE_BASE_FONT_SIZE * availableWidth) / baseMetrics.widestLine,
+      (PHRASE_BASE_FONT_SIZE * availableHeight) / baseBlockHeight,
+    ),
   );
 }
 
@@ -1918,6 +1952,7 @@ function resizeCanvas() {
   // Resizing resets the canvas state and changes gradient coordinates. The
   // next draw lazily rebuilds this presentation-only cache once.
   dangerWallGradients = undefined;
+  starfieldPaths = createStarfieldPaths(width, gameplayHeight);
 
   if (playerX === undefined || playerY === undefined) {
     playerX = width / 2;
@@ -2350,7 +2385,7 @@ function drawRedAlert(controlRightX, scoreBlockLeft) {
 }
 
 /**
- * Draw the event phrase as a quiet, non-physical arena background.
+ * Draw the simulator identity as a quiet, non-physical arena background.
  * @param {number} width Viewport width in CSS pixels.
  * @param {number} height Viewport height in CSS pixels.
  * @returns {void}
@@ -2484,22 +2519,75 @@ function drawLCARSCommandConsole(width) {
 }
 
 /**
- * Draw the black space and the player in the bounded field.
- * The triangle points upward and has its tip and base endpoints on the hull's
- * circumference. Its base chord is intentionally shorter than its sides so
- * the tip communicates the ship's direction without extra UI.
+ * Build the two star-size paths only when the viewport changes. Positions are
+ * deterministic and cosmetic; resizing never consumes the physics RNG.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {Path2D[]} Small and large star paths.
+ */
+function createStarfieldPaths(width, height) {
+  const paths = [new Path2D(), new Path2D()];
+  for (let index = 0; index < STARFIELD_COUNT; index += 1) {
+    const large = index % 4 === 0;
+    const size = large ? STARFIELD_LARGE_SIZE : STARFIELD_SMALL_SIZE;
+    const x = ((index * STARFIELD_X_STEP + 0.5) % 1) * width;
+    const y = ((index * STARFIELD_Y_STEP + 0.5) % 1) * height;
+    paths[large ? 1 : 0].rect(x, y, size, size);
+  }
+  return paths;
+}
+
+/**
+ * Render the starship inside its circular collision shield. Cached normalized
+ * paths avoid per-frame geometry allocations; the coral bow marker makes
+ * heading readable even when the saucer is seen among asteroid fragments.
+ * @returns {void}
+ */
+function drawStarship() {
+  context.save();
+  context.translate(playerX, playerY);
+  context.beginPath();
+  context.arc(0, 0, PLAYER_RADIUS, 0, Math.PI * 2);
+  context.strokeStyle =
+    shieldState > 0 ? LCARS_LILAC : "rgba(153, 153, 255, 0.3)";
+  context.lineWidth = 3;
+  context.stroke();
+
+  context.rotate(playerAngle);
+  context.scale(PLAYER_RADIUS, PLAYER_RADIUS);
+  context.fillStyle = LCARS_GOLD;
+  context.fill(STARSHIP_SILHOUETTE);
+  context.strokeStyle = LCARS_BLACK;
+  context.lineWidth = 1 / PLAYER_RADIUS;
+  context.stroke(STARSHIP_SILHOUETTE);
+  context.strokeStyle = LCARS_LILAC;
+  context.lineWidth = 2 / PLAYER_RADIUS;
+  context.stroke(STARSHIP_DETAILS);
+  context.fillStyle = LCARS_CORAL;
+  context.fill(STARSHIP_HEADING_MARKER);
+  context.restore();
+}
+
+/**
+ * Draw the training arena, then its moving bodies and bridge overlays.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @returns {void}
  */
 function drawGame(width, height) {
   const playfieldHeight = gameplayHeightForViewport(height);
-  const triangleTipAngle = playerAngle;
-  const triangleBaseCenterAngle = triangleTipAngle + Math.PI;
-  const baseLeftAngle = triangleBaseCenterAngle - PLAYER_TRIANGLE_HALF_ANGLE;
-  const baseRightAngle = triangleBaseCenterAngle + PLAYER_TRIANGLE_HALF_ANGLE;
 
   context.fillStyle = LCARS_BLACK;
   context.fillRect(0, 0, width, height);
   context.save();
   context.translate(0, LCARS_CONSOLE_HEIGHT);
+  context.save();
+  context.globalAlpha = STARFIELD_OPACITY;
+  context.fillStyle = LCARS_LILAC;
+  context.fill(starfieldPaths[0]);
+  context.fillStyle = LCARS_TEXT;
+  context.fill(starfieldPaths[1]);
+  context.restore();
   drawPhraseBackground(width, playfieldHeight);
   drawDangerWalls(width, playfieldHeight);
 
@@ -2514,36 +2602,7 @@ function drawGame(width, height) {
     bullet.draw();
   }
 
-  // The circle remains unfilled so the black space is visible inside the hull.
-  context.beginPath();
-  context.arc(playerX, playerY, PLAYER_RADIUS, 0, Math.PI * 2);
-  context.strokeStyle =
-    shieldState > 0 ? LCARS_LILAC : "rgba(153, 153, 255, 0.3)";
-  context.lineWidth = 3;
-  context.stroke();
-
-  const pointOnHull = (angle) => ({
-    x: playerX + Math.cos(angle) * PLAYER_RADIUS,
-    y: playerY + Math.sin(angle) * PLAYER_RADIUS,
-  });
-  const tip = pointOnHull(triangleTipAngle);
-  const baseLeft = pointOnHull(baseLeftAngle);
-  const baseRight = pointOnHull(baseRightAngle);
-
-  context.beginPath();
-  context.moveTo(tip.x, tip.y);
-  context.lineTo(baseLeft.x, baseLeft.y);
-  context.lineTo(baseRight.x, baseRight.y);
-  context.closePath();
-  context.fillStyle = LCARS_GOLD;
-  context.fill();
-
-  context.beginPath();
-  context.moveTo(tip.x, tip.y);
-  context.lineTo(playerX, playerY);
-  context.strokeStyle = LCARS_CORAL;
-  context.lineWidth = 2;
-  context.stroke();
+  drawStarship();
 
   drawSparks();
 
@@ -2692,7 +2751,7 @@ function drawFlightControls(width) {
       LCARS_LAVENDER,
       pressedKeys.has("KeyD") || pressedKeys.has("ArrowRight"),
     ],
-    [FIRE_KEY_LABEL, "SHOOT", LCARS_AMBER, pressedKeys.has(FIRE_KEY)],
+    [FIRE_KEY_LABEL, "PHASERS", LCARS_AMBER, pressedKeys.has(FIRE_KEY)],
   ];
 
   drawFlightControlButton(
@@ -2700,7 +2759,7 @@ function drawFlightControls(width) {
     LCARS_CONSOLE_TOP,
     titleWidth * rowScale,
     buttonHeight,
-    "FLIGHT CONTROL",
+    "HELM CONTROL",
     autopilotEnabled ? "AUTOPILOT" : "MANUAL HELM",
     autopilotEnabled ? LCARS_AMBER : LCARS_LILAC,
     autopilotEnabled,
@@ -2917,7 +2976,7 @@ function drawPauseHelp(width, height) {
   context.textBaseline = "middle";
   context.fillStyle = LCARS_GOLD;
   context.font = `800 32px ${LCARS_FONT_FAMILY}`;
-  context.fillText("PAUSED", HELP_PANEL_WIDTH / 2, 82);
+  context.fillText("SIMULATION PAUSED", HELP_PANEL_WIDTH / 2, 82);
   context.fillStyle = LCARS_LILAC;
   context.font = `600 18px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(

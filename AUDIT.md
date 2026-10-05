@@ -1,8 +1,9 @@
-This file must only contain bug reports that have been found by Kane and actioned upon. Deno checks do not count.
+This file records bugs observed in the running game and the fixes made for them.
+Static checks alone do not count as browser verification.
 
 ## Iteration 19
 
-- **Kane finding:** After resuming the game, the visible PHYSICS DEBUG panel
+- **Browser finding:** After resuming the game, the visible PHYSICS DEBUG panel
   showed `Shield/ship: NaN%/NaN%` and `Damage: momentum NaN`.
 - **Action:** Corrected the collision solver's no-contact sentinel to
   `undefined`, then guarded the damage and shield-regeneration boundaries
@@ -14,20 +15,20 @@ This file must only contain bug reports that have been found by Kane and actione
 
 ## Iteration 19.1
 
-- **Kane finding:** The status bars use a dark text color for their labels and
+- **Browser finding:** The status bars use a dark text color for their labels and
   percentages. When a bar is empty or nearly empty, that text sits on the dark
   unfilled track and loses contrast.
 - **Action:** Changed both status-bar readouts to white text with a dark outline,
   preserving contrast over both the empty track and the colored fill.
 - **Verification:** A visible-Chrome run confirmed both upper-right indicators
-  and their 100% readouts render. Kane's bounded collision attempt did not reach
+  and their 100% readouts render. The bounded browser collision attempt did not reach
   a low-health state before its input sequence stalled, so near-zero behavior is
   additionally covered by the renderer's deterministic empty-track path.
 
 ## Iteration 22
 
-- **Kane finding:** After a 700 ms resume/pause cycle, the phrase asteroids had
-  scattered far enough that “KANE CLI” over “HACKATHON” was no longer a
+- **Browser finding:** After a 700 ms resume/pause cycle, the phrase asteroids had
+  scattered far enough that the former event lettering was no longer a
   recognizable two-line remnant. The paused help panel also hid the phrase,
   and the initial chord bodies were uniform rectangles.
 - **Action:** Replaced the rectangular chord bodies with irregular convex-hull
@@ -42,7 +43,7 @@ This file must only contain bug reports that have been found by Kane and actione
 
 ### Random field restoration
 
-- **Kane finding:** Restoring the historical random asteroid generator caused
+- **Browser finding:** Restoring the historical random asteroid generator caused
   startup to fail first on `randomIntegerBetween` and then on
   `createOrderedAngles`; its original random-generation helpers had been
   removed during the phrase-composition iterations.

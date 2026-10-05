@@ -1,21 +1,11 @@
 # Only Vibes
 
-A classic single-page Asteroids game in pure HTML and JavaScript, with an LCARS-inspired interface and code that boldly goes wherever the prompt takes it.
-
-This project was made for the [Kane CLI Hackathon](https://luma.com/kanecli-online).
+A Starfleet tactical training simulator built as a classic single-page Asteroids
+game in pure HTML and JavaScript. Take the helm of a saucer-and-nacelles
+starship, fire phaser pulses, and clear the sector through an LCARS-inspired
+bridge console.
 
 ![Only Vibes screenshot](screenshot.png)
-
-> [!IMPORTANT]
-> **The code quality is by no means attributed to me.** It is **146% vibe-coded for purpose**.
-> The point of this project
-> was the full loop: automated development, browser-based verification, and
-> iterating on what the running game actually did. The implementation is the
-> artifact of that loop.
-
-> [!CAUTION]
-> The game works best in Google Chrome because Kane CLI's browser automation
-> and verification workflow is tied to Chrome.
 
 ## Play
 
@@ -23,13 +13,13 @@ Play the hosted version on [GitHub Pages](https://eigenein.github.io/only-vibes/
 
 ### Controls
 
-| Key | Action |
-| --- | --- |
-| `SPACE` | Shoot |
-| `W` / `S` | Thrust / brake |
+| Key       | Action                             |
+| --------- | ---------------------------------- |
+| `SPACE`   | Fire phaser pulses                 |
+| `W` / `S` | Thrust / brake                     |
 | `A` / `D` | Turn counter-clockwise / clockwise |
-| `P` | Pause / resume |
-| `T` | Toggle autopilot |
+| `P`       | Pause / resume                     |
+| `T`       | Toggle autopilot                   |
 
 ### Shield and hull
 
@@ -52,6 +42,5 @@ Redder asteroids are heavier and hit harder. Fire at will. Keep the hull operati
 - Web fonts loaded from Google Fonts
 
 All gameplay code lives in [`index.js`](index.js); [`index.html`](index.html)
-is intentionally minimal. The JavaScript is also a roughly 5,000-line,
-gloriously non-refactored monument to shipping the full loop first and
-asking architectural questions later.
+is intentionally minimal. The starfield and ship silhouette are drawn with
+cached canvas paths; all rendering uses the Canvas 2D API.
