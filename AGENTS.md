@@ -39,9 +39,6 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 
 # How to verify
 
-- Must verify all changes and bug fixes immediately with `kane-cli` skill.
-- Must fix all bugs reported by `kane-cli` skill immediately without prompting.
-- Must invoke `kane-cli` skill in a new visible Google Chrome.
 - Must not spin web server.
 - Must load `index.html` directly in browser.
 - May toggle the debug interface at own discretion.
@@ -49,10 +46,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must declutter the debug interface before adding new items.
 - Must not display any debug elements when the debug UI is off.
 - May add debug console output.
-- Must prefer Kane CLI to Node VM or `deno eval` or Chrome DevTools.
-- Must document actionable Kane bug findings that resulted in code changes in `AUDIT.md`.
 - Must not rely merely on code analysis.
 - Must use W/A/S/D keys instead of the arrow keys when the spaceship control is needed.
-- May temporarily change the code to isolate certain behavior; must revert it back when done.
+- May temporarily change the code to isolate certain behaviour; must revert it back when done.
 - Must verify on different browser window sizes.
-- Must tell Kane exactly what must be verified.

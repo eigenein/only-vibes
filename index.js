@@ -1691,13 +1691,29 @@ function updateBulletFiring(deltaTime) {
 function resizeCanvas() {
   const { width, height } = canvas.getBoundingClientRect();
   const pixelRatio = window.devicePixelRatio || 1;
+  const bufferWidth = Math.round(width * pixelRatio);
+  const bufferHeight = Math.round(height * pixelRatio);
+
+  // Layout notifications can repeat without changing the drawing surface.
+  // Avoid clearing its state and rebuilding wall gradients unnecessarily.
+  if (
+    width <= 0 ||
+    height <= 0 ||
+    (width === viewportWidth &&
+      height === viewportHeight &&
+      canvas.width === bufferWidth &&
+      canvas.height === bufferHeight)
+  ) {
+    return;
+  }
+
   const gameplayHeight = gameplayHeightForViewport(height);
 
   viewportWidth = width;
   viewportHeight = height;
 
-  canvas.width = Math.round(width * pixelRatio);
-  canvas.height = Math.round(height * pixelRatio);
+  canvas.width = bufferWidth;
+  canvas.height = bufferHeight;
   context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
   // Resizing resets the canvas state and changes gradient coordinates. The
   // next draw lazily rebuilds this presentation-only cache once.
@@ -4834,6 +4850,26 @@ document.addEventListener("keyup", (event) => {
 
 window.addEventListener("blur", clearPressedKeys);
 
-window.addEventListener("resize", resizeCanvas);
-resizeCanvas();
-window.requestAnimationFrame(animate);
+/**
+ * Start with the styled canvas dimensions, then follow element layout changes.
+ * A cold load can expose the canvas's default 300-by-150 size before the page
+ * settles. Caching that size stretches the whole HUD and seeds a tiny arena.
+ * Waiting for load avoids generating that world; observing the canvas catches
+ * later layout changes even when no window resize event accompanies them.
+ * @returns {void}
+ */
+function startGame() {
+  const canvasResizeObserver = new ResizeObserver(resizeCanvas);
+  canvasResizeObserver.observe(canvas);
+  // Retain the window event for display-density changes, which can require a
+  // new drawing buffer without changing the canvas's CSS dimensions.
+  window.addEventListener("resize", resizeCanvas);
+  resizeCanvas();
+  window.requestAnimationFrame(animate);
+}
+
+if (document.readyState === "complete") {
+  startGame();
+} else {
+  window.addEventListener("load", startGame, { once: true });
+}
