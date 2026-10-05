@@ -142,6 +142,12 @@ const RED_ALERT_EDGE_GAP = 12;
 // Sound effects retain a small number of independent voices so a rapid burst
 // of shots or impacts does not cut off the sound that preceded it.
 const SOUND_EFFECT_VOICE_COUNT = 3;
+// Give the audio thread a full second to advance before replacing a stalled
+// mixer. This tolerates scheduling delays and reduced timer precision.
+const SOUND_RECOVERY_CHECK_MILLISECONDS = 1000;
+// A gap this long between frames can indicate sleep even when the page stays
+// visible and the browser emits neither focus nor audio-state events.
+const SOUND_WAKE_GAP_MILLISECONDS = 2000;
 // Gzip/base64 copies of the original sounds/*.wav bytes let Web Audio decode
 // effects even on file://, where browsers block fetching local audio bytes.
 // Compression keeps this direct-file compatibility cost bounded. Regenerate
@@ -463,6 +469,7 @@ class SoundEffect {
   playRandom() {
     // Skip unavailable effects rather than delaying or queuing gameplay sounds.
     if (soundContext.state !== "running") {
+      resumeSound();
       return;
     }
 
@@ -504,11 +511,104 @@ class SoundEffect {
     variant.voices.push(voice);
     voice.start();
   }
+
+  /**
+   * Discard active voices before replacing their mixer. Decoded samples survive
+   * recovery, but old shots and impacts must never replay after waking up.
+   * @returns {void}
+   */
+  stopVoices() {
+    for (const variant of this.variants) {
+      for (const voice of variant.voices) {
+        voice.stop();
+        voice.disconnect();
+      }
+      variant.voices.length = 0;
+    }
+  }
 }
 
 // One context serves all variants; decoding can finish while the opening help
 // is visible. Interactive latency suits shots and impacts rather than streams.
-const soundContext = new AudioContext({ latencyHint: "interactive" });
+let soundContext = new AudioContext({ latencyHint: "interactive" });
+let soundUnlocked = false;
+/** @type {number | null} */
+let soundRecoveryTimer = null;
+// Only one replacement is allowed until a gesture or wake event retries, so
+// an ongoing system interruption cannot repeatedly create audio contexts.
+let soundContextRebuilt = false;
+
+/**
+ * Resume interrupted audio and check its clock, including contexts that still
+ * report "running" after sleep but no longer process their scheduled sources.
+ * One watchdog bounds pending resume promises; gameplay never waits for audio.
+ * @returns {void}
+ */
+function resumeSound() {
+  if (!soundUnlocked || document.hidden || soundRecoveryTimer !== null) {
+    return;
+  }
+
+  const recoveringContext = soundContext;
+  const audioTime = recoveringContext.currentTime;
+  if (
+    recoveringContext.state !== "running" &&
+    recoveringContext.state !== "closed"
+  ) {
+    void recoveringContext.resume().catch(() => undefined);
+  }
+
+  soundRecoveryTimer = window.setTimeout(() => {
+    soundRecoveryTimer = null;
+    if (document.hidden || soundContext !== recoveringContext) {
+      return;
+    }
+    if (
+      recoveringContext.state === "running" &&
+      recoveringContext.currentTime > audioTime
+    ) {
+      soundContextRebuilt = false;
+      return;
+    }
+    if (soundContextRebuilt) {
+      return;
+    }
+
+    // A stuck resume promise or frozen clock needs a fresh output connection.
+    // AudioBuffers are reusable across contexts, so recovery needs no fetch or
+    // decoding and leaves the current game and paused-help screen intact.
+    soundContextRebuilt = true;
+    recoveringContext.removeEventListener("statechange", resumeSound);
+    for (const effect of soundEffects) {
+      effect.stopVoices();
+    }
+    soundContext = new AudioContext({ latencyHint: "interactive" });
+    soundContext.addEventListener("statechange", resumeSound);
+    if (recoveringContext.state !== "closed") {
+      void recoveringContext.close().catch(() => undefined);
+    }
+    resumeSound();
+  }, SOUND_RECOVERY_CHECK_MILLISECONDS);
+}
+
+/**
+ * Retry on return to the page or a player gesture. Invoke resume synchronously
+ * inside gestures even if an earlier autoplay-blocked resume is still pending.
+ * @returns {void}
+ */
+function recoverSound() {
+  soundContextRebuilt = false;
+  if (
+    soundUnlocked &&
+    !document.hidden &&
+    soundRecoveryTimer !== null &&
+    soundContext.state !== "running" &&
+    soundContext.state !== "closed"
+  ) {
+    void soundContext.resume().catch(() => undefined);
+  }
+  resumeSound();
+}
 
 /**
  * Resume the mixer inside a player gesture, respecting browser autoplay rules.
@@ -516,12 +616,15 @@ const soundContext = new AudioContext({ latencyHint: "interactive" });
  * @returns {void}
  */
 function unlockSound() {
-  if (soundContext.state !== "running" && soundContext.state !== "closed") {
-    void soundContext.resume().catch(() => undefined);
-  }
+  soundUnlocked = true;
+  recoverSound();
 }
 
+soundContext.addEventListener("statechange", resumeSound);
 canvas.addEventListener("pointerdown", unlockSound);
+window.addEventListener("focus", recoverSound);
+window.addEventListener("pageshow", recoverSound);
+document.addEventListener("visibilitychange", recoverSound);
 
 const heavyShotSound = new SoundEffect(
   HEAVY_SHOT_SOUND_SOURCES,
@@ -531,6 +634,13 @@ const empSound = new SoundEffect(EMP_SOUND_SOURCES, SOUND_EFFECT_VOICE_COUNT);
 const redAlertSound = new SoundEffect([RED_ALERT_SOUND_SOURCE], 1);
 const winSound = new SoundEffect([WIN_SOUND_SOURCE], 1);
 const defeatSound = new SoundEffect([DEFEAT_SOUND_SOURCE], 1);
+const soundEffects = [
+  heavyShotSound,
+  empSound,
+  redAlertSound,
+  winSound,
+  defeatSound,
+];
 
 function randomBetween(minimum, maximum) {
   return minimum + Math.random() * (maximum - minimum);
@@ -4840,6 +4950,12 @@ function updateGame(deltaTime, width, height) {
  * @returns {void}
  */
 function animate(frameTime) {
+  if (
+    previousFrameTime !== undefined &&
+    frameTime - previousFrameTime > SOUND_WAKE_GAP_MILLISECONDS
+  ) {
+    recoverSound();
+  }
   const deltaTime =
     previousFrameTime === undefined
       ? 0
