@@ -109,6 +109,17 @@ const FLIGHT_CONTROL_ACTIVE_INSET = 4;
 const SHIELD_MAX_STATE = 100;
 const SHIP_MAX_STATE = 100;
 const SHIELD_REGENERATION_RATE = 7.5;
+// The shield always encloses the physical collision body. Charge changes its
+// LCARS color and strength, never its radius or coverage. Color blends through
+// amber at half charge to red at one quarter; a depleted rim remains visible.
+const SHIELD_WARNING_RATIO = 0.5;
+const SHIELD_CRITICAL_RATIO = 0.25;
+const SHIELD_RIM_WIDTH = 3;
+const SHIELD_DEPLETED_OPACITY = 0.28;
+// A broad, faint stroke suggests a force field without expensive shadow blur
+// or animated particles. Its halo disappears completely at zero charge.
+const SHIELD_HALO_WIDTH = 9;
+const SHIELD_HALO_OPACITY = 0.12;
 const COLLISION_DAMAGE_SCALE = 1 / 7500;
 const SHIELD_DAMAGE_COEFFICIENT = 1.1;
 const SHIP_DAMAGE_COEFFICIENT = 1.0;
@@ -349,7 +360,7 @@ const PLAY_HELP = Object.freeze([
   }),
   Object.freeze({
     label: AUTOPILOT_TOGGLE_KEY_LABEL,
-    description: "autopilot on / off",
+    description: "autopilot on / off; manual input cancels",
   }),
   Object.freeze({
     label: "COLOR",
@@ -2704,6 +2715,29 @@ function createStarfieldPaths(width, height) {
 }
 
 /**
+ * Blend the shield's LCARS colors continuously so damage and regeneration do
+ * not cause abrupt warning-color switches. Inputs are six-digit hex colors.
+ * @param {string} fromColor Color at the lower charge endpoint.
+ * @param {string} toColor Color at the upper charge endpoint.
+ * @param {number} fraction Blend amount between zero and one.
+ * @returns {string} Canvas-compatible RGB color.
+ */
+function blendShieldColors(fromColor, toColor, fraction) {
+  const from = Number.parseInt(fromColor.slice(1), 16);
+  const to = Number.parseInt(toColor.slice(1), 16);
+  /**
+   * @param {number} shift Bit offset of the red, green, or blue channel.
+   * @returns {number} Blended eight-bit channel value.
+   */
+  const blendChannel = (shift) => {
+    const start = (from >> shift) & 255;
+    const end = (to >> shift) & 255;
+    return Math.round(start + (end - start) * fraction);
+  };
+  return `rgb(${blendChannel(16)}, ${blendChannel(8)}, ${blendChannel(0)})`;
+}
+
+/**
  * Render the starship inside its circular collision shield. Cached normalized
  * paths avoid per-frame geometry allocations; the coral bow marker makes
  * heading readable even when the saucer is seen among asteroid fragments.
@@ -2712,12 +2746,35 @@ function createStarfieldPaths(width, height) {
 function drawStarship() {
   context.save();
   context.translate(playerX, playerY);
+  // Share the HUD's animated charge so both indicators agree during impacts.
+  // The whole rim changes together: missing arcs would imply a physical gap.
+  const shieldRatio = Math.max(
+    0,
+    Math.min(1, displayedShieldState / SHIELD_MAX_STATE),
+  );
+  const healthy = shieldRatio > SHIELD_WARNING_RATIO;
+  const colorFraction = healthy
+    ? (shieldRatio - SHIELD_WARNING_RATIO) / (1 - SHIELD_WARNING_RATIO)
+    : Math.max(
+        0,
+        (shieldRatio - SHIELD_CRITICAL_RATIO) /
+          (SHIELD_WARNING_RATIO - SHIELD_CRITICAL_RATIO),
+      );
+  context.strokeStyle = blendShieldColors(
+    healthy ? LCARS_AMBER : LCARS_ALERT_RED,
+    healthy ? LCARS_LILAC : LCARS_AMBER,
+    colorFraction,
+  );
   context.beginPath();
   context.arc(0, 0, PLAYER_RADIUS, 0, Math.PI * 2);
-  context.strokeStyle =
-    shieldState > 0 ? LCARS_LILAC : "rgba(153, 153, 255, 0.3)";
-  context.lineWidth = 3;
+  context.globalAlpha = SHIELD_HALO_OPACITY * shieldRatio;
+  context.lineWidth = SHIELD_HALO_WIDTH;
   context.stroke();
+  context.globalAlpha =
+    SHIELD_DEPLETED_OPACITY + (1 - SHIELD_DEPLETED_OPACITY) * shieldRatio;
+  context.lineWidth = SHIELD_RIM_WIDTH;
+  context.stroke();
+  context.globalAlpha = 1;
 
   context.rotate(playerAngle);
   context.scale(PLAYER_RADIUS, PLAYER_RADIUS);
@@ -3248,12 +3305,12 @@ function drawPauseHelp(width, height) {
   context.fillStyle = LCARS_MUTED_TEXT;
   context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
-    "Shield regenerates; hull damage persists.",
+    "Shield ring: lilac → amber → red as charge falls.",
     HELP_PANEL_WIDTH / 2,
     434,
   );
   context.fillText(
-    "Walls damage the ship. Manual input disables autopilot.",
+    "Shields regenerate; hull damage persists. Walls hurt.",
     HELP_PANEL_WIDTH / 2,
     464,
   );
