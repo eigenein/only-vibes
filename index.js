@@ -307,12 +307,14 @@ const AIM_ASSIST_MARKER_RADIUS = 11;
 const AIM_ASSIST_MARKER_GAP = 4;
 const AIM_ASSIST_TARGET_PADDING = 7;
 
-// Autopilot is deliberately an input producer rather than a second gameplay
-// implementation. It only contributes the same held controls a player can
-// use, which keeps thrust, turning, firing, recoil, and collision handling on
-// the normal gameplay paths.
+// Autopilot and auto-gunner independently produce the same held controls a
+// player can use. Enabling both preserves the original navigation and burst
+// algorithms, with movement, recoil, and collisions on normal gameplay paths.
 const AUTOPILOT_TOGGLE_KEY = "KeyT";
 const AUTOPILOT_TOGGLE_KEY_LABEL = "T";
+// Auto-gunner independently contributes Space through the normal weapon gates.
+const AUTO_GUNNER_TOGGLE_KEY = "KeyG";
+const AUTO_GUNNER_TOGGLE_KEY_LABEL = "G";
 // Predict linear encounters for this many seconds; wall bounces are left to
 // the normal solver and the next decision rather than speculative ricochets.
 const AUTOPILOT_MAX_LOOKAHEAD_SECONDS = 1.8;
@@ -339,7 +341,7 @@ const AUTOPILOT_CLOSE_RANGE = 55;
 const AUTOPILOT_CLOSE_SPEED = 230;
 // Voluntarily save heat between bursts. This is an AI tactical choice; the
 // shared weapon gate still accepts any player shot below overheat.
-const AUTOPILOT_BURST_START_HEAT_RATIO = 0.25;
+const AUTO_GUNNER_BURST_START_HEAT_RATIO = 0.25;
 const AUTOPILOT_ATTACK_COMMITMENT_SECONDS = 1.2;
 const AUTOPILOT_ATTACK_PROBABILITY = 0.9;
 const AUTOPILOT_ATTACK_SHIELD_EXPONENT = 2;
@@ -380,7 +382,7 @@ const AUTOPILOT_TURN_START_TOLERANCE = Math.PI / 180;
 // to satisfy a minimum hold duration; navigation and firing stay independent.
 const AUTOPILOT_TURN_REACTION_SECONDS = 0.2;
 // Aim inside the collision circle rather than merely inside a broad cone.
-const AUTOPILOT_FIRE_RADIUS_RATIO = 0.9;
+const AUTO_GUNNER_FIRE_RADIUS_RATIO = 0.9;
 
 // Sparks turn dissipated kinetic energy into a readable, non-gameplay visual.
 // One spark represents a fixed slice of energy so larger impacts create denser
@@ -430,7 +432,11 @@ const PLAY_HELP = Object.freeze([
   }),
   Object.freeze({
     label: AUTOPILOT_TOGGLE_KEY_LABEL,
-    description: "autopilot: close + burst + ram; manual cancels",
+    description: "autopilot: fly + ram; helm cancels",
+  }),
+  Object.freeze({
+    label: AUTO_GUNNER_TOGGLE_KEY_LABEL,
+    description: "auto-gunner: bursts; Space cancels",
   }),
   Object.freeze({
     label: AIM_ASSIST_TOGGLE_KEY_LABEL,
@@ -444,7 +450,7 @@ const PLAY_HELP = Object.freeze([
 const HELP_PANEL_WIDTH = 540;
 // Fit the essential controls, objective, and survival rules without turning the
 // pause screen into a complete mechanics reference.
-const HELP_PANEL_HEIGHT = 572;
+const HELP_PANEL_HEIGHT = 614;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -616,6 +622,7 @@ const manualTurnControl = new ManualTurnControl();
 const pressedKeys = new Set();
 const manualPressedKeys = new Set();
 const autopilotPressedKeys = new Set();
+const autoGunnerPressedKeys = new Set();
 const asteroids = [];
 const bullets = [];
 const sparks = [];
@@ -771,8 +778,7 @@ let asteroidsGenerated = false;
 let gamePaused = true;
 // Autopilot starts off for predictable player-first startup. Its state is
 // retained across automatic life restarts so a long demonstration can keep
-// playing after an allowed collision, while any gameplay key immediately
-// turns it off.
+// playing after an allowed collision; manual helm input turns it off.
 let autopilotEnabled = false;
 let autopilotTargetLock = undefined;
 let autopilotDesiredAngle = 0;
@@ -782,7 +788,9 @@ let autopilotTargetLockTimeRemaining = 0;
 let autopilotDecisionTime = 0;
 let autopilotAttackTimeRemaining = 0;
 let autopilotAttackRoll = 1;
-let autopilotBurstActive = false;
+// Both modes start disabled and retain their settings across life restarts.
+let autoGunnerEnabled = false;
+let autoGunnerBurstActive = false;
 // Points reset with each field; session achievements independently survive wins.
 // Points measure material that really leaves the playfield. A successful cut
 // preserves area across its retained fragments, while fragments below the
@@ -1733,7 +1741,7 @@ function updateSparks(deltaTime) {
 }
 
 /**
- * Rebuild the effective held-key state from its two legitimate producers.
+ * Rebuild the effective held-key state from its independent input producers.
  * Keeping manual and autopilot keys separate lets a human input disable the
  * autopilot without allowing one producer to forge the other producer's
  * events. Settle manual turn timing at each edge; the combined held-key set
@@ -1757,10 +1765,13 @@ function syncPressedKeys() {
   for (const key of autopilotPressedKeys) {
     pressedKeys.add(key);
   }
+  for (const key of autoGunnerPressedKeys) {
+    pressedKeys.add(key);
+  }
 }
 
 /**
- * Clear both input sources. This is used for pause, focus loss, and life
+ * Clear all input sources. This is used for pause, focus loss, and life
  * transitions so no stale held key can survive a state boundary.
  * @returns {void}
  */
@@ -1771,25 +1782,31 @@ function clearPressedKeys() {
   aimAssist.reset();
   manualPressedKeys.clear();
   autopilotPressedKeys.clear();
+  autoGunnerPressedKeys.clear();
   pressedKeys.clear();
 }
 
 /**
- * Disable autopilot because a player supplied a gameplay input.
+ * Return the corresponding automated control to the player.
+ * @param {string} controlKey Manual flight or firing control supplied.
  * @returns {void}
  */
-function disableAutopilotForManualInput() {
-  if (!autopilotEnabled) {
-    return;
+function disableAutomationForManualInput(controlKey) {
+  // Manual helm overrides only piloting; manual fire overrides only gunnery.
+  // This lets the player fly with automatic shots or fire during autopilot.
+  if (controlKey === FIRE_KEY) {
+    autoGunnerEnabled = false;
+    autoGunnerBurstActive = false;
+    autoGunnerPressedKeys.clear();
+  } else {
+    autopilotEnabled = false;
+    autopilotPressedKeys.clear();
   }
-
-  autopilotEnabled = false;
-  autopilotPressedKeys.clear();
   syncPressedKeys();
 }
 
 /**
- * Toggle autopilot and reset the input edge state. T itself is a mode
+ * Toggle autopilot and reset the flight input edge state. T itself is a mode
  * control, not one of the simulated gameplay inputs, so it is never added to
  * either held-key set.
  * @returns {void}
@@ -1801,16 +1818,34 @@ function toggleAutopilot() {
   autopilotTargetLockTimeRemaining = 0;
   autopilotAttackTimeRemaining = 0;
   autopilotAttackRoll = 1;
-  autopilotBurstActive = false;
   autopilotDecisionTime = autopilotEnabled ? AUTOPILOT_UPDATE_INTERVAL : 0;
-  clearPressedKeys();
+  autopilotTurnDirection = 0;
+  autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
+  manualTurnControl.reset();
+  aimAssist.reset();
+  for (const key of manualPressedKeys) {
+    if (key !== FIRE_KEY) manualPressedKeys.delete(key);
+  }
+  autopilotPressedKeys.clear();
+  syncPressedKeys();
+}
+
+/**
+ * Toggle automatic firing without changing helm or manual input state.
+ * @returns {void}
+ */
+function toggleAutoGunner() {
+  autoGunnerEnabled = !autoGunnerEnabled;
+  autoGunnerBurstActive = false;
+  autoGunnerPressedKeys.clear();
+  syncPressedKeys();
 }
 
 /**
  * Supply the autopilot's current held controls through the same set consumed
  * by normal movement and firing. No ship, asteroid, health, or bullet state
  * is changed here.
- * @param {Iterable<string>} keys W/A/S/D/Space controls to hold.
+ * @param {Iterable<string>} keys W/A/S/D flight controls to hold.
  * @returns {void}
  */
 function setAutopilotInput(keys) {
@@ -2040,7 +2075,7 @@ function autopilotTarget(deltaTime) {
  * that a fixed angular cone would miss or over-lead.
  * @returns {boolean} Whether a direct shot has a useful predicted contact.
  */
-function autopilotHasShot() {
+function autoGunnerHasShot() {
   const directionX = Math.cos(playerAngle);
   const directionY = Math.sin(playerAngle);
   const muzzle = PLAYER_RADIUS + BULLET_HALF_LENGTH;
@@ -2058,7 +2093,7 @@ function autopilotHasShot() {
       continue;
     }
     const clearance =
-      asteroid.radius * AUTOPILOT_FIRE_RADIUS_RATIO + BULLET_HALF_LENGTH;
+      asteroid.radius * AUTO_GUNNER_FIRE_RADIUS_RATIO + BULLET_HALF_LENGTH;
     if (
       (x + velocityX * time) ** 2 + (y + velocityY * time) ** 2 <=
       clearance ** 2
@@ -2389,26 +2424,28 @@ function updateAutopilotInput(deltaTime, width, height) {
  * a newly aligned rock can be engaged on the very same simulation step.
  * @returns {void}
  */
-function updateAutopilotFiring() {
-  if (!autopilotEnabled || gamePaused || shipFailureActive || gameWon) {
+function updateAutoGunnerFiring() {
+  if (!autoGunnerEnabled || gamePaused || shipFailureActive || gameWon) {
+    autoGunnerPressedKeys.clear();
+    syncPressedKeys();
     return;
   }
   // Finishing a burst is useful; dribbling hot shots forever is inefficient.
   // Cool while navigating to the next attack, then spend that heat on a burst.
   if (phaserHeat >= PHASER_OVERHEAT_THRESHOLD) {
-    autopilotBurstActive = false;
+    autoGunnerBurstActive = false;
   }
-  const hasShot = autopilotHasShot();
+  const hasShot = autoGunnerHasShot();
   if (
     hasShot &&
-    phaserHeat <= PHASER_OVERHEAT_THRESHOLD * AUTOPILOT_BURST_START_HEAT_RATIO
+    phaserHeat <= PHASER_OVERHEAT_THRESHOLD * AUTO_GUNNER_BURST_START_HEAT_RATIO
   ) {
-    autopilotBurstActive = true;
+    autoGunnerBurstActive = true;
   }
-  if (hasShot && autopilotBurstActive) {
-    autopilotPressedKeys.add(FIRE_KEY);
+  if (hasShot && autoGunnerBurstActive) {
+    autoGunnerPressedKeys.add(FIRE_KEY);
   } else {
-    autopilotPressedKeys.delete(FIRE_KEY);
+    autoGunnerPressedKeys.delete(FIRE_KEY);
   }
   syncPressedKeys();
 }
@@ -2416,7 +2453,7 @@ function updateAutopilotFiring() {
 /**
  * Request one pulse through the shared cadence and heat gates. Heat may rise
  * above the limit with a shot, but firing resumes as soon as it drops below
- * that same limit. Taps and autopilot use precisely the same thermal rule.
+ * that same limit. Taps and auto-gunner use precisely the same thermal rule.
  * @returns {void}
  */
 function tryFireBullet() {
@@ -2648,7 +2685,7 @@ function restartGame(width, height) {
   autopilotTargetLockTimeRemaining = 0;
   autopilotAttackTimeRemaining = 0;
   autopilotAttackRoll = 1;
-  autopilotBurstActive = false;
+  autoGunnerBurstActive = false;
   autopilotDecisionTime = autopilotEnabled ? AUTOPILOT_UPDATE_INTERVAL : 0;
   asteroids.length = 0;
   asteroidsGenerated = false;
@@ -3393,7 +3430,7 @@ function drawFlightControls(width) {
     0,
     width - LCARS_FRAME_MARGIN * 2 - statusWidth - FLIGHT_CONTROL_GAP,
   );
-  const keyButtonCount = 8;
+  const keyButtonCount = 9;
   const desiredKeyWidth = FLIGHT_CONTROL_KEY_WIDTH;
   const rowScale = Math.min(
     1,
@@ -3405,8 +3442,14 @@ function drawFlightControls(width) {
   const buttonHeight = STATUS_POINTS_HEIGHT;
   let buttonX = LCARS_FRAME_MARGIN;
   const controls = [
-    ["T", "AUTOPILOT", LCARS_AMBER, autopilotEnabled],
-    ["P", "PAUSE", LCARS_CORAL, gamePaused],
+    [AUTOPILOT_TOGGLE_KEY_LABEL, "AUTOPILOT", LCARS_AMBER, autopilotEnabled],
+    [
+      AUTO_GUNNER_TOGGLE_KEY_LABEL,
+      "AUTO-GUNNER",
+      LCARS_GOLD,
+      autoGunnerEnabled,
+    ],
+    [PAUSE_KEY_LABEL, "PAUSE", LCARS_CORAL, gamePaused],
     [AIM_ASSIST_TOGGLE_KEY_LABEL, "AIM ASSIST", LCARS_GOLD, aimAssist.enabled],
     [
       "W⏶",
@@ -3774,17 +3817,17 @@ function drawPauseHelp(width, height) {
   context.fillText(
     "Phasers always cut. Strong body hits split; light hits bounce.",
     HELP_PANEL_WIDTH / 2,
-    476,
+    518,
   );
   context.fillText(
     "Shield ring: lilac → amber → red as charge falls.",
     HELP_PANEL_WIDTH / 2,
-    506,
+    548,
   );
   context.fillText(
     "Shields regenerate; hull damage persists. Walls hurt.",
     HELP_PANEL_WIDTH / 2,
-    536,
+    578,
   );
   context.restore();
 }
@@ -5896,7 +5939,7 @@ function updateGame(deltaTime, width, height) {
   );
   applyPlayerBody(ship);
 
-  updateAutopilotFiring();
+  updateAutoGunnerFiring();
   updateBulletFiring(deltaTime);
   updateBullets(deltaTime);
   resolveBulletCollisions(width, height);
@@ -5986,6 +6029,15 @@ document.addEventListener("keydown", (event) => {
     return;
   }
 
+  if (event.code === AUTO_GUNNER_TOGGLE_KEY) {
+    if (!event.repeat) {
+      unlockSound();
+      toggleAutoGunner();
+    }
+    event.preventDefault();
+    return;
+  }
+
   if (event.code === PAUSE_KEY && !event.repeat) {
     unlockSound();
     if (gameWon) {
@@ -6016,7 +6068,7 @@ document.addEventListener("keydown", (event) => {
     unlockSound();
     event.preventDefault();
 
-    disableAutopilotForManualInput();
+    disableAutomationForManualInput(controlKey);
 
     if (gamePaused) {
       return;

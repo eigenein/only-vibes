@@ -28,6 +28,7 @@ Play the hosted version on [GitHub Pages](https://eigenein.github.io/only-vibes/
 | `A` / `D` | Turn counter-clockwise / clockwise |
 | `P`       | Pause / resume                     |
 | `T`       | Toggle autopilot                   |
+| `G`       | Toggle auto-gunner                 |
 | `M`       | Toggle Aim Assist                  |
 
 Tap `A` / `D` for fine heading adjustments. Hold to ramp up over 250 ms to
@@ -47,13 +48,16 @@ offset, and ignores future collisions. Unreachable targets have no crosshair;
 predictions outside the arena are clipped. Pausing or losing focus clears the
 lock; the enabled setting survives a new life.
 
-Autopilot (`T`) mixes close-range phaser attacks with interception and ramming.
+Autopilot (`T`) pilots close-range attack passes, interception, and ramming.
 Every 1.2 seconds it rolls for an attack pass: healthy shields favor closing
 within about 55 pixels of a target's surface for reliable shots, with the
 boldest passes continuing into contact. Low shields favor distance and
 regeneration; falling shields can abort a pass immediately. Hull damage
-moderates risk without permanently disabling attacks. It saves heat between
-bursts and brakes before walls. Manual flight or firing returns control to you.
+moderates risk without permanently disabling attacks. It brakes before walls. Manual flight cancels autopilot.
+
+Auto-gunner (`G`) independently fires when a shot will hit, saving heat between
+bursts. Manual firing cancels auto-gunner. Enable both modes to retain the
+original combined autopilot behavior.
 
 Phasers fire at eight pulses per second, with about eight shots in a cold
 burst lasting one second. Each shot adds slightly more heat the warmer the
@@ -61,7 +65,7 @@ phasers already are, so spacing bursts gives more firepower than holding
 Space continuously. Heat cools throughout play; release for roughly 2–3
 seconds to cool fully after overheating. You can fire again as soon as heat
 falls below overheat; there is no separate recovery threshold. Manual fire
-and autopilot share heat and cadence, which mode changes and pauses cannot
+and auto-gunner share heat and cadence, which mode changes and pauses cannot
 reset. The Space panel reads **PHASERS** when cool, then shows heat or the
 brief wait until firing becomes available.
 
