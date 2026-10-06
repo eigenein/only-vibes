@@ -215,6 +215,13 @@ const WINNING_ACHIEVEMENT_GLYPH = new Path2D(
     "M 18 18 H 9 V 25 Q 9 35 22 36 L 21 30 Q 15 29 15 24 V 23 H 19 Z " +
     "M 46 18 H 55 V 25 Q 55 35 42 36 L 43 30 Q 49 29 49 24 V 23 H 45 Z",
 );
+// A forward wedge and fractured rock make ramming recognizable in the same
+// flat, cached vector style as the trophy.
+const RAMMER_ACHIEVEMENT_GLYPH = new Path2D(
+  "M 8 23 H 24 V 15 L 42 32 L 24 49 V 41 H 8 Z " +
+    "M 46 12 L 57 18 L 53 29 L 45 25 Z " +
+    "M 46 35 L 56 34 L 59 45 L 48 53 L 42 44 Z",
+);
 const WIN_SCREEN_BACKDROP_ALPHA = 0.58;
 const WIN_SCREEN_TITLE = "SECTOR CLEAR";
 const WIN_SCREEN_REASON =
@@ -235,6 +242,12 @@ const SESSION_ACHIEVEMENTS = Object.freeze([
     title: "WINNING",
     glyph: WINNING_ACHIEVEMENT_GLYPH,
     color: LCARS_GOLD,
+  }),
+  Object.freeze({
+    id: "rammer",
+    title: "RAMMER",
+    glyph: RAMMER_ACHIEVEMENT_GLYPH,
+    color: LCARS_CORAL,
   }),
 ]);
 
@@ -344,7 +357,8 @@ const PLAY_HELP = Object.freeze([
   }),
 ]);
 const HELP_PANEL_WIDTH = 540;
-const HELP_PANEL_HEIGHT = 560;
+// Leave room for both achievement conditions and their reset rules.
+const HELP_PANEL_HEIGHT = 590;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -444,6 +458,11 @@ const sparks = [];
 // or a page reload. A Set prevents repeated wins from duplicating an unlock.
 /** @type {Set<string>} */
 const sessionAchievements = new Set();
+// Asteroids have no health pool: compare the impulse-based impact damage
+// delivered directly to them by each weapon in this field. Wall impacts,
+// asteroid-to-asteroid contacts, and damage received by the ship do not count.
+// Evaluate at victory so an early ram cannot win before later blaster hits.
+const fieldAsteroidDamage = { ramming: 0, blasters: 0 };
 let playerAngle = -Math.PI / 2;
 let playerVelocityX = 0;
 let playerVelocityY = 0;
@@ -2180,6 +2199,8 @@ function applyCollisionDamage(collisionMomentum) {
  */
 function restartGame(width, height) {
   sessionPoints = 0;
+  fieldAsteroidDamage.ramming = 0;
+  fieldAsteroidDamage.blasters = 0;
   playerX = width / 2;
   playerY = height / 2;
   playerAngle = 0;
@@ -2233,9 +2254,11 @@ function beginShipFailure() {
 }
 
 /**
- * Unlock Winning before displaying the session's achievements and final score
- * until the player starts another game. Keeping this separate from pause makes
- * the win screen a terminal gameplay state rather than a paused empty arena.
+ * Unlock completed challenges before displaying achievements and final score.
+ * Rammer requires strictly more ramming damage in the completed field; ties
+ * (including an empty comparison) never qualify. Earned badges survive wins.
+ * Keep the result visible until the player starts another field, separately
+ * from the ordinary pause state.
  * @returns {void}
  */
 function beginWin() {
@@ -2245,6 +2268,9 @@ function beginWin() {
 
   gameWon = true;
   sessionAchievements.add("winning");
+  if (fieldAsteroidDamage.ramming > fieldAsteroidDamage.blasters) {
+    sessionAchievements.add("rammer");
+  }
   gamePaused = true;
   winSound.playRandom();
   for (const bullet of bullets) {
@@ -2294,6 +2320,29 @@ function countVanishedAsteroidArea(asteroid, fragments) {
   const vanishedArea = Math.max(0, asteroid.surfaceArea - retainedArea);
 
   sessionPoints += vanishedArea;
+}
+
+/**
+ * Credit direct asteroid hits using the ship damage system's impulse scale.
+ * Use the uncapped impact value: shield absorption and the ship's protective
+ * contact budget describe damage received, not damage inflicted on a rock.
+ * @param {ContactResponse} response Impulse transferred during the hit.
+ * @param {"ramming" | "blasters"} source Attack responsible for the contact.
+ * @returns {void}
+ */
+function recordAsteroidDamage(response, source) {
+  const damage = contactImpulseMagnitude(response) * COLLISION_DAMAGE_SCALE;
+
+  if (!Number.isFinite(damage) || damage <= 0) {
+    return;
+  }
+
+  // Saturate totals rather than letting an extreme input poison the comparison
+  // with Infinity. Ordinary impacts remain far below this numeric boundary.
+  fieldAsteroidDamage[source] = Math.min(
+    Number.MAX_VALUE,
+    fieldAsteroidDamage[source] + damage,
+  );
 }
 
 /**
@@ -3201,14 +3250,19 @@ function drawPauseHelp(width, height) {
     464,
   );
   context.fillText(
-    "Win once for the Winning badge. Wins keep badges.",
+    "Winning: clear a field. Ramming breaks rocks.",
     HELP_PANEL_WIDTH / 2,
     494,
   );
   context.fillText(
-    "Death resets achievements; new fields reset the score.",
+    "Rammer: win with more ram than blaster damage.",
     HELP_PANEL_WIDTH / 2,
     524,
+  );
+  context.fillText(
+    "Wins keep badges; death resets them. Fields reset totals.",
+    HELP_PANEL_WIDTH / 2,
+    554,
   );
   context.restore();
 }
@@ -3883,40 +3937,36 @@ function segmentCircleIntersectionParameter(start, end, circle) {
 }
 
 /**
- * @param {Asteroid} asteroid
- * @param {PhysicsBody} bullet
- * @param {Vector2} hitPoint
- * @param {Vector2} [cutDirection]
- * @returns {Asteroid[]}
+ * Split a rock after the contact solver has transferred the impact impulse.
+ * Blasters cut along their incoming path; rams cut along the contact normal.
+ * Both attacks destroy terminal rocks and discard undersized fragments.
+ * @param {Asteroid} asteroid Rock whose post-impact motion fragments inherit.
+ * @param {Vector2} hitPoint Contact point through which the cut passes.
+ * @param {Vector2} cutDirection Unit direction of the impact's cut line.
+ * @returns {Asteroid[]} Fragments retained by the minimum-area rule.
  */
-function splitAsteroid(
-  asteroid,
-  bullet,
-  hitPoint,
-  cutDirection = normalizedVector(bullet.velocityX, bullet.velocityY),
-) {
+function splitAsteroid(asteroid, hitPoint, cutDirection) {
   if (asteroid.localVertices.length <= 3) {
     return [];
   }
 
   const asteroidVertices = asteroid.collisionPolygon();
-  const bulletDirection = cutDirection;
   let firstPolygon = clipPolygonByLine(
     asteroidVertices,
     hitPoint,
-    bulletDirection,
+    cutDirection,
     true,
   );
   let secondPolygon = clipPolygonByLine(
     asteroidVertices,
     hitPoint,
-    bulletDirection,
+    cutDirection,
     false,
   );
 
   // A tangent or a cut exactly through a vertex can create a zero-area side
   // because of floating-point boundaries. A line through the polygon's
-  // centroid is a deterministic fallback that still follows the bullet's
+  // centroid is a deterministic fallback that still follows the impact's
   // direction and guarantees two real fragments for a valid convex asteroid.
   if (
     firstPolygon.length < 3 ||
@@ -3928,13 +3978,13 @@ function splitAsteroid(
     firstPolygon = clipPolygonByLine(
       asteroidVertices,
       centroid,
-      bulletDirection,
+      cutDirection,
       true,
     );
     secondPolygon = clipPolygonByLine(
       asteroidVertices,
       centroid,
-      bulletDirection,
+      cutDirection,
       false,
     );
   }
@@ -3951,9 +4001,9 @@ function splitAsteroid(
   const firstArea = polygonArea(firstPolygon);
   const secondArea = polygonArea(secondPolygon);
   const totalArea = firstArea + secondArea;
-  // The bullet ricochets instead of being absorbed, so only the asteroid's
-  // mass is distributed across its two geometric fragments. The caller has
-  // already resolved the bullet/asteroid collision before this split.
+  // The impacting body rebounds instead of being absorbed, so only the rock's
+  // mass is distributed across its fragments. The contact solver has already
+  // transferred the impulse before this split.
   const totalMass = asteroid.mass;
   const firstMass = (totalMass * firstArea) / totalArea;
   const secondMass = (totalMass * secondArea) / totalArea;
@@ -3995,6 +4045,22 @@ function splitAsteroid(
   ]
     .filter(({ area }) => area >= ASTEROID_MIN_FRAGMENT_AREA)
     .map(({ asteroid: fragment }) => fragment);
+}
+
+/**
+ * Apply the same fragmentation and score rules to blaster hits and ramming.
+ * @param {number} asteroidIndex Index of the rock replaced by this impact.
+ * @param {Vector2} hitPoint Impact contact point in world coordinates.
+ * @param {Vector2} cutDirection Unit direction of the impact's cut line.
+ * @returns {Asteroid[]} Retained fragments now present in the field.
+ */
+function fragmentAsteroidAtImpact(asteroidIndex, hitPoint, cutDirection) {
+  const asteroid = asteroids[asteroidIndex];
+  const fragments = splitAsteroid(asteroid, hitPoint, cutDirection);
+
+  countVanishedAsteroidArea(asteroid, fragments);
+  asteroids.splice(asteroidIndex, 1, ...fragments);
+  return fragments;
 }
 
 function boundaryHit(start, end, width, height) {
@@ -4451,14 +4517,19 @@ function resolveBulletCollisions(width, height) {
           bullet.velocityX,
           bullet.velocityY,
         );
-        applyContactImpulse(asteroid, bullet, normal, hitPoint);
+        const response = applyContactImpulse(
+          asteroid,
+          bullet,
+          normal,
+          hitPoint,
+        );
+        recordAsteroidDamage(response, "blasters");
         bullet.syncAngle();
         if (canReflect) {
           bullet.recordReflection();
         }
-        const fragments = splitAsteroid(
-          asteroid,
-          bullet,
+        const fragments = fragmentAsteroidAtImpact(
+          hitAsteroidIndex,
           hitPoint,
           incomingDirection,
         );
@@ -4471,9 +4542,6 @@ function resolveBulletCollisions(width, height) {
         if (fragments.length === 0) {
           removedEnergy += bodyKineticEnergy(asteroid);
         }
-        countVanishedAsteroidArea(asteroid, fragments);
-        asteroids.splice(hitAsteroidIndex, 1, ...fragments);
-
         for (const fragment of fragments) {
           ignoredAsteroids.add(fragment);
         }
@@ -5064,16 +5132,45 @@ function resolveAsteroidCollisions() {
     }
   }
 
-  for (const asteroid of asteroids) {
+  // Walk backward so replacements neither skip original rocks nor allow a
+  // single contact to recursively shatter its new fragments in this step.
+  for (
+    let asteroidIndex = asteroids.length - 1;
+    asteroidIndex >= 0;
+    asteroidIndex -= 1
+  ) {
+    const asteroid = asteroids[asteroidIndex];
     if (!bodiesMayOverlap(ship, asteroid)) {
       continue;
     }
 
-    const response = resolveCollisionWithSparks(ship, asteroid);
+    const manifold = collisionManifold(ship, asteroid);
+
+    if (manifold === undefined) {
+      continue;
+    }
+
+    const beforeEnergy = bodyKineticEnergy(ship) + bodyKineticEnergy(asteroid);
+    const response = resolveCollision(ship, asteroid, manifold);
 
     if (response !== undefined) {
       applyCollisionDamage(contactImpulseMagnitude(response));
       if (response.normalImpulse > COLLISION_EPSILON) {
+        recordAsteroidDamage(response, "ramming");
+        const fragments = fragmentAsteroidAtImpact(
+          asteroidIndex,
+          manifold.contactPoint,
+          manifold.normal,
+        );
+        const afterEnergy = fragments.reduce(
+          (energy, fragment) => energy + bodyKineticEnergy(fragment),
+          bodyKineticEnergy(ship),
+        );
+        // Disappearing rock energy joins the spark burst, just as for a shot.
+        emitSparksAt(
+          manifold.contactPoint,
+          interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
+        );
         empSound.playRandom();
       }
       applyShipCollisionAngleAdjustment(response);
