@@ -19,7 +19,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must use JSDoc to annotate type and purpose of the parameters; must properly format and respect the annotations.
 - Must document all world constants.
 - Must group all world constants.
-- Should comment on the purpose and choices made.
+- Must document the purpose and choices made.
 
 # Implementation instructions
 
@@ -43,10 +43,9 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must load `index.html` directly in browser.
 - May toggle the debug interface at own discretion.
 - May pause and resume the game at own discretion.
-- Must declutter the debug interface before adding new items.
-- Must not display any debug elements when the debug UI is off.
 - May add debug console output.
 - Must not rely merely on code analysis.
-- Must use W/A/S/D keys instead of the arrow keys when the spaceship control is needed.
 - May temporarily change the code to isolate certain behaviour; must revert it back when done.
-- Must verify on different browser window sizes.
+- Must verify on different browser window sizes when applicable.
+- May control the browser window.
+- Must not ask to control the computer.
