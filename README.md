@@ -78,6 +78,13 @@ brief wait until firing becomes available.
   while the game is running.
 - Hull damage does not regenerate during the current life.
 - Arena walls also damage the ship.
+- Yellow alert means shield and hull reserves cannot withstand four heavy
+  contacts: create space to recover shields. Red alert means two heavy contacts
+  could be fatal: avoid impacts. Alerts clear after two seconds of sustained
+  recovery with extra reserve; yellow sounds on entry, red sounds once per life.
+- Entering yellow or red enables aim assist; entering red also enables
+  autopilot. You can override these modes normally while the alert persists.
+  Recovery leaves them enabled.
 - When the hull reaches zero, the game briefly shows the failure state before
   starting a fresh life.
 
