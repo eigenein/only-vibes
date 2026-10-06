@@ -28,9 +28,24 @@ Play the hosted version on [GitHub Pages](https://eigenein.github.io/only-vibes/
 | `A` / `D` | Turn counter-clockwise / clockwise |
 | `P`       | Pause / resume                     |
 | `T`       | Toggle autopilot                   |
+| `M`       | Toggle Aim Assist                  |
 
 Tap `A` / `D` for fine heading adjustments. Hold to ramp up over 250 ms to
 the full turn rate of one revolution per second; release to stop turning.
+
+Aim Assist (`M`) starts disabled. Hold roughly the same heading for 0.5 seconds
+(within 45° of the starting heading) to lock the closest asteroid in a 90°
+sector around the nose. A live lock lasts at least 1 second, then releases when
+ship movement or rotation puts the target outside that sector. Closer asteroids
+do not steal a lock. When the locked target splits, the closest surviving
+fragment inherits the lock with a fresh 1-second commitment. Further splits
+keep following that fragment's descendants; destruction without survivors
+releases the lock.
+The gold ring identifies the target; aim at the gold crosshair to intercept its
+current straight-line motion. The prediction includes phaser speed and muzzle
+offset, and ignores future collisions. Unreachable targets have no crosshair;
+predictions outside the arena are clipped. Pausing or losing focus clears the
+lock; the enabled setting survives a new life.
 
 Autopilot (`T`) mixes close-range phaser attacks with interception and ramming.
 Every 1.2 seconds it rolls for an attack pass: healthy shields favor closing

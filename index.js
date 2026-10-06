@@ -292,6 +292,21 @@ const BULLET_LINE_WIDTH = 3;
 const MAX_BULLET_REFLECTIONS = 3;
 const BULLET_COLLISION_OFFSET = 0.01;
 
+// Aim assist advises the player without steering or changing phaser behavior.
+const AIM_ASSIST_TOGGLE_KEY = "KeyM";
+const AIM_ASSIST_TOGGLE_KEY_LABEL = "M";
+// A 90-degree sector accepts nearby headings; acquisition compares against a
+// fixed heading anchor so slow continuous rotation cannot accumulate dwell.
+const AIM_ASSIST_SECTOR_HALF_ANGLE = Math.PI / 4;
+const AIM_ASSIST_ACQUIRE_SECONDS = 0.5;
+// Keep a live target for at least one second, then release only outside the
+// current nose sector. A nearer arrival never steals an existing lock.
+const AIM_ASSIST_MIN_LOCK_SECONDS = 1;
+// CSS-pixel marker geometry stays legible independently of target size.
+const AIM_ASSIST_MARKER_RADIUS = 11;
+const AIM_ASSIST_MARKER_GAP = 4;
+const AIM_ASSIST_TARGET_PADDING = 7;
+
 // Autopilot is deliberately an input producer rather than a second gameplay
 // implementation. It only contributes the same held controls a player can
 // use, which keeps thrust, turning, firing, recoil, and collision handling on
@@ -412,6 +427,10 @@ const PLAY_HELP = Object.freeze([
     description: "autopilot: close + burst + ram; manual cancels",
   }),
   Object.freeze({
+    label: AIM_ASSIST_TOGGLE_KEY_LABEL,
+    description: "aim assist: lead crosshair; lock follows splits",
+  }),
+  Object.freeze({
     label: "COLOR",
     description: "redder asteroids are heavier and hit harder",
   }),
@@ -419,7 +438,7 @@ const PLAY_HELP = Object.freeze([
 const HELP_PANEL_WIDTH = 540;
 // Fit the essential controls, objective, and survival rules without turning the
 // pause screen into a complete mechanics reference.
-const HELP_PANEL_HEIGHT = 530;
+const HELP_PANEL_HEIGHT = 572;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -603,6 +622,123 @@ const sessionAchievements = new Set();
 // asteroid-to-asteroid contacts, and damage received by the ship do not count.
 // Evaluate at victory so an early ram cannot win before later blaster hits.
 const fieldAsteroidDamage = { ramming: 0, blasters: 0 };
+/**
+ * Heading dwell and target commitment use simulation time, so pausing cannot
+ * acquire a target. The toggle survives life changes; its transient lock does
+ * not. Target centers define the sector and nearest-target distance.
+ */
+class AimAssist {
+  enabled = false;
+  /** @type {Asteroid | undefined} Currently committed live body. */
+  target = undefined;
+  heading = undefined;
+  dwell = 0;
+  lockRemaining = 0;
+
+  /** @returns {void} Discard transient acquisition and lock state. */
+  reset() {
+    this.target = undefined;
+    this.heading = undefined;
+    this.dwell = 0;
+    this.lockRemaining = 0;
+  }
+
+  /** @returns {void} Switch assistance without supplying flight input. */
+  toggle() {
+    this.enabled = !this.enabled;
+    this.reset();
+  }
+
+  /**
+   * Follow the closest surviving child of the locked body, keeping successive
+   * cuts on one lineage instead of acquiring an unrelated nearby asteroid.
+   * A child receives the normal minimum commitment even across the sector
+   * edge; terminal destruction releases the lock for ordinary acquisition.
+   * @param {Asteroid} parent Body replaced by the fragmentation transaction.
+   * @param {Asteroid[]} fragments Retained children already added to the field.
+   * @returns {void}
+   */
+  followFragments(parent, fragments) {
+    if (!this.enabled || this.target !== parent) return;
+    let closest = undefined;
+    let closestDistance = Infinity;
+    for (const fragment of fragments) {
+      const distance =
+        (fragment.x - playerX) ** 2 + (fragment.y - playerY) ** 2;
+      if (distance < closestDistance) {
+        closest = fragment;
+        closestDistance = distance;
+      }
+    }
+    if (closest === undefined) {
+      this.reset();
+      return;
+    }
+    this.target = closest;
+    this.lockRemaining = AIM_ASSIST_MIN_LOCK_SECONDS;
+  }
+
+  /**
+   * @param {Asteroid} target Candidate body in the current world.
+   * @returns {boolean} Whether its center lies in the current nose sector.
+   */
+  inSector(target) {
+    return (
+      Math.abs(
+        shortestAngleDifference(
+          Math.atan2(target.y - playerY, target.x - playerX),
+          playerAngle,
+        ),
+      ) <= AIM_ASSIST_SECTOR_HALF_ANGLE
+    );
+  }
+
+  /**
+   * @param {number} deltaTime Active simulation seconds since the last step.
+   * @returns {void}
+   */
+  update(deltaTime) {
+    if (!this.enabled) return;
+    if (this.target !== undefined) {
+      this.lockRemaining = Math.max(0, this.lockRemaining - deltaTime);
+      if (
+        !asteroids.includes(this.target) ||
+        (this.lockRemaining <= COLLISION_EPSILON && !this.inSector(this.target))
+      ) {
+        this.reset();
+      } else {
+        return;
+      }
+    }
+    if (
+      this.heading === undefined ||
+      Math.abs(shortestAngleDifference(playerAngle, this.heading)) >
+        AIM_ASSIST_SECTOR_HALF_ANGLE
+    ) {
+      this.heading = playerAngle;
+      this.dwell = 0;
+      return;
+    }
+    this.dwell += deltaTime;
+    if (this.dwell + COLLISION_EPSILON < AIM_ASSIST_ACQUIRE_SECONDS) return;
+    let closestDistance = Infinity;
+    for (const target of asteroids) {
+      const distance = (target.x - playerX) ** 2 + (target.y - playerY) ** 2;
+      if (distance < closestDistance && this.inSector(target)) {
+        this.target = target;
+        closestDistance = distance;
+      }
+    }
+    if (this.target !== undefined) {
+      this.lockRemaining = AIM_ASSIST_MIN_LOCK_SECONDS;
+    }
+    // Once the heading is settled, an entering target can lock immediately.
+    this.dwell = Math.min(this.dwell, AIM_ASSIST_ACQUIRE_SECONDS);
+  }
+}
+
+const aimAssist = new AimAssist();
+
 let playerAngle = -Math.PI / 2;
 let playerVelocityX = 0;
 let playerVelocityY = 0;
@@ -1582,6 +1718,7 @@ function syncPressedKeys() {
  */
 function clearPressedKeys() {
   manualTurnControl.reset();
+  aimAssist.reset();
   manualPressedKeys.clear();
   autopilotPressedKeys.clear();
   pressedKeys.clear();
@@ -1696,13 +1833,16 @@ function applyAutopilotTurnInput(input) {
  * Solve a linear interception for either a world-speed projectile or an
  * attacking ship. Bullets do not inherit ship velocity. The launch/contact
  * offset avoids over-leading close targets; stable roots avoid cancellation.
- * Unreachable targets fall back to their current bearing.
+ * Constant-velocity kinematics: https://en.wikipedia.org/wiki/Equations_of_motion
+ * Solve |r + v*t| = launchOffset + approachSpeed*t. No future collision,
+ * wall bounce, target rotation, or ship movement is predicted.
+ * Unreachable targets have no marker rather than an incorrect firing cue.
  * @param {Asteroid} asteroid Moving target read from the world.
  * @param {number} approachSpeed Projectile or desired ship speed in pixels/second.
  * @param {number} launchOffset Muzzle offset or combined ram-contact radii.
- * @returns {number} World-space firing heading in radians.
+ * @returns {number | undefined} Earliest nonnegative interception time in seconds.
  */
-function autopilotAimAngle(
+function linearInterceptTime(
   asteroid,
   approachSpeed = BULLET_SPEED,
   launchOffset = PLAYER_RADIUS + BULLET_HALF_LENGTH,
@@ -1719,9 +1859,10 @@ function autopilotAimAngle(
   let time = 0;
   if (c > 0) {
     if (Math.abs(a) <= COLLISION_EPSILON) {
-      time = Math.abs(b) > COLLISION_EPSILON ? -c / b : 0;
+      time = Math.abs(b) > COLLISION_EPSILON ? -c / b : Infinity;
     } else {
       const discriminant = b ** 2 - 4 * a * c;
+      time = Infinity;
       if (discriminant >= 0) {
         const q = -0.5 * (b + (b >= 0 ? 1 : -1) * Math.sqrt(discriminant));
         const first = q / a;
@@ -1733,13 +1874,34 @@ function autopilotAimAngle(
       }
     }
   }
-  time =
-    Number.isFinite(time) && time > 0 && time <= AUTOPILOT_MAX_LOOKAHEAD_SECONDS
-      ? time
+  return Number.isFinite(time) && time >= 0 ? time : undefined;
+}
+
+/**
+ * Retain autopilot's bounded lookahead and current-bearing fallback.
+ * @param {Asteroid} asteroid Moving target read from the world.
+ * @param {number} approachSpeed Projectile or ship speed in CSS pixels/second.
+ * @param {number} launchOffset Muzzle or ram-contact offset in CSS pixels.
+ * @returns {number} World-space firing heading in radians.
+ */
+function autopilotAimAngle(
+  asteroid,
+  approachSpeed = BULLET_SPEED,
+  launchOffset = PLAYER_RADIUS + BULLET_HALF_LENGTH,
+) {
+  const interceptTime = linearInterceptTime(
+    asteroid,
+    approachSpeed,
+    launchOffset,
+  );
+  const time =
+    interceptTime !== undefined &&
+    interceptTime <= AUTOPILOT_MAX_LOOKAHEAD_SECONDS
+      ? interceptTime
       : 0;
   return Math.atan2(
-    y + asteroid.velocityY * time,
-    x + asteroid.velocityX * time,
+    asteroid.y - playerY + asteroid.velocityY * time,
+    asteroid.x - playerX + asteroid.velocityX * time,
   );
 }
 
@@ -2996,6 +3158,7 @@ function drawGame(width, height) {
     bullet.draw();
   }
 
+  drawAimAssist(width, playfieldHeight);
   drawStarship();
 
   drawSparks();
@@ -3013,6 +3176,60 @@ function drawGame(width, height) {
   const controlRightX = drawFlightControls(width);
   const scoreBlockLeft = drawStatusBars(width);
   drawRedAlert(controlRightX, scoreBlockLeft);
+}
+
+/**
+ * Draw a target ring and the true predicted intercept point. Clip predictions
+ * to the arena instead of pinning an offscreen point to a false aim position.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {void}
+ */
+function drawAimAssist(width, height) {
+  const target = aimAssist.target;
+  if (
+    !aimAssist.enabled ||
+    target === undefined ||
+    shipFailureActive ||
+    gameWon
+  )
+    return;
+  context.save();
+  context.beginPath();
+  context.rect(0, 0, width, height);
+  context.clip();
+  context.strokeStyle = LCARS_GOLD;
+  context.lineWidth = 1.5;
+  context.beginPath();
+  context.arc(
+    target.x,
+    target.y,
+    target.radius + AIM_ASSIST_TARGET_PADDING,
+    0,
+    Math.PI * 2,
+  );
+  context.stroke();
+  const time = linearInterceptTime(target);
+  if (time !== undefined) {
+    const x = target.x + target.velocityX * time;
+    const y = target.y + target.velocityY * time;
+    if (Number.isFinite(x) && Number.isFinite(y)) {
+      const radius = AIM_ASSIST_MARKER_RADIUS;
+      const gap = AIM_ASSIST_MARKER_GAP;
+      context.beginPath();
+      context.arc(x, y, radius, 0, Math.PI * 2);
+      context.moveTo(x - radius - gap, y);
+      context.lineTo(x - gap, y);
+      context.moveTo(x + gap, y);
+      context.lineTo(x + radius + gap, y);
+      context.moveTo(x, y - radius - gap);
+      context.lineTo(x, y - gap);
+      context.moveTo(x, y + gap);
+      context.lineTo(x, y + radius + gap);
+      context.stroke();
+    }
+  }
+  context.restore();
 }
 
 /**
@@ -3107,7 +3324,7 @@ function drawFlightControls(width) {
     0,
     width - LCARS_FRAME_MARGIN * 2 - statusWidth - FLIGHT_CONTROL_GAP,
   );
-  const keyButtonCount = 7;
+  const keyButtonCount = 8;
   const desiredKeyWidth = FLIGHT_CONTROL_KEY_WIDTH;
   const rowScale = Math.min(
     1,
@@ -3121,6 +3338,7 @@ function drawFlightControls(width) {
   const controls = [
     ["T", "AUTOPILOT", LCARS_AMBER, autopilotEnabled],
     ["P", "PAUSE", LCARS_CORAL, gamePaused],
+    [AIM_ASSIST_TOGGLE_KEY_LABEL, "AIM ASSIST", LCARS_GOLD, aimAssist.enabled],
     [
       "W⏶",
       "THRUST",
@@ -3487,17 +3705,17 @@ function drawPauseHelp(width, height) {
   context.fillText(
     "Phasers always cut. Strong body hits split; light hits bounce.",
     HELP_PANEL_WIDTH / 2,
-    434,
+    476,
   );
   context.fillText(
     "Shield ring: lilac → amber → red as charge falls.",
     HELP_PANEL_WIDTH / 2,
-    464,
+    506,
   );
   context.fillText(
     "Shields regenerate; hull damage persists. Walls hurt.",
     HELP_PANEL_WIDTH / 2,
-    494,
+    536,
   );
   context.restore();
 }
@@ -4318,6 +4536,7 @@ function fragmentAsteroidAtImpact(
 
   countVanishedAsteroidArea(asteroid, fragments);
   asteroids.splice(asteroidIndex, 1, ...fragments);
+  aimAssist.followFragments(asteroid, fragments);
   return fragments;
 }
 
@@ -5603,6 +5822,7 @@ function updateGame(deltaTime, width, height) {
   updateBullets(deltaTime);
   resolveBulletCollisions(width, height);
   resolveAsteroidCollisions();
+  aimAssist.update(deltaTime);
 
   if (restartRequested) {
     beginShipFailure();
@@ -5674,6 +5894,12 @@ function controlKeyForEvent(event) {
 }
 
 document.addEventListener("keydown", (event) => {
+  if (event.code === AIM_ASSIST_TOGGLE_KEY) {
+    if (!event.repeat) aimAssist.toggle();
+    event.preventDefault();
+    return;
+  }
+
   if (event.code === AUTOPILOT_TOGGLE_KEY && !event.repeat) {
     unlockSound();
     toggleAutopilot();
