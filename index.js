@@ -359,9 +359,8 @@ const AUTOPILOT_APPROACH_HYSTERESIS = 60;
 // Reserve nose-away escape thrust for immediate contact, so an approaching
 // target can still be destroyed while the ship brakes.
 const AUTOPILOT_EMERGENCY_CLEARANCE = 60;
-// Slow navigation decisions bound asteroid scans; steering and firing still
-// react every simulation frame so a passing target is never hidden by a burst
-// cooldown, a turn-reversal delay, or a navigation maneuver.
+// Slow navigation decisions bound asteroid scans. Steering checks alignment
+// every frame; firing independently exploits shots even between turn presses.
 const AUTOPILOT_UPDATE_INTERVAL = 1 / 15;
 const AUTOPILOT_TARGET_COMMITMENT_SECONDS = 1.2;
 const AUTOPILOT_TARGET_RECHECK_SECONDS = 0.3;
@@ -373,6 +372,13 @@ const AUTOPILOT_TARGET_SIZE_WEIGHT = 1.5;
 // A quarter-degree dead zone still reaches small distant rocks. The final
 // turn step is capped to the remaining error, preventing frame-rate overshoot.
 const AUTOPILOT_TURN_STOP_TOLERANCE = Math.PI / 720;
+// One degree of error starts a correction; the tighter stop tolerance keeps
+// useful aim accuracy without repeatedly tapping at tiny heading changes.
+const AUTOPILOT_TURN_START_TOLERANCE = Math.PI / 180;
+// Release immediately on alignment or reversal, then allow a human-scale
+// reaction pause before another press. Never keep turning the wrong way just
+// to satisfy a minimum hold duration; navigation and firing stay independent.
+const AUTOPILOT_TURN_REACTION_SECONDS = 0.2;
 // Aim inside the collision circle rather than merely inside a broad cone.
 const AUTOPILOT_FIRE_RADIUS_RATIO = 0.9;
 
@@ -770,6 +776,8 @@ let gamePaused = true;
 let autopilotEnabled = false;
 let autopilotTargetLock = undefined;
 let autopilotDesiredAngle = 0;
+let autopilotTurnDirection = 0;
+let autopilotTurnTimeRemaining = 0;
 let autopilotTargetLockTimeRemaining = 0;
 let autopilotDecisionTime = 0;
 let autopilotAttackTimeRemaining = 0;
@@ -1717,6 +1725,8 @@ function syncPressedKeys() {
  * @returns {void}
  */
 function clearPressedKeys() {
+  autopilotTurnDirection = 0;
+  autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
   manualTurnControl.reset();
   aimAssist.reset();
   manualPressedKeys.clear();
@@ -1814,18 +1824,38 @@ function autopilotHealthSafetyMargin() {
 }
 
 /**
- * Aim with ordinary A/D input, reconsidered every frame. Stop when the next
- * step reaches the desired heading; no delayed reversal can strand the
- * nose on the wrong side of a firing solution.
+ * Hold ordinary A/D input through a correction, releasing on alignment or
+ * reversal. A short reaction pause between presses and separate start/stop
+ * thresholds suppress rapid alternating taps without changing tactical goals.
  * @param {Set<string>} input Controls receiving the steering keys.
+ * @param {number} deltaTime Elapsed simulation time in seconds.
  * @returns {void}
  */
-function applyAutopilotTurnInput(input) {
+function applyAutopilotTurnInput(input, deltaTime) {
   input.delete("KeyA");
   input.delete("KeyD");
+  autopilotTurnTimeRemaining = Math.max(
+    0,
+    autopilotTurnTimeRemaining - Math.max(0, deltaTime),
+  );
   const error = shortestAngleDifference(autopilotDesiredAngle, playerAngle);
-  if (Math.abs(error) > AUTOPILOT_TURN_STOP_TOLERANCE) {
-    input.add(error > 0 ? "KeyD" : "KeyA");
+  const desiredDirection = Math.sign(error);
+  if (
+    autopilotTurnDirection !== 0 &&
+    (Math.abs(error) <= AUTOPILOT_TURN_STOP_TOLERANCE ||
+      desiredDirection !== autopilotTurnDirection)
+  ) {
+    autopilotTurnDirection = 0;
+    autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
+  } else if (
+    autopilotTurnDirection === 0 &&
+    autopilotTurnTimeRemaining === 0 &&
+    Math.abs(error) > AUTOPILOT_TURN_START_TOLERANCE
+  ) {
+    autopilotTurnDirection = desiredDirection;
+  }
+  if (autopilotTurnDirection !== 0) {
+    input.add(autopilotTurnDirection > 0 ? "KeyD" : "KeyA");
   }
 }
 
@@ -2309,8 +2339,7 @@ function updateAutopilotInput(deltaTime, width, height) {
       }
     }
   }
-  // Only navigation is throttled; steering reacts to the current nose angle.
-  applyAutopilotTurnInput(input);
+  applyAutopilotTurnInput(input, deltaTime);
   setAutopilotInput(input);
 }
 
