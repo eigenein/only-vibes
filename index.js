@@ -309,7 +309,7 @@ const PLAY_HELP = Object.freeze([
   }),
 ]);
 const HELP_PANEL_WIDTH = 540;
-const HELP_PANEL_HEIGHT = 500;
+const HELP_PANEL_HEIGHT = 530;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -442,10 +442,12 @@ let autopilotTurnDirection = 0;
 let autopilotLastTurnDirection = 0;
 let autopilotTurnReversalTimeRemaining = 0;
 let autopilotDecisionTime = 0;
+// Session points belong to one ship life; a fresh life starts at zero. Future
+// lifetime achievements must keep their own state outside this session score.
 // Points measure material that really leaves the playfield. A successful cut
 // preserves area across its retained fragments, while fragments below the
 // minimum area (and terminal asteroids) contribute the area that disappears.
-let points = 0;
+let sessionPoints = 0;
 let viewportWidth = 0;
 let viewportHeight = 0;
 const phraseMetricsCache = new Map();
@@ -2069,7 +2071,8 @@ function applyCollisionDamage(collisionMomentum) {
 }
 
 /**
- * Begin a fresh life after hull destruction. Rebuilding the asteroid field
+ * Begin a fresh session (one ship life) after destruction or a completed field.
+ * Reset the session score together with the world. Rebuilding the asteroid field
  * makes the restart a real game restart instead of leaving the player inside
  * the collision that ended the previous life.
  * @param {number} width Viewport width in CSS pixels.
@@ -2077,6 +2080,7 @@ function applyCollisionDamage(collisionMomentum) {
  * @returns {void}
  */
 function restartGame(width, height) {
+  sessionPoints = 0;
   playerX = width / 2;
   playerY = height / 2;
   playerAngle = 0;
@@ -2188,7 +2192,7 @@ function countVanishedAsteroidArea(asteroid, fragments) {
   );
   const vanishedArea = Math.max(0, asteroid.surfaceArea - retainedArea);
 
-  points += vanishedArea;
+  sessionPoints += vanishedArea;
 }
 
 /**
@@ -2218,7 +2222,11 @@ function drawPoints(rightX, topY) {
   context.font = `700 11px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText("SCORE", rightX - 10, topY + 13);
   context.font = `700 22px ${LCARS_BODY_FONT_FAMILY}`;
-  context.fillText(Math.round(points).toString(), rightX - 10, topY + 39);
+  context.fillText(
+    Math.round(sessionPoints).toString(),
+    rightX - 10,
+    topY + 39,
+  );
   context.restore();
 
   return blockLeft;
@@ -2920,7 +2928,7 @@ function drawWinScreen(width, height) {
   context.fillText("FINAL SCORE", WIN_SCREEN_PANEL_WIDTH / 2, 182);
   context.font = `700 30px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
-    Math.round(points).toString(),
+    Math.round(sessionPoints).toString(),
     WIN_SCREEN_PANEL_WIDTH / 2,
     212,
   );
@@ -3015,6 +3023,11 @@ function drawPauseHelp(width, height) {
     "Walls damage the ship. Manual input disables autopilot.",
     HELP_PANEL_WIDTH / 2,
     464,
+  );
+  context.fillText(
+    "One life = one session. New sessions reset the score.",
+    HELP_PANEL_WIDTH / 2,
+    494,
   );
   context.restore();
 }
