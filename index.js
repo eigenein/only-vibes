@@ -536,6 +536,9 @@ class SoundEffect {
    */
   playRandom() {
     // Skip unavailable effects rather than delaying or queuing gameplay sounds.
+    if (!soundUnlocked || soundBackgrounded) {
+      return;
+    }
     if (soundContext.state !== "running") {
       resumeSound();
       return;
@@ -600,6 +603,9 @@ class SoundEffect {
 // is visible. Interactive latency suits shots and impacts rather than streams.
 let soundContext = new AudioContext({ latencyHint: "interactive" });
 let soundUnlocked = false;
+// A visible window can still be in another app's background. Do not let
+// ongoing gameplay restart an output connection deliberately released on blur.
+let soundBackgrounded = document.hidden || !document.hasFocus();
 /** @type {number | null} */
 let soundRecoveryTimer = null;
 // Only one replacement is allowed until a gesture or wake event retries, so
@@ -613,7 +619,7 @@ let soundContextRebuilt = false;
  * @returns {void}
  */
 function resumeSound() {
-  if (!soundUnlocked || document.hidden || soundRecoveryTimer !== null) {
+  if (!soundUnlocked || soundBackgrounded || document.hidden) {
     return;
   }
 
@@ -626,9 +632,19 @@ function resumeSound() {
     void recoveringContext.resume().catch(() => undefined);
   }
 
+  // Resume must run inside a fresh gesture even when a previous attempt's
+  // watchdog is pending; only the clock check itself is coalesced.
+  if (soundRecoveryTimer !== null) {
+    return;
+  }
+
   soundRecoveryTimer = window.setTimeout(() => {
     soundRecoveryTimer = null;
-    if (document.hidden || soundContext !== recoveringContext) {
+    if (
+      soundBackgrounded ||
+      document.hidden ||
+      soundContext !== recoveringContext
+    ) {
       return;
     }
     if (
@@ -660,20 +676,54 @@ function resumeSound() {
 }
 
 /**
- * Retry on return to the page or a player gesture. Invoke resume synchronously
- * inside gestures even if an earlier autoplay-blocked resume is still pending.
+ * Release background audio explicitly. Safari can otherwise lose its output
+ * while still reporting "running" with an advancing clock, even after reload.
+ * Discard voices so shots made before switching away never replay on return.
+ * @returns {void}
+ */
+function suspendSound() {
+  soundBackgrounded = true;
+  window.clearTimeout(soundRecoveryTimer);
+  soundRecoveryTimer = null;
+  for (const effect of soundEffects) {
+    effect.stopVoices();
+  }
+  if (soundContext.state !== "closed") {
+    void soundContext.suspend().catch(() => undefined);
+  }
+}
+
+/**
+ * Reacquire the output on foreground/wake events, including a falsely healthy
+ * running context. This lifecycle reset is separate from ordinary key presses
+ * so continuous fire never tears down its own output or interrupts its voices.
  * @returns {void}
  */
 function recoverSound() {
+  if (document.hidden || !document.hasFocus()) {
+    suspendSound();
+    return;
+  }
+  soundBackgrounded = false;
   soundContextRebuilt = false;
-  if (
-    soundUnlocked &&
-    !document.hidden &&
-    soundRecoveryTimer !== null &&
-    soundContext.state !== "running" &&
-    soundContext.state !== "closed"
-  ) {
-    void soundContext.resume().catch(() => undefined);
+  if (!soundUnlocked) {
+    return;
+  }
+  const recoveringContext = soundContext;
+  if (recoveringContext.state === "running") {
+    for (const effect of soundEffects) {
+      effect.stopVoices();
+    }
+    // resume() alone is a no-op for a running context. A complete output cycle
+    // addresses WebKit bug 276687; the watchdog still covers a frozen clock.
+    void recoveringContext
+      .suspend()
+      .then(() => {
+        if (soundContext === recoveringContext) {
+          resumeSound();
+        }
+      })
+      .catch(() => undefined);
   }
   resumeSound();
 }
@@ -684,14 +734,24 @@ function recoverSound() {
  * @returns {void}
  */
 function unlockSound() {
+  const firstGesture = !soundUnlocked;
   soundUnlocked = true;
-  recoverSound();
+  soundBackgrounded = document.hidden;
+  soundContextRebuilt = false;
+  resumeSound();
+  // Reloading a page can inherit Safari's silent output route. Reacquire an
+  // already-running mixer once at activation, keeping resume in this gesture.
+  if (firstGesture) {
+    recoverSound();
+  }
 }
 
 soundContext.addEventListener("statechange", resumeSound);
 canvas.addEventListener("pointerdown", unlockSound);
 window.addEventListener("focus", recoverSound);
+window.addEventListener("blur", suspendSound);
 window.addEventListener("pageshow", recoverSound);
+window.addEventListener("pagehide", suspendSound);
 document.addEventListener("visibilitychange", recoverSound);
 
 const heavyShotSound = new SoundEffect(
