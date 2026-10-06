@@ -58,9 +58,15 @@ const STARSHIP_COLLISION_TURN_INERTIA =
 // producing a chaotic turn-around in ordinary play.
 const SHIP_COLLISION_TURN_RESPONSE = 0.2;
 const MAX_SHIP_COLLISION_TURN_ANGLE = Math.PI / 12;
-// Direct angular control keeps the ship responsive and independent from its
+// Sustained turns retain one full revolution per second, independently from
 // one-time collision heading adjustments.
 const ROTATION_SPEED = Math.PI * 2;
+// Manual steering ramps linearly from rest to full speed in seconds. A 50 ms
+// tap turns just 1.8 degrees; holding reaches the familiar rate after 250 ms.
+// Releasing stops immediately: this is input sensitivity, not spin inertia.
+const MANUAL_TURN_RAMP_DURATION = 0.25;
+// Bound simulation and input integration after stalls to avoid large jumps.
+const MAX_SIMULATION_STEP = 0.1;
 // Movement is deliberately expressed in CSS pixels per second so the game
 // behaves the same at different device pixel ratios and display refresh rates.
 const MAX_SPEED = 360;
@@ -352,7 +358,7 @@ const PLAY_HELP = Object.freeze([
   }),
   Object.freeze({
     label: "A / D",
-    description: "turn counter-clockwise / clockwise",
+    description: "CCW / CW; tap fine, hold fast",
   }),
   Object.freeze({
     label: PAUSE_KEY_LABEL,
@@ -467,6 +473,77 @@ const STATIC_WALL_BODY = Object.freeze({
   mass: Infinity,
   momentOfInertia: Infinity,
 });
+
+/**
+ * Integrate manual turning at both keyboard edges and animation steps. This
+ * preserves even taps that begin and end between frames, without rounding a
+ * tap up to a whole frame. Autopilot retains its existing direct turn rate.
+ */
+class ManualTurnControl {
+  #direction = 0;
+  #heldTime = 0;
+  #previousTime = performance.now();
+
+  /**
+   * Integrate the linear speed ramp exactly, including crossing its endpoint.
+   * Angular displacement is the area under angular velocity, so splitting an
+   * interval across frames or key repeats does not change the resulting turn.
+   * @param {number} time Monotonic input timestamp in milliseconds.
+   * @returns {number} Signed heading adjustment in radians.
+   */
+  advance(time) {
+    const deltaTime = Math.min(
+      Math.max(0, (time - this.#previousTime) / 1000),
+      MAX_SIMULATION_STEP,
+    );
+    this.#previousTime = time;
+
+    if (this.#direction === 0) {
+      return 0;
+    }
+
+    const rampTime = Math.min(
+      deltaTime,
+      MANUAL_TURN_RAMP_DURATION - this.#heldTime,
+    );
+    const rampArea =
+      (rampTime * (this.#heldTime + rampTime / 2)) / MANUAL_TURN_RAMP_DURATION;
+    this.#heldTime = Math.min(
+      MANUAL_TURN_RAMP_DURATION,
+      this.#heldTime + deltaTime,
+    );
+    return this.#direction * ROTATION_SPEED * (rampArea + deltaTime - rampTime);
+  }
+
+  /**
+   * Finish the old input interval before adopting a new direction. Opposing
+   * keys cancel; release or reversal starts the next turn gently. Repeats and
+   * pressing another key for the same direction never restart a held ramp.
+   * @param {number} direction Net manual turn: -1 CCW, 0 stopped, or 1 CW.
+   * @param {number} time Monotonic input timestamp in milliseconds.
+   * @returns {number} Heading adjustment accrued before this input change.
+   */
+  setDirection(direction, time) {
+    const angle = this.advance(time);
+    if (direction !== this.#direction) {
+      this.#direction = direction;
+      this.#heldTime = 0;
+    }
+    return angle;
+  }
+
+  /**
+   * Discard input timing across pause, focus loss, and life changes.
+   * @returns {void}
+   */
+  reset() {
+    this.#direction = 0;
+    this.#heldTime = 0;
+    this.#previousTime = performance.now();
+  }
+}
+
+const manualTurnControl = new ManualTurnControl();
 const pressedKeys = new Set();
 const manualPressedKeys = new Set();
 const autopilotPressedKeys = new Set();
@@ -1424,10 +1501,18 @@ function updateSparks(deltaTime) {
  * Rebuild the effective held-key state from its two legitimate producers.
  * Keeping manual and autopilot keys separate lets a human input disable the
  * autopilot without allowing one producer to forge the other producer's
- * events. The gameplay loop still consumes only `pressedKeys`, as before.
+ * events. Settle manual turn timing at each edge; the combined held-key set
+ * still supplies thrust, braking, firing, and the command-strip highlights.
  * @returns {void}
  */
 function syncPressedKeys() {
+  playerAngle = wrapAngle(
+    playerAngle +
+      manualTurnControl.setDirection(
+        turnDirectionForKeys(manualPressedKeys),
+        performance.now(),
+      ),
+  );
   pressedKeys.clear();
 
   for (const key of manualPressedKeys) {
@@ -1445,6 +1530,7 @@ function syncPressedKeys() {
  * @returns {void}
  */
 function clearPressedKeys() {
+  manualTurnControl.reset();
   manualPressedKeys.clear();
   autopilotPressedKeys.clear();
   pressedKeys.clear();
@@ -5321,25 +5407,38 @@ function bodiesMayOverlap(firstBody, secondBody) {
 }
 
 /**
- * A/D and the left/right arrows directly change the ship's facing. Collision
+ * Read opposite steering keys as a single direction, with aliases sharing
+ * one ramp and simultaneous CW/CCW inputs cancelling each other.
+ * @param {Set<string>} keys Held controls from one input source.
+ * @returns {number} -1 for CCW, 0 for no turn, or 1 for CW.
+ */
+function turnDirectionForKeys(keys) {
+  const turnsCounterClockwise = keys.has("ArrowLeft") || keys.has("KeyA");
+  const turnsClockwise = keys.has("ArrowRight") || keys.has("KeyD");
+  return Number(turnsClockwise) - Number(turnsCounterClockwise);
+}
+
+/**
+ * A/D and the left/right arrows gently ramp the ship's facing speed. Collision
  * friction applies separate one-time heading adjustments. The velocity vector
  * remains free, so a ship can drift sideways or backwards while its nose
  * controls firing and thrust. Down decelerates along the current travel vector
  * rather than steering the ship toward its nose.
+ * @param {number} deltaTime Bounded simulation step in seconds.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height above the command strip in CSS pixels.
+ * @returns {void}
  */
 function updateGame(deltaTime, width, height) {
   refillCollisionDamageBudget(deltaTime);
   regenerateShield(deltaTime);
   updateAutopilotInput(deltaTime, width, height);
 
-  const turnsCounterClockwise =
-    pressedKeys.has("ArrowLeft") || pressedKeys.has("KeyA");
-  const turnsClockwise =
-    pressedKeys.has("ArrowRight") || pressedKeys.has("KeyD");
-  const rotationDirection =
-    Number(turnsClockwise) - Number(turnsCounterClockwise);
-
-  playerAngle += rotationDirection * ROTATION_SPEED * deltaTime;
+  playerAngle = wrapAngle(
+    playerAngle +
+      manualTurnControl.advance(performance.now()) +
+      turnDirectionForKeys(autopilotPressedKeys) * ROTATION_SPEED * deltaTime,
+  );
 
   const accelerates = pressedKeys.has("ArrowUp") || pressedKeys.has("KeyW");
   const decelerates = pressedKeys.has("ArrowDown") || pressedKeys.has("KeyS");
@@ -5441,7 +5540,7 @@ function animate(frameTime) {
   const deltaTime =
     previousFrameTime === undefined
       ? 0
-      : Math.min((frameTime - previousFrameTime) / 1000, 0.1);
+      : Math.min((frameTime - previousFrameTime) / 1000, MAX_SIMULATION_STEP);
   previousFrameTime = frameTime;
 
   const width = viewportWidth;

@@ -21,6 +21,9 @@ Play the hosted version on [GitHub Pages](https://eigenein.github.io/only-vibes/
 | `P`       | Pause / resume                     |
 | `T`       | Toggle autopilot                   |
 
+Tap `A` / `D` for fine heading adjustments. Hold to ramp up over 250 ms to
+the full turn rate of one revolution per second; release to stop turning.
+
 ### Shield and hull
 
 - The ship starts with a full shield and hull.
