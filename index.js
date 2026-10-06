@@ -374,8 +374,9 @@ const PLAY_HELP = Object.freeze([
   }),
 ]);
 const HELP_PANEL_WIDTH = 540;
-// Leave room for impact rules, ricochet colors, achievements, and reset rules.
-const HELP_PANEL_HEIGHT = 650;
+// Fit the essential controls, objective, and survival rules without turning the
+// pause screen into a complete mechanics reference.
+const HELP_PANEL_HEIGHT = 530;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -3399,39 +3400,19 @@ function drawPauseHelp(width, height) {
   context.fillStyle = LCARS_MUTED_TEXT;
   context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
-    "Shield ring: lilac → amber → red as charge falls.",
+    "Clear the field. Strong impacts split; light hits bounce.",
     HELP_PANEL_WIDTH / 2,
     434,
   );
   context.fillText(
-    "Shields regenerate; hull damage persists. Walls hurt.",
+    "Shield ring: lilac → amber → red as charge falls.",
     HELP_PANEL_WIDTH / 2,
     464,
   );
   context.fillText(
-    "Clear the field. Strong impacts split; light hits bounce.",
+    "Shields regenerate; hull damage persists. Walls hurt.",
     HELP_PANEL_WIDTH / 2,
     494,
-  );
-  context.fillText(
-    "Phasers, ship and rocks share one impact threshold.",
-    HELP_PANEL_WIDTH / 2,
-    524,
-  );
-  context.fillText(
-    "Ricochets take the last asteroid's color.",
-    HELP_PANEL_WIDTH / 2,
-    554,
-  );
-  context.fillText(
-    "Rammer: win with more ram than blaster damage.",
-    HELP_PANEL_WIDTH / 2,
-    584,
-  );
-  context.fillText(
-    "Wins keep badges; death resets them. Fields reset totals.",
-    HELP_PANEL_WIDTH / 2,
-    614,
   );
   context.restore();
 }
