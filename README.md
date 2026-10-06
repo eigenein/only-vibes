@@ -35,8 +35,8 @@ Tap `A` / `D` for fine heading adjustments. Hold to ramp up over 250 ms to
 the full turn rate of one revolution per second; release to stop turning.
 
 Aim Assist (`M`) starts disabled. Hold roughly the same heading for 0.5 seconds
-(within 45° of the starting heading) to lock the closest asteroid in a 90°
-sector around the nose. A live lock lasts at least 1 second, then releases when
+(within 45° of the starting heading) to lock the closest asteroid or Borg cube
+in a 90° sector around the nose. A live lock lasts at least 1 second, then releases when
 ship movement or rotation puts the target outside that sector. Closer asteroids
 do not steal a lock. When the locked target splits, the closest surviving
 fragment inherits the lock with a fresh 1-second commitment. Further splits
@@ -46,18 +46,23 @@ The gold ring identifies the target; aim at the gold crosshair to intercept its
 current straight-line motion. The prediction includes phaser speed and muzzle
 offset, and ignores future collisions. Unreachable targets have no crosshair;
 predictions outside the arena are clipped. Pausing or losing focus clears the
-lock; the enabled setting survives a new life.
+lock. Every new sector starts with Aim Assist, autopilot, and auto-gunner disabled.
 
 Autopilot (`T`) pilots close-range attack passes, interception, and ramming.
 Every 1.2 seconds it rolls for an attack pass: healthy shields favor closing
 within about 55 pixels of a target's surface for reliable shots, with the
 boldest passes continuing into contact. Low shields favor distance and
 regeneration; falling shields can abort a pass immediately. Hull damage
-moderates risk without permanently disabling attacks. It brakes before walls. Manual flight cancels autopilot.
+moderates risk without permanently disabling attacks. It fights the Borg cube
+at range rather than ramming its durable hull. Attack passes still avoid other
+solid bodies, including the drifting wreck; only the intended ram target is
+exempt from avoidance. Escape maneuvers continue until clear of the danger zone
+and choose among lanes using predicted rock, cube, and wall clearance. It brakes
+before walls. Manual flight cancels autopilot.
 
 Auto-gunner (`G`) independently fires when a shot will hit, saving heat between
-bursts. Manual firing cancels auto-gunner. Enable both modes to retain the
-original combined autopilot behavior.
+bursts. Manual firing cancels auto-gunner. Enable both modes for automatic
+flight and firing.
 
 Phasers fire at eight pulses per second, with about eight shots in a cold
 burst lasting one second. Each shot adds slightly more heat the warmer the
@@ -93,7 +98,52 @@ Redder asteroids are heavier and hit harder. Fire at will. Keep the hull operati
 Phaser contact always splits or destroys rocks. Ship and asteroid impacts split
 rocks only when the transferred collision impulse exceeds their shared threshold;
 lighter body impacts bounce without splitting. Arena walls only bounce asteroids.
-Clearing the field wins; points count asteroid area removed.
+Clearing the asteroids and defeating the Borg cube wins. Points count asteroid
+area removed, plus 8,000 for defeating the cube.
+
+### Borg cube
+
+One tougher cube enters each field, with a third more hull and stronger face
+shields. Repeated hits reinforce the attacked face, taking
+power away from the others. Green branches grow along the reinforced edge;
+sustained fire adds tightly spaced shield bands and changes bright impacts into
+shallow green ripples. Switch faces or briefly pause fire to reduce resistance.
+
+Quiet faces recover shields using power left over from adaptation. A green
+sweep shows recovery. Hull loss widens glowing orange fractures across the cube
+and exposes increasing patches of burned-out machinery. These structural
+failures remain visible when shields recover.
+Resistance is capped, and every phaser hit leaks some damage into the hull,
+so even repeated attacks on one face can eventually defeat the cube.
+
+The cube slowly closes on the ship but steers away from asteroid fields.
+Threatened edges flash and maneuvering machinery lights up. Its engines have
+limited acceleration, so rocks can still catch it or be pushed into its path.
+Physical impacts bypass phaser adaptation and can split the impacting rock.
+A green charging port and short dashed sight line track an intercept based on
+the ship's current velocity, including charging time and bullet travel. Aim
+locks for the final 0.15 seconds of the charge, when the cue turns pale green.
+Each lock adds up to one degree of random spread in either direction. The
+warning shows the actual firing angle, and off-center hits vary the ricochet
+instead of always sending the pulse directly back toward the cube.
+The cube then fires a thick, heavy green pulse along that committed heading.
+It carries 10 times the mass of a player phaser, using the same collision rules:
+it ricochets off walls and ships, cuts asteroids, and transfers impulse into the
+player's shields and hull. A centered hit on a stationary ship removes about
+14 shield points; at half shields it also removes about 6 hull points. Damage
+varies with relative speed and impact angle. A healthy ship stays below yellow
+alert after a stationary direct hit and can recover its shields before the next
+shot if it avoids other impacts. The cube receives the matching recoil when
+firing. Steady flight can be intercepted; changing course after aim locks or
+while the pulse travels gives room to dodge.
+Enemy shots can also ricochet back into the cube.
+
+Defeat switches off weapons, shields, and engines. The intact, unlit wreck keeps
+its velocity and spin, floats freely, bounces from walls and rocks, reflects
+bullets, and still damages the ship on impact. It never splits or disappears
+and no longer counts as a combat target. Defeat awards points once; clearing
+the remaining asteroids completes the field. A new field replaces the wreck.
+All adaptation, firing, avoidance, and damage cues appear on the cube itself.
 
 ## Built with
 

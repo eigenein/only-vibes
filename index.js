@@ -251,8 +251,7 @@ const RAMMER_ACHIEVEMENT_GLYPH = new Path2D(
 );
 const WIN_SCREEN_BACKDROP_ALPHA = 0.58;
 const WIN_SCREEN_TITLE = "SECTOR CLEAR";
-const WIN_SCREEN_REASON =
-  "Tactical simulation complete. All asteroids cleared.";
+const WIN_SCREEN_REASON = "Asteroids cleared. Borg cube defeated.";
 // Stable IDs make unlocks idempotent. Catalog order is also display order,
 // so future achievements join the same list without separate rendering code.
 /**
@@ -302,6 +301,122 @@ const BULLET_LINE_WIDTH = 3;
 const MAX_BULLET_REFLECTIONS = 3;
 const BULLET_COLLISION_OFFSET = 0.01;
 
+// One cube joins each field. Its machinery is cached at a fixed texture size;
+// the physical square scales down on small arenas and shares the rock solver.
+const BORG_HALF_SIZE = 76;
+const BORG_ARENA_SIZE_RATIO = 0.16;
+const BORG_TEXTURE_SIZE = 320;
+const BORG_GREEN = "#77ff88";
+// A third more permanent hull and modestly stronger face shields extend the
+// encounter without increasing the adaptation cap or removing counterplay.
+const BORG_HULL = 240;
+const BORG_FACE_SHIELD = 22;
+// Shield absorption always leaks hull damage. Neither adaptation nor repair
+// can erase progress, even if the player keeps attacking a reinforced face.
+const BORG_PHASER_DAMAGE = 9;
+const BORG_SHIELD_ABSORPTION = 0.65;
+const BORG_DIRECTIONAL_RESISTANCE = 0.45;
+const BORG_BURST_RESISTANCE = 0.3;
+const BORG_ADAPTATION_PER_HIT = 0.16;
+const BORG_BURST_PER_HIT = 0.22;
+const BORG_BURST_QUIET_SECONDS = 0.7;
+const BORG_BURST_DECAY = 0.5;
+const BORG_ADAPTATION_QUIET_SECONDS = 3;
+const BORG_ADAPTATION_DECAY = 0.12;
+// Reinforcement and burst resistance spend the same unit power budget that
+// supplies repair. Hull is never repaired; only quiet shield faces recover.
+const BORG_REPAIR_DELAY = 1.6;
+const BORG_SHIELD_REPAIR_RATE = 6;
+const BORG_REINFORCEMENT_POWER = 0.55;
+const BORG_BURST_POWER = 0.35;
+// Avoid predicted rock contacts, not player movement patterns. Limited engine
+// acceleration and speed preserve opportunities to force physical impacts.
+const BORG_ACCELERATION = 32;
+const BORG_MAX_SPEED = 62;
+const BORG_MAX_TURN_SPEED = 0.14;
+const BORG_AVOIDANCE_LOOKAHEAD = 2;
+const BORG_AVOIDANCE_MARGIN = 95;
+const BORG_PURSUIT_WEIGHT = 0.22;
+const BORG_WALL_MARGIN = 85;
+// Heavy green pulses use the shared contact solver. At the launch speed, a
+// centered hit on a stationary ship costs about 14 shield points and imparts
+// about 93 px/s of velocity. An otherwise healthy ship avoids immediate yellow
+// alert and can recover between shots; other impacts still compound the risk.
+// Player phasers and the shared damage rule retain their existing behavior.
+// A wider pulse signals its energy; the slower speed leaves room to dodge.
+// Aim follows instantaneous velocity during early charging, then commits for
+// the final reaction window. This is ballistic lead, not learned behavior.
+// The interval is the quiet cooldown between the end of one shot and the
+// beginning of the next charge, in active simulation seconds.
+const BORG_FIRE_INTERVAL = 2.2;
+const BORG_FIRE_CHARGE_SECONDS = 0.55;
+const BORG_AIM_LOCK_SECONDS = 0.15;
+// Sample one bounded angular error when aim locks. The final warning and shot
+// share that heading; slight off-center impacts vary the natural ricochet
+// rather than forcing a centered shot straight back into its source.
+const BORG_AIM_SPREAD = Math.PI / 180;
+const BORG_BULLET_SPEED = 540;
+const BORG_BULLET_MASS = 100;
+const BORG_BULLET_LINE_WIDTH = 6;
+const BORG_MUZZLE_FLASH_SECONDS = 0.2;
+// Physical damage ignores phaser adaptation. A shared replenishing contact
+// budget prevents solver chatter from draining the hull in a single scrape.
+const BORG_IMPULSE_DAMAGE_SCALE = 1 / 6500;
+const BORG_CONTACT_DAMAGE_CAP = 24;
+const BORG_CONTACT_BUDGET_SECONDS = 0.5;
+const BORG_IMPACT_SECONDS = 0.6;
+const BORG_MAX_SCARS = 28;
+// Warm structural failures contrast with green shield adaptation. Four fixed
+// fracture routes grow continuously with lost hull, while a scattered 4-by-4
+// plate pattern exposes dead machinery in proportion to permanent damage.
+// Normalized coordinates preserve the same damage cues after arena resizing.
+const BORG_HULL_DAMAGE_GRID = 4;
+const BORG_HULL_FRACTURES = Object.freeze([
+  Object.freeze([
+    { x: -0.8, y: -1 },
+    { x: -0.64, y: -0.68 },
+    { x: -0.38, y: -0.56 },
+    { x: -0.2, y: -0.18 },
+    { x: 0.1, y: -0.04 },
+    { x: 0.24, y: 0.38 },
+    { x: 0.58, y: 0.56 },
+    { x: 0.76, y: 1 },
+  ]),
+  Object.freeze([
+    { x: 1, y: -0.62 },
+    { x: 0.68, y: -0.44 },
+    { x: 0.54, y: -0.16 },
+    { x: 0.14, y: 0.06 },
+    { x: -0.08, y: 0.4 },
+    { x: -0.48, y: 0.52 },
+    { x: -0.72, y: 0.8 },
+    { x: -1, y: 0.86 },
+  ]),
+  Object.freeze([
+    { x: 0.3, y: 1 },
+    { x: 0.1, y: 0.74 },
+    { x: 0.18, y: 0.46 },
+    { x: -0.16, y: 0.3 },
+    { x: -0.28, y: -0.02 },
+    { x: -0.6, y: -0.22 },
+    { x: -0.76, y: -0.48 },
+    { x: -1, y: -0.54 },
+  ]),
+  Object.freeze([
+    { x: -1, y: -0.18 },
+    { x: -0.72, y: -0.1 },
+    { x: -0.52, y: 0.14 },
+    { x: -0.22, y: 0.06 },
+    { x: 0.08, y: -0.26 },
+    { x: 0.46, y: -0.32 },
+    { x: 0.58, y: -0.68 },
+    { x: 0.7, y: -1 },
+  ]),
+]);
+// Defeat awards points once; the intact hull remains a drifting physical
+// obstacle until the field restarts, with no remaining hostile systems.
+const BORG_DEFEAT_SCORE = 8000;
+
 // Aim assist advises the player without steering or changing phaser behavior.
 const AIM_ASSIST_TOGGLE_KEY = "KeyM";
 const AIM_ASSIST_TOGGLE_KEY_LABEL = "M";
@@ -318,8 +433,8 @@ const AIM_ASSIST_MARKER_GAP = 4;
 const AIM_ASSIST_TARGET_PADDING = 7;
 
 // Autopilot and auto-gunner independently produce the same held controls a
-// player can use. Enabling both preserves the original navigation and burst
-// algorithms, with movement, recoil, and collisions on normal gameplay paths.
+// player can use. Enabling both combines navigation and firing, with movement,
+// recoil, heat, and collisions on normal gameplay paths.
 const AUTOPILOT_TOGGLE_KEY = "KeyT";
 const AUTOPILOT_TOGGLE_KEY_LABEL = "T";
 // Auto-gunner independently contributes Space through the normal weapon gates.
@@ -328,6 +443,9 @@ const AUTO_GUNNER_TOGGLE_KEY_LABEL = "G";
 // Predict linear encounters for this many seconds; wall bounces are left to
 // the normal solver and the next decision rather than speculative ricochets.
 const AUTOPILOT_MAX_LOOKAHEAD_SECONDS = 1.8;
+// Convert contact time to CSS-pixel scoring cost so imminent surface threats
+// take priority over equally close encounters farther into the lookahead.
+const AUTOPILOT_THREAT_TIME_COST = 80;
 // Clearance grows with damage, giving a depleted ship time to recover.
 const AUTOPILOT_BASE_SAFE_MARGIN = 80;
 const AUTOPILOT_SHIELD_RECOVERY_MARGIN = 110;
@@ -368,9 +486,18 @@ const AUTOPILOT_MIN_COAST_SPEED = 25;
 const AUTOPILOT_ENGAGEMENT_RANGE = 200;
 const AUTOPILOT_ENGAGEMENT_RANGE_RATIO = 0.35;
 const AUTOPILOT_APPROACH_HYSTERESIS = 60;
-// Reserve nose-away escape thrust for immediate contact, so an approaching
-// target can still be destroyed while the ship brakes.
-const AUTOPILOT_EMERGENCY_CLEARANCE = 60;
+// Look for a clear escape lane through nearby bodies and walls instead of
+// blindly thrusting directly away from one obstacle into another. Include
+// turning time because ordinary helm controls cannot redirect thrust instantly.
+const AUTOPILOT_ESCAPE_LOOKAHEAD_SECONDS = 1;
+const AUTOPILOT_ESCAPE_SAMPLE_FRACTIONS = Object.freeze([0.5, 1]);
+const AUTOPILOT_ESCAPE_ANGLE_OFFSETS = Object.freeze([
+  0,
+  -Math.PI / 4,
+  Math.PI / 4,
+  -Math.PI / 2,
+  Math.PI / 2,
+]);
 // Slow navigation decisions bound asteroid scans. Steering checks alignment
 // every frame; firing independently exploits shots even between turn presses.
 const AUTOPILOT_UPDATE_INTERVAL = 1 / 15;
@@ -442,7 +569,7 @@ const PLAY_HELP = Object.freeze([
   }),
   Object.freeze({
     label: AUTOPILOT_TOGGLE_KEY_LABEL,
-    description: "autopilot: fly + ram; helm cancels",
+    description: "autopilot: fly / ram rocks; helm cancels",
   }),
   Object.freeze({
     label: AUTO_GUNNER_TOGGLE_KEY_LABEL,
@@ -460,7 +587,7 @@ const PLAY_HELP = Object.freeze([
 const HELP_PANEL_WIDTH = 540;
 // Fit the essential controls, objective, and survival rules without turning the
 // pause screen into a complete mechanics reference.
-const HELP_PANEL_HEIGHT = 614;
+const HELP_PANEL_HEIGHT = 686;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -639,6 +766,29 @@ const autoGunnerPressedKeys = new Set();
 const asteroids = [];
 const bullets = [];
 const sparks = [];
+/** @type {BorgCube | undefined} One encounter per generated field. */
+let borgCube = undefined;
+
+/** @returns {Generator<Asteroid>} Solid bodies, including the drifting wreck. */
+function* physicalTargets() {
+  yield* asteroids;
+  if (borgCube !== undefined) yield borgCube;
+}
+
+/** @returns {Generator<Asteroid>} Live bodies available for combat targeting. */
+function* combatTargets() {
+  for (const body of physicalTargets()) {
+    if (body !== borgCube || body.alive) yield body;
+  }
+}
+
+/**
+ * @param {Asteroid} target Previously committed body.
+ * @returns {boolean} Whether the body remains a live combat target.
+ */
+function isLiveTarget(target) {
+  return asteroids.includes(target) || (target === borgCube && borgCube.alive);
+}
 // Achievements survive completed fields and pauses, but never ship destruction
 // or a page reload. A Set prevents repeated wins from duplicating an unlock.
 /** @type {Set<string>} */
@@ -650,8 +800,8 @@ const sessionAchievements = new Set();
 const fieldAsteroidDamage = { ramming: 0, blasters: 0 };
 /**
  * Heading dwell and target commitment use simulation time, so pausing cannot
- * acquire a target. The toggle survives life changes; its transient lock does
- * not. Target centers define the sector and nearest-target distance.
+ * acquire a target. Pause and focus loss clear the lock; a new sector also
+ * disables assistance. Target centers define the sector and nearest distance.
  */
 class AimAssist {
   enabled = false;
@@ -728,7 +878,7 @@ class AimAssist {
     if (this.target !== undefined) {
       this.lockRemaining = Math.max(0, this.lockRemaining - deltaTime);
       if (
-        !asteroids.includes(this.target) ||
+        !isLiveTarget(this.target) ||
         (this.lockRemaining <= COLLISION_EPSILON && !this.inSector(this.target))
       ) {
         this.reset();
@@ -748,7 +898,7 @@ class AimAssist {
     this.dwell += deltaTime;
     if (this.dwell + COLLISION_EPSILON < AIM_ASSIST_ACQUIRE_SECONDS) return;
     let closestDistance = Infinity;
-    for (const target of asteroids) {
+    for (const target of combatTargets()) {
       const distance = (target.x - playerX) ** 2 + (target.y - playerY) ** 2;
       if (distance < closestDistance && this.inSector(target)) {
         this.target = target;
@@ -791,9 +941,7 @@ let asteroidsGenerated = false;
 // player can inspect a frozen collision result and resume without a time jump.
 // Starting paused gives the player the controls before any movement begins.
 let gamePaused = true;
-// Autopilot starts off for predictable player-first startup. Its state is
-// retained across automatic life restarts so a long demonstration can keep
-// playing after an allowed collision; manual helm input turns it off.
+// Every sector starts with manual helm; manual flight also turns autopilot off.
 let autopilotEnabled = false;
 let autopilotTargetLock = undefined;
 let autopilotDesiredAngle = 0;
@@ -803,7 +951,7 @@ let autopilotTargetLockTimeRemaining = 0;
 let autopilotDecisionTime = 0;
 let autopilotAttackTimeRemaining = 0;
 let autopilotAttackRoll = 1;
-// Both modes start disabled and retain their settings across life restarts.
+// Automatic gunnery also starts disabled in each sector.
 let autoGunnerEnabled = false;
 let autoGunnerBurstActive = false;
 // Points reset with each field; session achievements independently survive wins.
@@ -1374,22 +1522,870 @@ class Asteroid {
   }
 }
 
+/**
+ * An armored machine using the existing convex-body geometry and impulses.
+ * The four perimeter faces have shields and recent-fire memory, but share one
+ * reinforcement allocation. Presentation belongs to the body, never the HUD.
+ */
+class BorgCube extends Asteroid {
+  /**
+   * @param {number} width Arena width in CSS pixels.
+   * @param {number} height Arena height in CSS pixels.
+   */
+  constructor(width, height) {
+    const half = Math.min(
+      BORG_HALF_SIZE,
+      Math.min(width, height) * BORG_ARENA_SIZE_RATIO,
+    );
+    // Choose the least crowded corner, including player clearance, rather
+    // than spawning the machine on top of a ship or an existing rock.
+    const inset = half * Math.SQRT2 + 12;
+    const positions = [
+      { x: inset, y: inset },
+      { x: width - inset, y: inset },
+      { x: width - inset, y: height - inset },
+      { x: inset, y: height - inset },
+    ];
+    let position = positions[0];
+    let bestClearance = -Infinity;
+    for (const candidate of positions) {
+      let clearance =
+        Math.hypot(candidate.x - playerX, candidate.y - playerY) -
+        PLAYER_RADIUS;
+      for (const rock of asteroids) {
+        clearance = Math.min(
+          clearance,
+          Math.hypot(candidate.x - rock.x, candidate.y - rock.y) - rock.radius,
+        );
+      }
+      if (clearance > bestClearance) {
+        position = candidate;
+        bestClearance = clearance;
+      }
+    }
+    super({
+      radius: half * Math.SQRT2,
+      localVertices: [
+        { x: -half, y: -half },
+        { x: half, y: -half },
+        { x: half, y: half },
+        { x: -half, y: half },
+      ],
+      x: position.x,
+      y: position.y,
+      velocityX: 0,
+      velocityY: 0,
+      density: ASTEROID_MAX_DENSITY,
+      rotation: 0.12,
+      angularVelocity: 0.035,
+    });
+    this.half = half;
+    this.hull = BORG_HULL;
+    this.faces = Array.from({ length: 4 }, () => ({
+      shield: BORG_FACE_SHIELD,
+      adaptation: 0,
+      burst: 0,
+      quiet: 10,
+      impact: 0,
+      resistance: 0,
+      warning: 0,
+    }));
+    this.scars = [];
+    this.time = 0;
+    this.recovery = 0;
+    this.engineX = 0;
+    this.engineY = 0;
+    this.contactBudget = BORG_CONTACT_DAMAGE_CAP;
+    this.fireCooldown = BORG_FIRE_INTERVAL;
+    this.fireCharge = 0;
+    this.fireAngle = 0;
+    this.muzzleFlash = 0;
+    this.wreckTexture = undefined;
+    this.texture = this.createTexture();
+  }
+
+  /** @returns {boolean} Whether the cube can still attack or receive damage. */
+  get alive() {
+    return this.hull > 0;
+  }
+
+  /**
+   * Resize the encounter's physical and visual geometry together. Preserve
+   * combat progress and velocity when a window becomes smaller or larger.
+   * @param {number} width Arena width in CSS pixels.
+   * @param {number} height Arena height in CSS pixels.
+   * @returns {void}
+   */
+  keepInside(width, height) {
+    const half = Math.max(
+      0.1,
+      Math.min(BORG_HALF_SIZE, Math.min(width, height) * BORG_ARENA_SIZE_RATIO),
+    );
+    if (half !== this.half) {
+      const ratio = half / this.half;
+      this.half = half;
+      this.radius = half * Math.SQRT2;
+      this.localVertices = Object.freeze(
+        this.localVertices.map((vertex) =>
+          Object.freeze({ x: vertex.x * ratio, y: vertex.y * ratio }),
+        ),
+      );
+      this.momentOfInertiaValue *= ratio ** 2;
+      for (const scar of this.scars) {
+        scar.x *= ratio;
+        scar.y *= ratio;
+        scar.radius *= ratio;
+      }
+      this.geometryRotation = undefined;
+    }
+    super.keepInside(width, height);
+  }
+
+  /**
+   * Bake layered greebles once: raised metal plates, trenches, conduits and
+   * green machinery. All relief remains inside the physical square silhouette.
+   * @param {boolean} [powered] Whether the machinery's green lights are on.
+   * @returns {HTMLCanvasElement} Cached opaque hull skin.
+   */
+  createTexture(powered = true) {
+    const texture = document.createElement("canvas");
+    texture.width = BORG_TEXTURE_SIZE;
+    texture.height = BORG_TEXTURE_SIZE;
+    const skin = texture.getContext("2d");
+    skin.fillStyle = "#101a14";
+    skin.fillRect(0, 0, texture.width, texture.height);
+    for (let row = 0; row < 16; row += 1) {
+      for (let column = 0; column < 16; column += 1) {
+        const value = (row * 31 + column * 17 + row * column * 7) % 23;
+        const x = column * 20 + 2;
+        const y = row * 20 + 2;
+        const width = 10 + (value % 8);
+        const height = 8 + (value % 10);
+        skin.fillStyle = value % 3 === 0 ? "#33443a" : "#223128";
+        skin.fillRect(x, y, width, height);
+        skin.fillStyle = "#526459";
+        skin.fillRect(x, y, width, 1);
+        skin.fillRect(x, y, 1, height);
+        skin.fillStyle = "#050a07";
+        skin.fillRect(x + width - 2, y + 2, 2, height - 2);
+        skin.fillRect(x + 2, y + height - 2, width - 2, 2);
+        if (powered && value % 3 === 0) {
+          skin.fillStyle = value % 2 === 0 ? "#80ef97" : "#368e50";
+          skin.fillRect(x + 3, y + 4, 2, Math.max(2, height - 8));
+          skin.fillRect(x + 7, y + 4, Math.max(2, width - 10), 1);
+        }
+      }
+    }
+    skin.strokeStyle = "#020604";
+    skin.lineWidth = 6;
+    for (const offset of [80, 160, 240]) {
+      skin.beginPath();
+      skin.moveTo(offset, 0);
+      skin.lineTo(offset, offset);
+      skin.lineTo(320, offset);
+      skin.stroke();
+      skin.strokeStyle = "#415c47";
+      skin.lineWidth = 1;
+      skin.stroke();
+      skin.strokeStyle = "#020604";
+      skin.lineWidth = 6;
+    }
+    return texture;
+  }
+
+  /**
+   * @param {Vector2} point World contact position.
+   * @returns {Vector2} Contact in hull-local coordinates.
+   */
+  localPoint(point) {
+    const x = point.x - this.x;
+    const y = point.y - this.y;
+    const cosine = Math.cos(this.rotation);
+    const sine = Math.sin(this.rotation);
+    return { x: x * cosine + y * sine, y: -x * sine + y * cosine };
+  }
+
+  /**
+   * @param {Vector2} point World contact or threat position.
+   * @returns {number} Clockwise edge index, starting at the top edge.
+   */
+  faceAt(point) {
+    const local = this.localPoint(point);
+    return Math.abs(local.x) > Math.abs(local.y)
+      ? local.x > 0
+        ? 1
+        : 3
+      : local.y > 0
+        ? 2
+        : 0;
+  }
+
+  /**
+   * Allocate power before recording a hit. The damaged face gains allocation
+   * by taking it proportionally from other faces; total allocation never
+   * exceeds one. Shields leak damage, and combined resistance never exceeds
+   * 75%, so even repeated hits on the same face always reduce hull.
+   * @param {Vector2} point Swept projectile contact in world coordinates.
+   * @returns {void}
+   */
+  hitPhaser(point) {
+    if (!this.alive) return;
+    const face = this.faces[this.faceAt(point)];
+    const resistance =
+      face.adaptation * BORG_DIRECTIONAL_RESISTANCE +
+      face.burst * BORG_BURST_RESISTANCE;
+    const damage = BORG_PHASER_DAMAGE * (1 - resistance);
+    const absorbed = Math.min(face.shield, damage * BORG_SHIELD_ABSORPTION);
+    face.shield -= absorbed;
+    face.resistance = resistance;
+    face.impact = BORG_IMPACT_SECONDS;
+    face.quiet = 0;
+    face.burst = Math.min(1, face.burst + BORG_BURST_PER_HIT);
+    face.adaptation = Math.min(1, face.adaptation + BORG_ADAPTATION_PER_HIT);
+    const otherAllocation = this.faces.reduce(
+      (sum, other) => sum + (other === face ? 0 : other.adaptation),
+      0,
+    );
+    const available = 1 - face.adaptation;
+    if (otherAllocation > available && otherAllocation > COLLISION_EPSILON) {
+      for (const other of this.faces) {
+        if (other !== face) other.adaptation *= available / otherAllocation;
+      }
+    }
+    this.damageHull(damage - absorbed, point);
+  }
+
+  /**
+   * @param {number} impulse Magnitude of the actual physical contact impulse.
+   * @param {Vector2} point Shared contact position in world coordinates.
+   * @returns {void}
+   */
+  hitBody(impulse, point) {
+    if (!this.alive || impulse <= COLLISION_EPSILON) return;
+    const damage = Math.min(
+      this.contactBudget,
+      impulse * BORG_IMPULSE_DAMAGE_SCALE,
+    );
+    this.contactBudget -= damage;
+    const face = this.faces[this.faceAt(point)];
+    face.shield = Math.max(0, face.shield - damage);
+    face.quiet = 0;
+    face.impact = BORG_IMPACT_SECONDS;
+    face.resistance = 0;
+    this.damageHull(damage, point);
+  }
+
+  /**
+   * Record permanent scars at the event source. Bound the presentation queue;
+   * hull damage itself remains authoritative after the scar queue fills.
+   * @param {number} damage Nonnegative hull damage after shield absorption.
+   * @param {Vector2} point World contact position.
+   * @returns {void}
+   */
+  damageHull(damage, point) {
+    if (!this.alive || damage <= 0) return;
+    this.hull = Math.max(0, this.hull - damage);
+    const local = this.localPoint(point);
+    this.scars.push({
+      x: Math.max(-this.half + 5, Math.min(this.half - 5, local.x)),
+      y: Math.max(-this.half + 5, Math.min(this.half - 5, local.y)),
+      radius: Math.min(14, 3 + damage * 0.55),
+    });
+    if (this.scars.length > BORG_MAX_SCARS) this.scars.shift();
+    emitSparksAt(point, damage * SPARK_ENERGY_PER_PARTICLE * 0.8);
+    if (!this.alive) {
+      // Defeat is a single transition. Keep the body's pose and momentum;
+      // only powered systems stop. The wreck is never fragmented or removed.
+      sessionPoints += BORG_DEFEAT_SCORE;
+      this.wreckTexture = this.createTexture(false);
+      this.fireCharge = 0;
+      this.fireCooldown = 0;
+      this.muzzleFlash = 0;
+      this.recovery = 0;
+      this.engineX = 0;
+      this.engineY = 0;
+      for (const face of this.faces) {
+        face.shield = 0;
+        face.adaptation = 0;
+        face.burst = 0;
+        face.impact = 0;
+        face.warning = 0;
+      }
+      emitSparksAt(
+        this,
+        MAX_SPARKS_PER_INTERACTION * SPARK_ENERGY_PER_PARTICLE,
+      );
+      empSound.playRandom();
+    }
+  }
+
+  /**
+   * @param {number} width Arena width in CSS pixels.
+   * @param {number} height Arena height in CSS pixels.
+   * @param {number} deltaTime Active simulation seconds.
+   * @returns {void}
+   */
+  update(width, height, deltaTime) {
+    this.time += deltaTime;
+    if (!this.alive) {
+      // A wreck has no navigation, braking, repair or weapons. Contact and
+      // wall impulses are the only things that can change its free motion.
+      super.update(width, height, deltaTime);
+      return;
+    }
+    this.contactBudget = Math.min(
+      BORG_CONTACT_DAMAGE_CAP,
+      this.contactBudget +
+        (BORG_CONTACT_DAMAGE_CAP / BORG_CONTACT_BUDGET_SECONDS) * deltaTime,
+    );
+    for (const face of this.faces) {
+      face.quiet += deltaTime;
+      face.impact = Math.max(0, face.impact - deltaTime);
+      face.warning = Math.max(0, face.warning - deltaTime * 2);
+      if (face.quiet > BORG_BURST_QUIET_SECONDS)
+        face.burst = Math.max(0, face.burst - BORG_BURST_DECAY * deltaTime);
+      if (face.quiet > BORG_ADAPTATION_QUIET_SECONDS)
+        face.adaptation = Math.max(
+          0,
+          face.adaptation - BORG_ADAPTATION_DECAY * deltaTime,
+        );
+    }
+    const powerUsed =
+      this.faces.reduce(
+        (sum, face) => sum + face.adaptation * BORG_REINFORCEMENT_POWER,
+        0,
+      ) +
+      Math.max(...this.faces.map((face) => face.burst)) * BORG_BURST_POWER;
+    this.recovery = 0;
+    for (const face of this.faces) {
+      if (face.quiet > BORG_REPAIR_DELAY && face.shield < BORG_FACE_SHIELD) {
+        const repair =
+          BORG_SHIELD_REPAIR_RATE * Math.max(0, 1 - powerUsed) * deltaTime;
+        face.shield = Math.min(BORG_FACE_SHIELD, face.shield + repair);
+        this.recovery = Math.max(this.recovery, 1 - powerUsed);
+      }
+    }
+    this.navigate(width, height, deltaTime);
+    super.update(width, height, deltaTime);
+    this.updateWeapon(deltaTime);
+  }
+
+  /**
+   * Locate a muzzle just outside the actual square, rather than outside its
+   * larger bounding circle. Launching clear of the hull needs no owner immunity:
+   * a pulse that ricochets back can hit its own source normally.
+   * @param {number} [angle] World firing heading in radians.
+   * @param {number} [rotation] Hull rotation at the expected launch time.
+   * @returns {number} Distance from the center to a clear projectile muzzle.
+   */
+  muzzleDistance(angle = this.fireAngle, rotation = this.rotation) {
+    const localAngle = angle - rotation;
+    const surfaceDistance =
+      this.half /
+      Math.max(Math.abs(Math.cos(localAngle)), Math.abs(Math.sin(localAngle)));
+    return surfaceDistance + BULLET_HALF_LENGTH + BULLET_COLLISION_OFFSET;
+  }
+
+  /** @returns {Vector2} World launch position at the committed firing heading. */
+  muzzlePosition() {
+    const distance = this.muzzleDistance();
+    return {
+      x: this.x + Math.cos(this.fireAngle) * distance,
+      y: this.y + Math.sin(this.fireAngle) * distance,
+    };
+  }
+
+  /**
+   * Lead current linear motion through the remaining charge and projectile
+   * flight. Projectiles do not inherit cube velocity, so only the future
+   * launch origin uses its motion. Refine the angle-dependent square muzzle
+   * with a small bounded iteration instead of duplicating the stable solver.
+   * Future thrust, turns and wall bounces remain unknown to the weapon.
+   * @param {number} delay Remaining simulation seconds before launch.
+   * @returns {number} World heading for an intercept, or a finite direct bearing.
+   */
+  aimAtPlayer(delay) {
+    const originX = this.x + this.velocityX * delay;
+    const originY = this.y + this.velocityY * delay;
+    const target = {
+      x: playerX + playerVelocityX * delay,
+      y: playerY + playerVelocityY * delay,
+      velocityX: playerVelocityX,
+      velocityY: playerVelocityY,
+    };
+    let angle = Math.atan2(target.y - originY, target.x - originX);
+    for (let iteration = 0; iteration < 5; iteration += 1) {
+      const time = linearInterceptTime(
+        target,
+        BORG_BULLET_SPEED,
+        this.muzzleDistance(
+          angle,
+          this.rotation + this.angularVelocity * delay,
+        ),
+        originX,
+        originY,
+      );
+      if (time === undefined) break;
+      angle = Math.atan2(
+        target.y + target.velocityY * time - originY,
+        target.x + target.velocityX * time - originX,
+      );
+    }
+    return angle;
+  }
+
+  /**
+   * Track ballistic lead while charging, then lock a visibly committed shot
+   * for the final reaction window. All clocks freeze on pause. Recoil balances
+   * the departing projectile's launch impulse.
+   * @param {number} deltaTime Active simulation seconds since the last step.
+   * @returns {void}
+   */
+  updateWeapon(deltaTime) {
+    if (!this.alive) return;
+    this.muzzleFlash = Math.max(0, this.muzzleFlash - deltaTime);
+    if (this.fireCharge > 0) {
+      const remainingCharge = Math.max(0, this.fireCharge - deltaTime);
+      if (this.fireCharge > BORG_AIM_LOCK_SECONDS) {
+        this.fireAngle = this.aimAtPlayer(remainingCharge);
+        if (remainingCharge <= BORG_AIM_LOCK_SECONDS) {
+          this.fireAngle += randomBetween(-BORG_AIM_SPREAD, BORG_AIM_SPREAD);
+        }
+      }
+      this.fireCharge = remainingCharge;
+      if (this.fireCharge > 0) return;
+      const muzzle = this.muzzlePosition();
+      const bullet = new Bullet({
+        ...muzzle,
+        angle: this.fireAngle,
+        speed: BORG_BULLET_SPEED,
+        mass: BORG_BULLET_MASS,
+        lineWidth: BORG_BULLET_LINE_WIDTH,
+        source: "borg",
+        materialColor: BORG_GREEN,
+      });
+      applyBodyImpulse(
+        this,
+        -bullet.mass * bullet.velocityX,
+        -bullet.mass * bullet.velocityY,
+        muzzle,
+      );
+      bullets.push(bullet);
+      this.muzzleFlash = BORG_MUZZLE_FLASH_SECONDS;
+      this.fireCooldown = BORG_FIRE_INTERVAL;
+      heavyShotSound.playRandom();
+      return;
+    }
+    this.fireCooldown = Math.max(0, this.fireCooldown - deltaTime);
+    if (this.fireCooldown > 0) return;
+    // At contact distance the ordinary body collision supplies the threat;
+    // avoid spawning a shot inside the ship's shield circle.
+    if (
+      Math.hypot(playerX - this.x, playerY - this.y) <=
+      this.radius + PLAYER_RADIUS + BULLET_HALF_LENGTH
+    )
+      return;
+    this.fireCharge = BORG_FIRE_CHARGE_SECONDS;
+    this.fireAngle = this.aimAtPlayer(this.fireCharge);
+  }
+
+  /**
+   * Slow pursuit provides pressure without predicting player movement.
+   * Project rocks to closest approach and push away from threatened regions.
+   * Engines cannot instantly cancel inertia or dodge a rock already touching.
+   * @param {number} width Arena width in CSS pixels.
+   * @param {number} height Arena height in CSS pixels.
+   * @param {number} deltaTime Active simulation seconds.
+   * @returns {void}
+   */
+  navigate(width, height, deltaTime) {
+    const pursuit = normalizedVector(playerX - this.x, playerY - this.y);
+    let steerX = pursuit.x * BORG_PURSUIT_WEIGHT;
+    let steerY = pursuit.y * BORG_PURSUIT_WEIGHT;
+    for (const rock of asteroids) {
+      const x = rock.x - this.x;
+      const y = rock.y - this.y;
+      const vx = rock.velocityX - this.velocityX;
+      const vy = rock.velocityY - this.velocityY;
+      const velocitySquared = vx * vx + vy * vy;
+      const time =
+        velocitySquared > COLLISION_EPSILON
+          ? Math.max(
+              0,
+              Math.min(
+                BORG_AVOIDANCE_LOOKAHEAD,
+                -(x * vx + y * vy) / velocitySquared,
+              ),
+            )
+          : 0;
+      const futureX = x + vx * time;
+      const futureY = y + vy * time;
+      const distance = Math.hypot(futureX, futureY);
+      const clearance = this.radius + rock.radius + BORG_AVOIDANCE_MARGIN;
+      if (distance >= clearance) continue;
+      // Head-on approaches need a lateral escape, not merely reverse thrust.
+      const away =
+        distance > COLLISION_EPSILON
+          ? normalizedVector(-futureX, -futureY)
+          : normalizedVector(-vy, vx);
+      const urgency = (1 - distance / clearance) * 3;
+      steerX += away.x * urgency;
+      steerY += away.y * urgency;
+      this.faces[this.faceAt(rock)].warning = Math.max(
+        this.faces[this.faceAt(rock)].warning,
+        Math.min(1, urgency),
+      );
+    }
+    const margin = Math.min(BORG_WALL_MARGIN, width * 0.18, height * 0.18);
+    const edges = [
+      { distance: this.x - this.radius, x: 1, y: 0 },
+      { distance: width - this.x - this.radius, x: -1, y: 0 },
+      { distance: this.y - this.radius, x: 0, y: 1 },
+      { distance: height - this.y - this.radius, x: 0, y: -1 },
+    ];
+    for (const edge of edges) {
+      const urgency = Math.max(0, 1 - edge.distance / Math.max(1, margin));
+      steerX += edge.x * urgency * 3;
+      steerY += edge.y * urgency * 3;
+    }
+    const strength = Math.min(1, Math.hypot(steerX, steerY));
+    const steering = normalizedVector(steerX, steerY);
+    this.engineX = steering.x * strength;
+    this.engineY = steering.y * strength;
+    this.velocityX += this.engineX * BORG_ACCELERATION * deltaTime;
+    this.velocityY += this.engineY * BORG_ACCELERATION * deltaTime;
+    // Engines brake finite overspeed instead of deleting collision momentum.
+    const speed = Math.hypot(this.velocityX, this.velocityY);
+    if (speed > BORG_MAX_SPEED) {
+      const ratio =
+        Math.max(BORG_MAX_SPEED, speed - BORG_ACCELERATION * deltaTime) / speed;
+      this.velocityX *= ratio;
+      this.velocityY *= ratio;
+    }
+    this.angularVelocity = Math.max(
+      -BORG_MAX_TURN_SPEED,
+      Math.min(BORG_MAX_TURN_SPEED, this.angularVelocity),
+    );
+  }
+
+  /** @returns {void} Draw the powered cube or its intact, unlit wreck. */
+  draw() {
+    context.save();
+    context.translate(this.x, this.y);
+    context.rotate(this.rotation);
+    const half = this.half;
+    context.drawImage(
+      this.wreckTexture ?? this.texture,
+      -half,
+      -half,
+      half * 2,
+      half * 2,
+    );
+    // Beveled metal and inset plate seams suggest depth without painting a
+    // decorative protrusion outside the collision hull.
+    context.strokeStyle = this.alive ? "#71947c" : "#4d5650";
+    context.lineWidth = 2;
+    context.strokeRect(-half + 1, -half + 1, half * 2 - 2, half * 2 - 2);
+    context.strokeStyle = "#020704";
+    context.lineWidth = 3;
+    context.strokeRect(-half + 6, -half + 6, half * 2 - 12, half * 2 - 12);
+    for (const scar of this.scars) {
+      context.fillStyle = "#020403";
+      context.beginPath();
+      context.arc(scar.x, scar.y, scar.radius, 0, Math.PI * 2);
+      context.fill();
+      context.strokeStyle = "#754e2a";
+      context.lineWidth = 1;
+      context.stroke();
+    }
+    this.drawHullDamage();
+    if (!this.alive) {
+      context.restore();
+      return;
+    }
+    for (let index = 0; index < this.faces.length; index += 1) {
+      const face = this.faces[index];
+      context.save();
+      context.rotate((index * Math.PI) / 2);
+      const charge = face.shield / BORG_FACE_SHIELD;
+      const otherPower = this.faces.reduce(
+        (sum, other) => sum + (other === face ? 0 : other.adaptation),
+        0,
+      );
+      // Adapted hull machinery remains visible after shield charge is spent;
+      // its resistance still affects incoming fire on this face.
+      const intensity =
+        (0.18 + face.adaptation * 0.8) *
+        (0.3 + charge * 0.7) *
+        (1 - otherPower * 0.65);
+      context.strokeStyle = BORG_GREEN;
+      context.globalAlpha = intensity;
+      context.lineWidth = 1 + face.adaptation * 2;
+      context.beginPath();
+      context.moveTo(-half + 7, -half + 4);
+      context.lineTo(half - 7, -half + 4);
+      context.stroke();
+      // Circuit branches grow with directional allocation. Sustained-fire
+      // adaptation adds closely spaced transverse bars on that same face.
+      for (
+        let branch = 0;
+        branch < Math.ceil(face.adaptation * 12);
+        branch += 1
+      ) {
+        const x = -half + 12 + (branch * (half * 2 - 24)) / 12;
+        context.beginPath();
+        context.moveTo(x, -half + 4);
+        context.lineTo(x, -half + 9 + face.adaptation * 13);
+        context.lineTo(x + 5, -half + 9 + face.adaptation * 13);
+        context.stroke();
+      }
+      context.globalAlpha = face.burst * 0.6;
+      for (let band = 0; band < Math.ceil(face.burst * 4); band += 1) {
+        context.strokeRect(-half + 9, -half + 8 + band * 4, half * 2 - 18, 2);
+      }
+      if (face.warning > 0) {
+        context.globalAlpha =
+          face.warning * (0.4 + 0.6 * Math.abs(Math.sin(this.time * 9)));
+        context.strokeStyle = "#d0ffa0";
+        context.lineWidth = 2;
+        context.strokeRect(-half + 3, -half + 3, half * 2 - 6, 5);
+      }
+      if (face.impact > 0) {
+        const progress = 1 - face.impact / BORG_IMPACT_SECONDS;
+        context.globalAlpha = (1 - progress) * 0.9;
+        context.strokeStyle = face.resistance > 0.35 ? BORG_GREEN : LCARS_GOLD;
+        context.lineWidth = 1 + (1 - face.resistance) * 3;
+        context.beginPath();
+        context.ellipse(
+          0,
+          -half + 4,
+          Math.max(1, progress * half),
+          3 + (1 - face.resistance) * progress * 16,
+          0,
+          0,
+          Math.PI * 2,
+        );
+        context.stroke();
+      }
+      context.restore();
+    }
+    if (this.recovery > 0) {
+      context.save();
+      context.beginPath();
+      context.rect(-half + 8, -half + 8, half * 2 - 16, half * 2 - 16);
+      context.clip();
+      const sweep = ((this.time * 0.45) % 1) * half * 2 - half;
+      context.globalAlpha = this.recovery * 0.35;
+      context.fillStyle = BORG_GREEN;
+      context.fillRect(-half + 8, sweep, half * 2 - 16, 2);
+      context.restore();
+    }
+    this.drawWeapon();
+    // Exhaust is opposite the actual commanded acceleration, so machinery
+    // identifies the maneuver that avoids the currently highlighted threat.
+    const engine = this.localPoint({
+      x: this.x + this.engineX,
+      y: this.y + this.engineY,
+    });
+    const length = Math.hypot(engine.x, engine.y);
+    if (length > 0.05) {
+      context.rotate(Math.atan2(engine.y, engine.x));
+      context.strokeStyle = BORG_GREEN;
+      context.globalAlpha = length * 0.65;
+      context.lineWidth = 3;
+      context.beginPath();
+      for (const offset of [-9, 0, 9]) {
+        context.moveTo(-half * 0.65, offset);
+        context.lineTo(-half * 0.65 + 7 + length * 8, offset);
+      }
+      context.stroke();
+    }
+    context.restore();
+  }
+
+  /** @returns {void} Draw a committed charge direction and actual muzzle flash. */
+  drawWeapon() {
+    if (this.fireCharge <= 0 && this.muzzleFlash <= 0) return;
+    const muzzle = this.localPoint(this.muzzlePosition());
+    const localAngle = this.fireAngle - this.rotation;
+    const charge =
+      this.fireCharge > 0 ? 1 - this.fireCharge / BORG_FIRE_CHARGE_SECONDS : 1;
+    const flash = this.muzzleFlash / BORG_MUZZLE_FLASH_SECONDS;
+    context.save();
+    context.translate(muzzle.x, muzzle.y);
+    context.rotate(localAngle);
+    context.globalAlpha = 0.45 + charge * 0.55;
+    context.strokeStyle =
+      this.fireCharge > 0 && this.fireCharge <= BORG_AIM_LOCK_SECONDS
+        ? "#d0ffd7"
+        : BORG_GREEN;
+    context.lineWidth = 2;
+    context.beginPath();
+    context.arc(
+      -BULLET_HALF_LENGTH,
+      0,
+      3 + charge * 5 + flash * 4,
+      0,
+      Math.PI * 2,
+    );
+    context.stroke();
+    context.setLineDash([4, 5]);
+    context.globalAlpha = 0.25 + charge * 0.4;
+    context.beginPath();
+    context.moveTo(0, 0);
+    context.lineTo(40 + charge * 28, 0);
+    context.stroke();
+    context.restore();
+  }
+
+  /**
+   * Show absolute hull loss across the whole body, not just repeated impact
+   * points along one edge. Black trenches widen, warm fissures lengthen, and
+   * an increasing share of machinery goes dark. Derive every extent from
+   * hull state so capped impact scars and recovered shields cannot erase it.
+   * @returns {void}
+   */
+  drawHullDamage() {
+    const damage = Math.max(0, Math.min(1, 1 - this.hull / BORG_HULL));
+    if (damage <= 0) return;
+    const half = this.half;
+    context.save();
+    // Damage stays inside the unchanged physical hull; green shield ripples
+    // can still play over its rim independently of the damaged structure.
+    context.beginPath();
+    context.rect(-half, -half, half * 2, half * 2);
+    context.clip();
+    context.fillStyle = "#000000";
+    context.globalAlpha = damage * 0.28;
+    context.fillRect(-half, -half, half * 2, half * 2);
+    context.globalAlpha = 1;
+    const cellSize = (half * 2) / BORG_HULL_DAMAGE_GRID;
+    const cellCount = BORG_HULL_DAMAGE_GRID ** 2;
+    for (let index = 0; index < cellCount; index += 1) {
+      // Seven is coprime to sixteen: failure visits each cell exactly once
+      // in a scattered order instead of resembling a left-to-right HUD bar.
+      const severity = Math.max(
+        0,
+        Math.min(1, damage * cellCount - ((index * 7) % cellCount)),
+      );
+      if (severity <= 0) continue;
+      const x =
+        -half + (index % BORG_HULL_DAMAGE_GRID) * cellSize + cellSize * 0.12;
+      const y =
+        -half +
+        Math.floor(index / BORG_HULL_DAMAGE_GRID) * cellSize +
+        cellSize * 0.12;
+      context.globalAlpha = severity;
+      context.fillStyle = "#030504";
+      // Torn plate edges avoid turning structural damage into neat readouts.
+      context.beginPath();
+      context.moveTo(x + cellSize * 0.08, y);
+      context.lineTo(x + cellSize * 0.48, y + cellSize * 0.04);
+      context.lineTo(x + cellSize * 0.76, y);
+      context.lineTo(x + cellSize * 0.69, y + cellSize * 0.4);
+      context.lineTo(x + cellSize * 0.76, y + cellSize * 0.68);
+      context.lineTo(x + cellSize * 0.38, y + cellSize * 0.76);
+      context.lineTo(x, y + cellSize * 0.68);
+      context.lineTo(x + cellSize * 0.05, y + cellSize * 0.3);
+      context.closePath();
+      context.fill();
+      context.strokeStyle = "#874526";
+      context.lineWidth = half * 0.014;
+      context.stroke();
+      // Exposed internals retain a steady warm glow with restrained flicker;
+      // they read as structural failure rather than another green shield.
+      context.globalAlpha =
+        severity *
+        (this.alive ? 0.65 + 0.15 * Math.sin(this.time * 7 + index) : 0.45);
+      context.fillStyle = this.alive ? "#ff6737" : "#6b3d28";
+      context.fillRect(
+        x + cellSize * 0.16,
+        y + cellSize * 0.28,
+        cellSize * 0.4,
+        cellSize * 0.08,
+      );
+      context.fillStyle = this.alive ? "#ffd28a" : "#856548";
+      context.fillRect(
+        x + cellSize * 0.38,
+        y + cellSize * 0.28,
+        cellSize * 0.12,
+        cellSize * 0.05,
+      );
+    }
+    context.globalAlpha = 1;
+    context.lineJoin = "round";
+    context.lineCap = "round";
+    for (const route of BORG_HULL_FRACTURES) {
+      // A hit immediately reveals a short crack; subsequent hull loss grows
+      // its reach continuously, including between plate-failure thresholds.
+      const reach = Math.min(
+        route.length - 1,
+        (0.04 + damage * 0.96) * (route.length - 1),
+      );
+      const completed = Math.floor(reach);
+      context.beginPath();
+      context.moveTo(route[0].x * half, route[0].y * half);
+      for (let index = 1; index <= completed; index += 1) {
+        context.lineTo(route[index].x * half, route[index].y * half);
+      }
+      if (completed < route.length - 1) {
+        const start = route[completed];
+        const end = route[completed + 1];
+        const fraction = reach - completed;
+        context.lineTo(
+          (start.x + (end.x - start.x) * fraction) * half,
+          (start.y + (end.y - start.y) * fraction) * half,
+        );
+      }
+      context.strokeStyle = "#010302";
+      context.lineWidth = half * (0.025 + damage * 0.055);
+      context.stroke();
+      context.strokeStyle = this.alive ? "#b34526" : "#523528";
+      context.lineWidth = half * (0.012 + damage * 0.025);
+      context.stroke();
+      context.strokeStyle = this.alive ? "#ffad61" : "#806349";
+      context.lineWidth = half * (0.005 + damage * 0.009);
+      context.stroke();
+    }
+    context.restore();
+  }
+}
+
 class Bullet {
-  constructor({ x, y, angle }) {
+  /**
+   * @param {Object} options Projectile launch configuration.
+   * @param {number} options.x World muzzle x position.
+   * @param {number} options.y World muzzle y position.
+   * @param {number} options.angle World launch heading in radians.
+   * @param {number} [options.speed] Launch speed in CSS pixels per second.
+   * @param {number} [options.mass] Positive physical mass retained through ricochets.
+   * @param {number} [options.lineWidth] Painted pulse thickness in CSS pixels.
+   * @param {"starship"|"borg"} [options.source] Origin for damage attribution, not immunity.
+   * @param {string} [options.materialColor] Initial pulse color before rock ricochets.
+   */
+  constructor({
+    x,
+    y,
+    angle,
+    speed = BULLET_SPEED,
+    mass = BULLET_MASS,
+    lineWidth = BULLET_LINE_WIDTH,
+    source = "starship",
+    materialColor = undefined,
+  }) {
     this.x = x;
     this.y = y;
     this.angle = angle;
     this.previousX = x;
     this.previousY = y;
-    this.velocityX = Math.cos(angle) * BULLET_SPEED;
-    this.velocityY = Math.sin(angle) * BULLET_SPEED;
+    this.velocityX = Math.cos(angle) * speed;
+    this.velocityY = Math.sin(angle) * speed;
+    this.mass = mass;
+    this.lineWidth = lineWidth;
+    this.source = source;
     this.reflectionCount = 0;
-    this.materialColor = undefined;
+    this.materialColor = materialColor;
     this.gradient = undefined;
-  }
-
-  get mass() {
-    return BULLET_MASS;
   }
 
   /**
@@ -1466,7 +2462,7 @@ class Bullet {
     context.moveTo(-BULLET_HALF_LENGTH, 0);
     context.lineTo(BULLET_HALF_LENGTH, 0);
     context.strokeStyle = this.gradient ??= this.createGradient();
-    context.lineWidth = BULLET_LINE_WIDTH;
+    context.lineWidth = this.lineWidth;
     context.lineCap = "butt";
     context.stroke();
     context.restore();
@@ -1697,6 +2693,7 @@ function generateAsteroids(width, height) {
       createAsteroid(width, height),
     ),
   );
+  borgCube = new BorgCube(width, height);
   asteroidsGenerated = true;
 }
 
@@ -1955,30 +2952,32 @@ function applyAutopilotTurnInput(input, deltaTime) {
 
 /**
  * Solve a linear interception for either a world-speed projectile or an
- * attacking ship. Bullets do not inherit ship velocity. The launch/contact
+ * attacking ship. Bullets do not inherit the source's velocity. The launch/contact
  * offset avoids over-leading close targets; stable roots avoid cancellation.
  * Constant-velocity kinematics: https://en.wikipedia.org/wiki/Equations_of_motion
  * Solve |r + v*t| = launchOffset + approachSpeed*t. No future collision,
  * wall bounce, target rotation, or ship movement is predicted.
  * Unreachable targets have no marker rather than an incorrect firing cue.
- * @param {Asteroid} asteroid Moving target read from the world.
- * @param {number} approachSpeed Projectile or desired ship speed in pixels/second.
- * @param {number} launchOffset Muzzle offset or combined ram-contact radii.
+ * @param {Pick<PhysicsBody, "x"|"y"|"velocityX"|"velocityY">} target Moving target in world coordinates.
+ * @param {number} [approachSpeed] Projectile or desired ship speed in pixels/second.
+ * @param {number} [launchOffset] Muzzle offset or combined ram-contact radii.
+ * @param {number} [originX] Launch origin x position, defaulting to the player.
+ * @param {number} [originY] Launch origin y position, defaulting to the player.
  * @returns {number | undefined} Earliest nonnegative interception time in seconds.
  */
 function linearInterceptTime(
-  asteroid,
+  target,
   approachSpeed = BULLET_SPEED,
   launchOffset = PLAYER_RADIUS + BULLET_HALF_LENGTH,
+  originX = playerX,
+  originY = playerY,
 ) {
-  const x = asteroid.x - playerX;
-  const y = asteroid.y - playerY;
+  const x = target.x - originX;
+  const y = target.y - originY;
   const muzzle = launchOffset;
-  const a =
-    asteroid.velocityX ** 2 + asteroid.velocityY ** 2 - approachSpeed ** 2;
+  const a = target.velocityX ** 2 + target.velocityY ** 2 - approachSpeed ** 2;
   const b =
-    2 *
-    (x * asteroid.velocityX + y * asteroid.velocityY - muzzle * approachSpeed);
+    2 * (x * target.velocityX + y * target.velocityY - muzzle * approachSpeed);
   const c = x ** 2 + y ** 2 - muzzle ** 2;
   let time = 0;
   if (c > 0) {
@@ -2060,14 +3059,13 @@ function autopilotTarget(deltaTime) {
     autopilotTargetLockTimeRemaining - deltaTime,
   );
   const lockedTargetIsPresent =
-    autopilotTargetLock !== undefined &&
-    asteroids.includes(autopilotTargetLock);
+    autopilotTargetLock !== undefined && isLiveTarget(autopilotTargetLock);
   if (lockedTargetIsPresent && autopilotTargetLockTimeRemaining > 0) {
     return autopilotTargetLock;
   }
   let selectedAsteroid = undefined;
   let selectedScore = Infinity;
-  for (const asteroid of asteroids) {
+  for (const asteroid of combatTargets()) {
     const score = autopilotTargetScore(asteroid);
     if (score < selectedScore) {
       selectedAsteroid = asteroid;
@@ -2098,7 +3096,7 @@ function autoGunnerHasShot() {
   const directionX = Math.cos(playerAngle);
   const directionY = Math.sin(playerAngle);
   const muzzle = PLAYER_RADIUS + BULLET_HALF_LENGTH;
-  for (const asteroid of asteroids) {
+  for (const asteroid of combatTargets()) {
     const x = asteroid.x - playerX - directionX * muzzle;
     const y = asteroid.y - playerY - directionY * muzzle;
     const velocityX = asteroid.velocityX - directionX * BULLET_SPEED;
@@ -2124,18 +3122,20 @@ function autoGunnerHasShot() {
 }
 
 /**
- * Find an asteroid whose predicted closest approach is uncomfortably near.
+ * Find a solid body's predicted closest approach or incomplete escape.
  * Relative linear motion is enough for a useful warning between frames; the
  * collision solver remains the authority when bodies actually touch.
+ * @param {Asteroid} [ramTarget] Intended rock contact to allow during a ram.
  * @returns {{ asteroid: Asteroid, distance: number,
- *   closingSpeed: number } | undefined} Predicted approaching obstacle.
+ *   safeDistance: number } | undefined} Solid body needing avoidance.
  */
-function autopilotThreat() {
+function autopilotThreat(ramTarget = undefined) {
   const safeMargin = AUTOPILOT_BASE_SAFE_MARGIN + autopilotHealthSafetyMargin();
-  let selectedThreat;
+  let selectedThreat = undefined;
   let selectedScore = Infinity;
 
-  for (const asteroid of asteroids) {
+  for (const asteroid of physicalTargets()) {
+    if (asteroid === ramTarget) continue;
     const relativeX = asteroid.x - playerX;
     const relativeY = asteroid.y - playerY;
     const relativeVelocityX = asteroid.velocityX - playerVelocityX;
@@ -2162,7 +3162,10 @@ function autopilotThreat() {
         ? -(relativeX * relativeVelocityX + relativeY * relativeVelocityY) /
           distance
         : 0;
-    const isNearNow = distance <= safeDistance && closingSpeed > 0;
+    // Keep clearing the safety zone after turning away. Dropping this threat
+    // as soon as velocity points outward would make engagement brake the
+    // escape and immediately send the ship back into the same heavy body.
+    const isNearNow = distance <= safeDistance;
     const isPredictedNear =
       closingSpeed > 0 &&
       futureDistance <= safeDistance &&
@@ -2172,19 +3175,80 @@ function autopilotThreat() {
       continue;
     }
 
-    const score = futureDistance + closestTime * 80 + asteroid.radius;
+    // Compare distance from the collision surface. Adding radius to center
+    // distance would rank a tiny rock ahead of an imminent cube hit.
+    const score =
+      futureDistance -
+      PLAYER_RADIUS -
+      asteroid.radius +
+      closestTime * AUTOPILOT_THREAT_TIME_COST;
 
     if (score < selectedScore) {
       selectedThreat = {
         asteroid,
         distance,
-        closingSpeed,
+        safeDistance,
       };
       selectedScore = score;
     }
   }
 
   return selectedThreat;
+}
+
+/**
+ * Choose an escape lane using the same body envelopes as obstacle avoidance.
+ * Forecast ordinary thrust after the nose can turn; compare wall and moving
+ * body clearance midway and at the end. This is a steering preference only:
+ * movement, weapon availability and impact damage stay on their normal paths.
+ * @param {Asteroid} obstacle Body whose safety zone must be cleared.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {number} World heading with the most predicted free space.
+ */
+function autopilotEscapeAngle(obstacle, width, height) {
+  const away = Math.atan2(playerY - obstacle.y, playerX - obstacle.x);
+  let selectedAngle = away;
+  let selectedClearance = -Infinity;
+  for (const offset of AUTOPILOT_ESCAPE_ANGLE_OFFSETS) {
+    const angle = away + offset;
+    const turnTime =
+      Math.abs(shortestAngleDifference(angle, playerAngle)) / ROTATION_SPEED +
+      AUTOPILOT_TURN_REACTION_SECONDS;
+    let clearance = Infinity;
+    for (const fraction of AUTOPILOT_ESCAPE_SAMPLE_FRACTIONS) {
+      const time = AUTOPILOT_ESCAPE_LOOKAHEAD_SECONDS * fraction;
+      const thrustTime = Math.max(0, time - turnTime);
+      const thrustDistance = MOVEMENT_RESPONSIVENESS * thrustTime ** 2 * 0.5;
+      const x =
+        playerX + playerVelocityX * time + Math.cos(angle) * thrustDistance;
+      const y =
+        playerY + playerVelocityY * time + Math.sin(angle) * thrustDistance;
+      clearance = Math.min(
+        clearance,
+        x - PLAYER_RADIUS,
+        width - PLAYER_RADIUS - x,
+        y - PLAYER_RADIUS,
+        height - PLAYER_RADIUS - y,
+      );
+      for (const body of physicalTargets()) {
+        clearance = Math.min(
+          clearance,
+          Math.hypot(
+            x - body.x - body.velocityX * time,
+            y - body.y - body.velocityY * time,
+          ) -
+            PLAYER_RADIUS -
+            body.radius,
+        );
+      }
+    }
+    if (clearance > selectedClearance) {
+      selectedAngle = angle;
+      selectedClearance = clearance;
+    }
+  }
+  return selectedAngle;
 }
 
 /**
@@ -2264,20 +3328,26 @@ function autopilotCanApproach() {
 
 /**
  * Reserve deliberate contact for the boldest subset of affordable passes.
+ * Cube hulls do not fragment on contact, so ramming them spends ship health
+ * without the rock-clearing benefit. Engage that durable body with phasers.
+ * @param {Asteroid | undefined} target Selected combat body.
  * @returns {boolean} Whether this pass may commit to ramming.
  */
-function autopilotCanRam() {
+function autopilotCanRam(target) {
   return (
+    target !== undefined &&
+    target !== borgCube &&
     autopilotAttackRoll <
-    autopilotAttackProbability() * AUTOPILOT_RAM_PROBABILITY_RATIO
+      autopilotAttackProbability() * AUTOPILOT_RAM_PROBABILITY_RATIO
   );
 }
 
 /**
- * Mix close-range phaser passes with velocity-corrected ramming and ordinary
- * contact fragmentation. Ranged positioning between shield-weighted attacks
- * passes lets shields regenerate; hull damage reduces risk without disabling
- * later attacks. Walls trigger braking rather than a wasteful impact.
+ * Mix close-range phaser passes with velocity-corrected rock ramming and
+ * ordinary contact fragmentation. Keep durable cube encounters at range.
+ * Ranged positioning between shield-weighted attack passes lets shields
+ * regenerate; hull damage reduces risk without disabling later attacks.
+ * Walls trigger braking rather than a wasteful impact.
  * Independent firing exploits any useful shot throughout the maneuver.
  * @param {number} deltaTime Elapsed simulation time in seconds.
  * @param {number} width Arena width in CSS pixels.
@@ -2304,7 +3374,8 @@ function updateAutopilotInput(deltaTime, width, height) {
     }
     const target = autopilotTarget(decisionDeltaTime);
     const wall = autopilotWallThreat(width, height);
-    const threat = autopilotCanApproach() ? undefined : autopilotThreat();
+    const ram = autopilotCanRam(target);
+    const threat = autopilotThreat(ram ? target : undefined);
     const speed = Math.hypot(playerVelocityX, playerVelocityY);
     autopilotDesiredAngle =
       target === undefined ? playerAngle : autopilotAimAngle(target);
@@ -2322,7 +3393,7 @@ function updateAutopilotInput(deltaTime, width, height) {
           input.add("KeyW");
         }
       }
-    } else if (threat !== undefined && threat.closingSpeed > 0) {
+    } else if (threat !== undefined) {
       const towardThreatSpeed =
         threat.distance > COLLISION_EPSILON
           ? ((threat.asteroid.x - playerX) * playerVelocityX +
@@ -2331,15 +3402,13 @@ function updateAutopilotInput(deltaTime, width, height) {
           : speed;
       if (towardThreatSpeed > AUTOPILOT_MIN_COAST_SPEED) {
         input.add("KeyS");
-      } else if (
-        threat.distance <
-        PLAYER_RADIUS + threat.asteroid.radius + AUTOPILOT_EMERGENCY_CLEARANCE
-      ) {
+      } else if (threat.distance < threat.safeDistance) {
         // Incoming asteroid motion cannot be stopped by braking the ship.
         // Keep accelerating away rather than braking that escape next time.
-        autopilotDesiredAngle = Math.atan2(
-          playerY - threat.asteroid.y,
-          playerX - threat.asteroid.x,
+        autopilotDesiredAngle = autopilotEscapeAngle(
+          threat.asteroid,
+          width,
+          height,
         );
         if (
           Math.abs(
@@ -2350,7 +3419,7 @@ function updateAutopilotInput(deltaTime, width, height) {
           input.add("KeyW");
         }
       }
-    } else if (target !== undefined && autopilotCanRam()) {
+    } else if (target !== undefined && ram) {
       // Pursue the predicted contact point rather than the rock's old position.
       // Forward motion continues through the hit; the solver decides whether
       // its real contact impulse cuts the rock, with no autopilot damage bonus.
@@ -2388,7 +3457,7 @@ function updateAutopilotInput(deltaTime, width, height) {
         input.add("KeyW");
       }
     } else if (target !== undefined) {
-      const closePass = autopilotCanApproach();
+      const closePass = target !== borgCube && autopilotCanApproach();
       const cruiseSpeed = closePass
         ? AUTOPILOT_CLOSE_SPEED
         : AUTOPILOT_CRUISE_SPEED;
@@ -2560,6 +3629,7 @@ function resizeCanvas() {
   }
 
   generateAsteroids(width, gameplayHeight);
+  borgCube?.keepInside(width, gameplayHeight);
 
   for (const asteroid of asteroids) {
     asteroid.keepInside(width, gameplayHeight);
@@ -2753,6 +3823,11 @@ function restartGame(width, height) {
   phaserHeat = 0;
   bullets.length = 0;
   sparks.length = 0;
+  // A new sector returns all assistance to manual control, including after
+  // destruction or victory. Clear input and locks through the shared reset.
+  aimAssist.enabled = false;
+  autopilotEnabled = false;
+  autoGunnerEnabled = false;
   clearPressedKeys();
   autopilotDesiredAngle = playerAngle;
   autopilotTargetLock = undefined;
@@ -2760,9 +3835,10 @@ function restartGame(width, height) {
   autopilotAttackTimeRemaining = 0;
   autopilotAttackRoll = 1;
   autoGunnerBurstActive = false;
-  autopilotDecisionTime = autopilotEnabled ? AUTOPILOT_UPDATE_INTERVAL : 0;
+  autopilotDecisionTime = 0;
   asteroids.length = 0;
   asteroidsGenerated = false;
+  borgCube = undefined;
   generateAsteroids(width, height);
 }
 
@@ -2794,7 +3870,7 @@ function beginShipFailure() {
  * @returns {void}
  */
 function beginWin() {
-  if (gameWon || shipFailureActive || asteroids.length > 0) {
+  if (gameWon || shipFailureActive || asteroids.length > 0 || borgCube?.alive) {
     return;
   }
 
@@ -3357,6 +4433,8 @@ function drawGame(width, height) {
     asteroid.draw();
   }
 
+  borgCube?.draw();
+
   for (const bullet of bullets) {
     bullet.draw();
   }
@@ -3912,7 +4990,7 @@ function drawPauseHelp(width, height) {
   context.fillStyle = LCARS_MUTED_TEXT;
   context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
-    "Phasers always cut. Strong body hits split; light hits bounce.",
+    "Phasers cut rocks. Strong body hits split; light hits bounce.",
     HELP_PANEL_WIDTH / 2,
     518,
   );
@@ -3925,6 +5003,16 @@ function drawPauseHelp(width, height) {
     "Shields regenerate; hull damage persists. Walls hurt.",
     HELP_PANEL_WIDTH / 2,
     578,
+  );
+  context.fillText(
+    "Borg: vary faces / bursts; rocks hurt. Orange cracks = hull loss.",
+    HELP_PANEL_WIDTH / 2,
+    608,
+  );
+  context.fillText(
+    "Borg: dodge heavy green bolts; its drifting wreck still hurts.",
+    HELP_PANEL_WIDTH / 2,
+    638,
   );
   context.restore();
 }
@@ -5114,16 +6202,10 @@ function resolveBulletCollisions(width, height) {
       const bulletMaximumX = Math.max(segmentStart.x, segmentEnd.x);
       const bulletMinimumY = Math.min(segmentStart.y, segmentEnd.y);
       const bulletMaximumY = Math.max(segmentStart.y, segmentEnd.y);
-      let hitAsteroidIndex = -1;
+      let hitTarget = undefined;
       let nearestHitParameter = Infinity;
 
-      for (
-        let asteroidIndex = 0;
-        asteroidIndex < asteroids.length;
-        asteroidIndex += 1
-      ) {
-        const asteroid = asteroids[asteroidIndex];
-
+      for (const asteroid of physicalTargets()) {
         if (
           ignoredAsteroids.has(asteroid) ||
           bulletMaximumX < asteroid.x - asteroid.radius ||
@@ -5142,14 +6224,11 @@ function resolveBulletCollisions(width, height) {
 
         if (hitParameter !== undefined && hitParameter < nearestHitParameter) {
           nearestHitParameter = hitParameter;
-          hitAsteroidIndex = asteroidIndex;
+          hitTarget = asteroid;
         }
       }
 
       const wallHit = boundaryHit(segmentStart, segmentEnd, width, height);
-      const asteroidIsFirst =
-        hitAsteroidIndex >= 0 &&
-        nearestHitParameter <= (wallHit?.parameter ?? Infinity);
       const shipHitParameter = shipIgnored
         ? Infinity
         : segmentCircleIntersectionParameter(segmentStart, segmentEnd, ship);
@@ -5157,6 +6236,10 @@ function resolveBulletCollisions(width, height) {
         shipHitParameter !== undefined &&
         shipHitParameter < nearestHitParameter &&
         shipHitParameter <= (wallHit?.parameter ?? Infinity);
+      const asteroidIsFirst =
+        hitTarget !== undefined &&
+        !shipIsFirst &&
+        nearestHitParameter <= (wallHit?.parameter ?? Infinity);
       const bodyIsFirst = asteroidIsFirst || shipIsFirst;
 
       if (!bodyIsFirst && wallHit === undefined) {
@@ -5185,8 +6268,22 @@ function resolveBulletCollisions(width, height) {
       let interactionAfterEnergy = interactionBeforeEnergy;
       let removedEnergy = 0;
 
-      if (asteroidIsFirst) {
-        const asteroid = asteroids[hitAsteroidIndex];
+      if (asteroidIsFirst && hitTarget === borgCube && borgCube.alive) {
+        // Absorption transfers the disappearing pulse's linear and angular
+        // impulse into the hull through the same rigid-body impulse helper.
+        applyBodyImpulse(
+          borgCube,
+          bullet.mass * bullet.velocityX,
+          bullet.mass * bullet.velocityY,
+          hitPoint,
+        );
+        borgCube.hitPhaser(hitPoint);
+        // Borg shields absorb the pulse. Existing rock, ship and wall
+        // ricochets retain their normal finite reflection behavior.
+        bullets.splice(bulletIndex, 1);
+        break;
+      } else if (asteroidIsFirst) {
+        const asteroid = hitTarget;
         bullet.x = hitPoint.x;
         bullet.y = hitPoint.y;
         const beforeEnergy =
@@ -5209,18 +6306,28 @@ function resolveBulletCollisions(width, height) {
           normal,
           hitPoint,
         );
-        recordAsteroidDamage(response, "blasters");
+        if (asteroid !== borgCube && bullet.source === "starship")
+          recordAsteroidDamage(response, "blasters");
         bullet.syncAngle();
         if (canReflect) {
-          bullet.recordReflection(asteroid.materialColor);
+          bullet.recordReflection(
+            asteroid === borgCube
+              ? bullet.materialColor
+              : asteroid.materialColor,
+          );
         }
-        const fragments = fragmentAsteroidAtImpact(
-          asteroid,
-          hitPoint,
-          incomingDirection,
-          response,
-          "phaser",
-        );
+        // A wreck is a solid reflector, never a cuttable asteroid. Enemy
+        // and player pulses otherwise share the complete ricochet path.
+        const fragments =
+          asteroid === borgCube
+            ? [asteroid]
+            : fragmentAsteroidAtImpact(
+                asteroid,
+                hitPoint,
+                incomingDirection,
+                response,
+                "phaser",
+              );
         const afterEnergy = fragments.reduce(
           (energy, fragment) => energy + bodyKineticEnergy(fragment),
           bodyKineticEnergy(bullet),
@@ -5305,7 +6412,7 @@ function resolveBulletCollisions(width, height) {
       };
     }
 
-    if (bulletIndex >= 0 && bulletIndex < bullets.length) {
+    if (bullets[bulletIndex] === bullet) {
       bullet.previousX = bullet.x;
       bullet.previousY = bullet.y;
       bullet.x = segmentEnd.x;
@@ -5926,6 +7033,61 @@ function resolveAsteroidCollisions() {
   }
 
   applyPlayerBody(ship);
+  // Both rock and cube contacts consume one parent snapshot. Children created
+  // by either kind of physical contact join the next frame's body pass.
+  resolveBorgCollisions(
+    contactAsteroids.filter((rock) => asteroids.includes(rock)),
+  );
+}
+
+/**
+ * Keep cube contacts on the same impulse and fragmentation paths as rocks.
+ * Hull damage uses actual normal contact response; fresh fragments wait until
+ * the next body pass. Both the live cube and its intact wreck stay physical.
+ * @param {Asteroid[]} [contactAsteroids] Surviving parents from the shared pass.
+ * @returns {void}
+ */
+function resolveBorgCollisions(contactAsteroids = asteroids.slice()) {
+  const cube = borgCube;
+  if (cube === undefined) return;
+  const ship = playerBody();
+  const shipManifold = bodiesMayOverlap(ship, cube)
+    ? collisionManifold(ship, cube)
+    : undefined;
+  if (shipManifold !== undefined) {
+    const response = resolveCollision(ship, cube, shipManifold);
+    if (response !== undefined) {
+      const impulse = contactImpulseMagnitude(response);
+      applyCollisionDamage(impulse);
+      applyShipCollisionAngleAdjustment(response);
+      cube.hitBody(impulse, shipManifold.contactPoint);
+      applyPlayerBody(ship);
+    }
+  }
+  for (const rock of contactAsteroids) {
+    if (!bodiesMayOverlap(cube, rock)) continue;
+    const manifold = collisionManifold(cube, rock);
+    if (manifold === undefined) continue;
+    const beforeEnergy = bodyKineticEnergy(cube) + bodyKineticEnergy(rock);
+    const response = resolveCollision(cube, rock, manifold);
+    if (response === undefined) continue;
+    cube.hitBody(contactImpulseMagnitude(response), manifold.contactPoint);
+    const fragments = fragmentAsteroidAtImpact(
+      rock,
+      manifold.contactPoint,
+      manifold.normal,
+      response,
+      "body",
+    );
+    const afterEnergy = fragments.reduce(
+      (energy, fragment) => energy + bodyKineticEnergy(fragment),
+      bodyKineticEnergy(cube),
+    );
+    emitSparksAt(
+      manifold.contactPoint,
+      interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
+    );
+  }
 }
 
 function bodiesMayOverlap(firstBody, secondBody) {
@@ -6009,6 +7171,10 @@ function updateGame(deltaTime, width, height) {
     asteroid.update(width, height, deltaTime);
   }
 
+  if (borgCube !== undefined) {
+    borgCube.update(width, height, deltaTime);
+  }
+
   // The ship is a dynamic rigid body just like an asteroid. The wall callback
   // sends each shield contact through the shared normal/friction solver so a
   // tangential impact changes the ship's angular velocity instead of only
@@ -6046,7 +7212,7 @@ function updateGame(deltaTime, width, height) {
 
   if (restartRequested) {
     beginShipFailure();
-  } else if (asteroids.length === 0) {
+  } else if (asteroids.length === 0 && !borgCube?.alive) {
     beginWin();
   }
 }
