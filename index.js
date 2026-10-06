@@ -1222,6 +1222,9 @@ class Asteroid {
     this.localCollisionAxes = polygonAxes(this.localVertices);
     this.collisionAxes = this.localCollisionAxes.map((axis) => ({ ...axis }));
     this.worldBounds = polygonBounds(this.worldVertices);
+    this.geometryX = undefined;
+    this.geometryY = undefined;
+    this.geometryRotation = undefined;
     this.collisionPolygon();
   }
 
@@ -1298,7 +1301,21 @@ class Asteroid {
     context.globalAlpha = 1;
   }
 
+  /**
+   * Refresh geometry only when the pose changes. Walls and contact correction
+   * can move a body several times in one frame, so compare the actual pose
+   * rather than caching by frame number. Rendering then reuses physics data.
+   * @returns {Vector2[]} World vertices shared with bounds and contact tests.
+   */
   collisionPolygon() {
+    if (
+      this.geometryX === this.x &&
+      this.geometryY === this.y &&
+      this.geometryRotation === this.rotation
+    ) {
+      return this.worldVertices;
+    }
+
     const cosine = Math.cos(this.rotation);
     const sine = Math.sin(this.rotation);
 
@@ -1325,6 +1342,9 @@ class Asteroid {
     }
 
     updatePolygonBounds(this.worldBounds, this.worldVertices);
+    this.geometryX = this.x;
+    this.geometryY = this.y;
+    this.geometryRotation = this.rotation;
     return this.worldVertices;
   }
 }
@@ -1340,6 +1360,7 @@ class Bullet {
     this.velocityY = Math.sin(angle) * BULLET_SPEED;
     this.reflectionCount = 0;
     this.materialColor = undefined;
+    this.gradient = undefined;
   }
 
   get mass() {
@@ -1354,6 +1375,9 @@ class Bullet {
    */
   recordReflection(materialColor = this.materialColor) {
     this.reflectionCount += 1;
+    if (materialColor !== this.materialColor) {
+      this.gradient = undefined;
+    }
     this.materialColor = materialColor;
   }
 
@@ -1384,14 +1408,20 @@ class Bullet {
     this.recordReflection();
   }
 
-  draw() {
-    const directionX = Math.cos(this.angle);
-    const directionY = Math.sin(this.angle);
-    const startX = this.x - directionX * BULLET_HALF_LENGTH;
-    const startY = this.y - directionY * BULLET_HALF_LENGTH;
-    const endX = this.x + directionX * BULLET_HALF_LENGTH;
-    const endY = this.y + directionY * BULLET_HALF_LENGTH;
-    const gradient = context.createLinearGradient(startX, startY, endX, endY);
+  /**
+   * Store paint in pulse-local coordinates. Canvas transforms gradients when
+   * painting, so motion, rotation and viewport density need no new stops.
+   * The cache belongs to the pulse and is released with it; arbitrary asteroid
+   * colors cannot accumulate in a permanent global paint cache.
+   * @returns {CanvasGradient} Soft-ended paint for the current material color.
+   */
+  createGradient() {
+    const gradient = context.createLinearGradient(
+      -BULLET_HALF_LENGTH,
+      0,
+      BULLET_HALF_LENGTH,
+      0,
+    );
 
     // Transparent ends keep the phaser silhouette soft. After an asteroid
     // ricochet, the whole pulse uses that rock's hue so its origin is readable.
@@ -1400,12 +1430,17 @@ class Bullet {
     gradient.addColorStop(0.5, this.materialColor ?? LCARS_GOLD);
     gradient.addColorStop(0.7, this.materialColor ?? LCARS_AMBER);
     gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
+    return gradient;
+  }
 
+  draw() {
     context.save();
+    context.translate(this.x, this.y);
+    context.rotate(this.angle);
     context.beginPath();
-    context.moveTo(startX, startY);
-    context.lineTo(endX, endY);
-    context.strokeStyle = gradient;
+    context.moveTo(-BULLET_HALF_LENGTH, 0);
+    context.lineTo(BULLET_HALF_LENGTH, 0);
+    context.strokeStyle = this.gradient ??= this.createGradient();
     context.lineWidth = BULLET_LINE_WIDTH;
     context.lineCap = "butt";
     context.stroke();
@@ -1682,14 +1717,19 @@ function updateBullets(deltaTime) {
  * @returns {void}
  */
 function updateSparks(deltaTime) {
-  for (let sparkIndex = sparks.length - 1; sparkIndex >= 0; sparkIndex -= 1) {
+  // Compact in place while preserving paint order. Repeated splice calls
+  // shift the remaining array for every expired particle in a contact burst.
+  let aliveCount = 0;
+  for (let sparkIndex = 0; sparkIndex < sparks.length; sparkIndex += 1) {
     const spark = sparks[sparkIndex];
     spark.update(deltaTime);
 
-    if (!spark.isAlive) {
-      sparks.splice(sparkIndex, 1);
+    if (spark.isAlive) {
+      sparks[aliveCount] = spark;
+      aliveCount += 1;
     }
   }
+  sparks.length = aliveCount;
 }
 
 /**
@@ -5312,16 +5352,23 @@ function polygonPolygonManifold(
   // For convex polygons, separating axes are perpendicular to every edge of
   // either polygon. A gap on any one of them proves that the shapes do not
   // touch; the smallest overlap is the contact penetration used by physics.
-  const axes = [
-    ...(firstBody.collisionAxes ?? polygonAxes(firstVertices)),
-    ...(secondBody.collisionAxes ?? polygonAxes(secondVertices)),
-  ];
+  // Walk the cached lists directly without copying them for every SAT test.
+  const firstAxes = firstBody.collisionAxes ?? polygonAxes(firstVertices);
+  const secondAxes = secondBody.collisionAxes ?? polygonAxes(secondVertices);
   let minimumPenetration = Infinity;
-  let minimumAxis = axes[0];
+  let minimumAxis = firstAxes[0];
   const firstShape = { type: "polygon", vertices: firstVertices };
   const secondShape = { type: "polygon", vertices: secondVertices };
 
-  for (const axis of axes) {
+  for (
+    let axisIndex = 0;
+    axisIndex < firstAxes.length + secondAxes.length;
+    axisIndex += 1
+  ) {
+    const axis =
+      axisIndex < firstAxes.length
+        ? firstAxes[axisIndex]
+        : secondAxes[axisIndex - firstAxes.length];
     const overlap = collisionAxis(
       firstBody,
       secondBody,
@@ -5408,7 +5455,7 @@ function closestPointOnPolygon(point, vertices) {
  * @returns {CollisionManifold | undefined}
  */
 function circlePolygonManifold(circleBody, polygonBody, polygonVertices) {
-  const axes = [...(polygonBody.collisionAxes ?? polygonAxes(polygonVertices))];
+  const axes = polygonBody.collisionAxes ?? polygonAxes(polygonVertices);
   const closestPoint = closestPointOnPolygon(
     { x: circleBody.x, y: circleBody.y },
     polygonVertices,
@@ -5420,19 +5467,22 @@ function circlePolygonManifold(circleBody, polygonBody, polygonVertices) {
     0,
   );
 
-  if (
-    Math.hypot(closestPoint.x - circleBody.x, closestPoint.y - circleBody.y) >
-    COLLISION_EPSILON
-  ) {
-    axes.push(closestPointAxis);
-  }
+  const axisCount =
+    axes.length +
+    Number(
+      Math.hypot(closestPoint.x - circleBody.x, closestPoint.y - circleBody.y) >
+        COLLISION_EPSILON,
+    );
 
   let minimumPenetration = Infinity;
   let minimumAxis = axes[0];
   const circleShape = { type: "circle" };
   const polygonShape = { type: "polygon", vertices: polygonVertices };
 
-  for (const axis of axes) {
+  for (let axisIndex = 0; axisIndex < axisCount; axisIndex += 1) {
+    // The closest-point axis completes circle/polygon SAT without appending
+    // temporary data to the asteroid's immutable cached edge-axis list.
+    const axis = axisIndex < axes.length ? axes[axisIndex] : closestPointAxis;
     const overlap = collisionAxis(
       circleBody,
       polygonBody,
@@ -5869,10 +5919,10 @@ function updateGame(deltaTime, width, height) {
  * A Web Worker would provide real parallelism, but it cannot share these
  * mutable objects with this direct-file page without copying the complete
  * world each frame (SharedArrayBuffer is unavailable without cross-origin
- * isolation). That copy, plus one-frame message latency, costs more than the
- * deliberately bounded particle and 15 Hz autopilot work, and would weaken
- * the ordered collision/health/score rules. Keep the authoritative simulation
- * atomic; move only future independent, immutable work to a worker.
+ * isolation). Copying adds work and asynchronous messages require a new
+ * snapshot protocol to preserve ordered collision/health/score rules. Workers
+ * remain an option if browser profiling justifies that architectural change;
+ * first remove repeated geometry and paint setup from this frame transaction.
  * @param {number} frameTime Animation-frame timestamp in milliseconds.
  * @returns {void}
  */
