@@ -357,8 +357,8 @@ const PLAY_HELP = Object.freeze([
   }),
 ]);
 const HELP_PANEL_WIDTH = 540;
-// Leave room for both achievement conditions and their reset rules.
-const HELP_PANEL_HEIGHT = 590;
+// Leave room for the shared impact rule, achievements, and their reset rules.
+const HELP_PANEL_HEIGHT = 620;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -415,6 +415,14 @@ const ASTEROID_MAX_ANGULAR_SPEED = 1.8;
 // sliver. Discarding fragments below this area keeps the asteroid population
 // useful while leaving the cutoff easy to tune for the game's scale.
 const ASTEROID_MIN_FRAGMENT_AREA = 500;
+// All dynamic contacts use the magnitude of the solver's transferred impulse
+// (mass × CSS pixels / second), including friction. One fresh, head-on phaser
+// hit normally exceeds this threshold; soft ricochets and gentle bumps bounce
+// without cutting. This is a per-contact threshold, not accumulated health,
+// and does not apply to walls, which keep the arena populated while it settles.
+// Impulse measures transferred momentum, rather than either body's absolute
+// speed: https://en.wikipedia.org/wiki/Collision_response
+const ASTEROID_SPLIT_IMPULSE_THRESHOLD = 10000;
 // Geometric asteroid mass is density times the true area of the convex
 // polygon. The current density is the average material density; each new
 // asteroid samples a bounded variation around it so no two materials need to
@@ -3250,19 +3258,24 @@ function drawPauseHelp(width, height) {
     464,
   );
   context.fillText(
-    "Winning: clear a field. Ramming breaks rocks.",
+    "Clear the field. Strong impacts split; light hits bounce.",
     HELP_PANEL_WIDTH / 2,
     494,
   );
   context.fillText(
-    "Rammer: win with more ram than blaster damage.",
+    "Phasers, ship and rocks share one impact threshold.",
     HELP_PANEL_WIDTH / 2,
     524,
   );
   context.fillText(
-    "Wins keep badges; death resets them. Fields reset totals.",
+    "Rammer: win with more ram than blaster damage.",
     HELP_PANEL_WIDTH / 2,
     554,
+  );
+  context.fillText(
+    "Wins keep badges; death resets them. Fields reset totals.",
+    HELP_PANEL_WIDTH / 2,
+    584,
   );
   context.restore();
 }
@@ -3938,8 +3951,8 @@ function segmentCircleIntersectionParameter(start, end, circle) {
 
 /**
  * Split a rock after the contact solver has transferred the impact impulse.
- * Blasters cut along their incoming path; rams cut along the contact normal.
- * Both attacks destroy terminal rocks and discard undersized fragments.
+ * Blasters cut along their incoming path; body impacts use the contact normal.
+ * Every qualifying impact destroys terminal rocks and discards small fragments.
  * @param {Asteroid} asteroid Rock whose post-impact motion fragments inherit.
  * @param {Vector2} hitPoint Contact point through which the cut passes.
  * @param {Vector2} cutDirection Unit direction of the impact's cut line.
@@ -4048,14 +4061,28 @@ function splitAsteroid(asteroid, hitPoint, cutDirection) {
 }
 
 /**
- * Apply the same fragmentation and score rules to blaster hits and ramming.
- * @param {number} asteroidIndex Index of the rock replaced by this impact.
+ * Apply one impulse threshold and fragmentation rule to every dynamic impact.
+ * Below or exactly at the threshold, return the original rock so energy and
+ * ricochet bookkeeping can use the same path as a successful split.
+ * @param {Asteroid} asteroid Rock receiving the solved contact impulse.
  * @param {Vector2} hitPoint Impact contact point in world coordinates.
  * @param {Vector2} cutDirection Unit direction of the impact's cut line.
- * @returns {Asteroid[]} Retained fragments now present in the field.
+ * @param {ContactResponse} response Impulse transferred by the contact solver.
+ * @returns {Asteroid[]} Original rock or retained fragments in the field.
  */
-function fragmentAsteroidAtImpact(asteroidIndex, hitPoint, cutDirection) {
-  const asteroid = asteroids[asteroidIndex];
+function fragmentAsteroidAtImpact(asteroid, hitPoint, cutDirection, response) {
+  const impactImpulse = contactImpulseMagnitude(response);
+  if (
+    !Number.isFinite(impactImpulse) ||
+    impactImpulse <= ASTEROID_SPLIT_IMPULSE_THRESHOLD
+  ) {
+    return [asteroid];
+  }
+
+  const asteroidIndex = asteroids.indexOf(asteroid);
+  if (asteroidIndex < 0) {
+    return [];
+  }
   const fragments = splitAsteroid(asteroid, hitPoint, cutDirection);
 
   countVanishedAsteroidArea(asteroid, fragments);
@@ -4529,19 +4556,16 @@ function resolveBulletCollisions(width, height) {
           bullet.recordReflection();
         }
         const fragments = fragmentAsteroidAtImpact(
-          hitAsteroidIndex,
+          asteroid,
           hitPoint,
           incomingDirection,
+          response,
         );
-        const afterEnergy =
-          fragments.reduce(
-            (energy, fragment) => energy + bodyKineticEnergy(fragment),
-            bodyKineticEnergy(bullet),
-          ) + (fragments.length === 0 ? bodyKineticEnergy(asteroid) : 0);
+        const afterEnergy = fragments.reduce(
+          (energy, fragment) => energy + bodyKineticEnergy(fragment),
+          bodyKineticEnergy(bullet),
+        );
         interactionAfterEnergy = afterEnergy;
-        if (fragments.length === 0) {
-          removedEnergy += bodyKineticEnergy(asteroid);
-        }
         for (const fragment of fragments) {
           ignoredAsteroids.add(fragment);
         }
@@ -5062,35 +5086,62 @@ function resolveCollision(firstBody, secondBody, existingManifold) {
 }
 
 /**
- * Resolve an asteroid contact and turn the measured kinetic-energy loss into
- * sparks at the same manifold point. The physics solver remains the single
- * source of collision response behavior.
- * @param {PhysicsBody} firstBody
- * @param {PhysicsBody} secondBody
- * @returns {ContactResponse | undefined} Contact response, or undefined when
- *   the bodies do not overlap.
+ * Resolve both rocks before cutting either one. Equal and opposite impulses
+ * have the same magnitude, so one sufficiently strong contact splits both
+ * rocks, regardless of their masses. Each inherits its own post-impact motion.
+ * @param {Asteroid} firstAsteroid First rock in the contact pair.
+ * @param {Asteroid} secondAsteroid Second rock in the contact pair.
+ * @param {Set<Asteroid>} fragmentedAsteroids Parents excluded from later contacts.
+ * @returns {void}
  */
-function resolveCollisionWithSparks(firstBody, secondBody) {
-  const manifold = collisionManifold(firstBody, secondBody);
+function resolveAsteroidPairCollision(
+  firstAsteroid,
+  secondAsteroid,
+  fragmentedAsteroids,
+) {
+  const manifold = collisionManifold(firstAsteroid, secondAsteroid);
 
   if (manifold === undefined) {
-    return undefined;
+    return;
   }
 
   const beforeEnergy =
-    bodyKineticEnergy(firstBody) + bodyKineticEnergy(secondBody);
-  const response = resolveCollision(firstBody, secondBody, manifold);
+    bodyKineticEnergy(firstAsteroid) + bodyKineticEnergy(secondAsteroid);
+  const response = resolveCollision(firstAsteroid, secondAsteroid, manifold);
 
   if (response !== undefined) {
+    const firstFragments = fragmentAsteroidAtImpact(
+      firstAsteroid,
+      manifold.contactPoint,
+      manifold.normal,
+      response,
+    );
+    const secondFragments = fragmentAsteroidAtImpact(
+      secondAsteroid,
+      manifold.contactPoint,
+      manifold.normal,
+      response,
+    );
+    if (!firstFragments.includes(firstAsteroid)) {
+      fragmentedAsteroids.add(firstAsteroid);
+    }
+    if (!secondFragments.includes(secondAsteroid)) {
+      fragmentedAsteroids.add(secondAsteroid);
+    }
     const afterEnergy =
-      bodyKineticEnergy(firstBody) + bodyKineticEnergy(secondBody);
+      firstFragments.reduce(
+        (energy, fragment) => energy + bodyKineticEnergy(fragment),
+        0,
+      ) +
+      secondFragments.reduce(
+        (energy, fragment) => energy + bodyKineticEnergy(fragment),
+        0,
+      );
     emitSparksAt(
       manifold.contactPoint,
       interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
     );
   }
-
-  return response;
 }
 
 function playerBody() {
@@ -5111,36 +5162,59 @@ function applyPlayerBody(body) {
   playerVelocityY = body.velocityY;
 }
 
+/**
+ * Resolve a stable list of parents so replacing either member of a pair never
+ * skips unrelated rocks or recursively shatters fresh fragments. Pieces made
+ * in this pass join body contacts next frame with the already-solved motion.
+ * @returns {void}
+ */
 function resolveAsteroidCollisions() {
   const ship = playerBody();
+  const contactAsteroids = asteroids.slice();
+  const fragmentedAsteroids = new Set();
 
-  for (let firstIndex = 0; firstIndex < asteroids.length; firstIndex += 1) {
-    const firstAsteroid = asteroids[firstIndex];
+  for (
+    let firstIndex = 0;
+    firstIndex < contactAsteroids.length;
+    firstIndex += 1
+  ) {
+    const firstAsteroid = contactAsteroids[firstIndex];
 
     for (
       let secondIndex = firstIndex + 1;
-      secondIndex < asteroids.length;
+      secondIndex < contactAsteroids.length;
       secondIndex += 1
     ) {
-      const secondAsteroid = asteroids[secondIndex];
+      if (fragmentedAsteroids.has(firstAsteroid)) {
+        break;
+      }
+      const secondAsteroid = contactAsteroids[secondIndex];
 
-      if (!bodiesMayOverlap(firstAsteroid, secondAsteroid)) {
+      if (
+        fragmentedAsteroids.has(secondAsteroid) ||
+        !bodiesMayOverlap(firstAsteroid, secondAsteroid)
+      ) {
         continue;
       }
 
-      resolveCollisionWithSparks(firstAsteroid, secondAsteroid);
+      resolveAsteroidPairCollision(
+        firstAsteroid,
+        secondAsteroid,
+        fragmentedAsteroids,
+      );
     }
   }
 
-  // Walk backward so replacements neither skip original rocks nor allow a
-  // single contact to recursively shatter its new fragments in this step.
   for (
-    let asteroidIndex = asteroids.length - 1;
+    let asteroidIndex = contactAsteroids.length - 1;
     asteroidIndex >= 0;
     asteroidIndex -= 1
   ) {
-    const asteroid = asteroids[asteroidIndex];
-    if (!bodiesMayOverlap(ship, asteroid)) {
+    const asteroid = contactAsteroids[asteroidIndex];
+    if (
+      fragmentedAsteroids.has(asteroid) ||
+      !bodiesMayOverlap(ship, asteroid)
+    ) {
       continue;
     }
 
@@ -5157,22 +5231,23 @@ function resolveAsteroidCollisions() {
       applyCollisionDamage(contactImpulseMagnitude(response));
       if (response.normalImpulse > COLLISION_EPSILON) {
         recordAsteroidDamage(response, "ramming");
-        const fragments = fragmentAsteroidAtImpact(
-          asteroidIndex,
-          manifold.contactPoint,
-          manifold.normal,
-        );
-        const afterEnergy = fragments.reduce(
-          (energy, fragment) => energy + bodyKineticEnergy(fragment),
-          bodyKineticEnergy(ship),
-        );
-        // Disappearing rock energy joins the spark burst, just as for a shot.
-        emitSparksAt(
-          manifold.contactPoint,
-          interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
-        );
         empSound.playRandom();
       }
+      const fragments = fragmentAsteroidAtImpact(
+        asteroid,
+        manifold.contactPoint,
+        manifold.normal,
+        response,
+      );
+      const afterEnergy = fragments.reduce(
+        (energy, fragment) => energy + bodyKineticEnergy(fragment),
+        bodyKineticEnergy(ship),
+      );
+      // Removed material joins the sparks for every impact source.
+      emitSparksAt(
+        manifold.contactPoint,
+        interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
+      );
       applyShipCollisionAngleAdjustment(response);
     }
   }

@@ -35,6 +35,11 @@ Play the hosted version on [GitHub Pages](https://eigenein.github.io/only-vibes/
 
 Redder asteroids are heavier and hit harder. Fire at will. Keep the hull operational.
 
+Phaser, ship, and asteroid impacts all split rocks when the transferred collision
+impulse exceeds the same threshold. Lighter impacts bounce without splitting;
+strong asteroid-to-asteroid collisions can split both rocks. Arena walls only
+bounce asteroids. Clearing the field wins; points count asteroid area removed.
+
 ## Built with
 
 - HTML5 canvas
