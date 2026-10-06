@@ -38,10 +38,10 @@ the full turn rate of one revolution per second; release to stop turning.
 
 Redder asteroids are heavier and hit harder. Fire at will. Keep the hull operational.
 
-Phaser, ship, and asteroid impacts all split rocks when the transferred collision
-impulse exceeds the same threshold. Lighter impacts bounce without splitting;
-strong asteroid-to-asteroid collisions can split both rocks. Arena walls only
-bounce asteroids. Clearing the field wins; points count asteroid area removed.
+Phaser contact always splits or destroys rocks. Ship and asteroid impacts split
+rocks only when the transferred collision impulse exceeds their shared threshold;
+lighter body impacts bounce without splitting. Arena walls only bounce asteroids.
+Clearing the field wins; points count asteroid area removed.
 
 ## Built with
 

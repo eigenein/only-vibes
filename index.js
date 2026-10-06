@@ -433,11 +433,11 @@ const ASTEROID_MAX_ANGULAR_SPEED = 1.8;
 // sliver. Discarding fragments below this area keeps the asteroid population
 // useful while leaving the cutoff easy to tune for the game's scale.
 const ASTEROID_MIN_FRAGMENT_AREA = 500;
-// All dynamic contacts use the magnitude of the solver's transferred impulse
-// (mass × CSS pixels / second), including friction. One fresh, head-on phaser
-// hit normally exceeds this threshold; soft ricochets and gentle bumps bounce
-// without cutting. This is a per-contact threshold, not accumulated health,
-// and does not apply to walls, which keep the arena populated while it settles.
+// Ship and asteroid contacts use the magnitude of the solver's transferred
+// impulse (mass × CSS pixels / second), including friction. Gentle body
+// contacts bounce without cutting, while phasers always cut on geometric
+// contact. This is a per-contact threshold, not accumulated health, and does
+// not apply to walls, which keep the arena populated while it settles.
 // Impulse measures transferred momentum, rather than either body's absolute
 // speed: https://en.wikipedia.org/wiki/Collision_response
 const ASTEROID_SPLIT_IMPULSE_THRESHOLD = 10000;
@@ -3400,7 +3400,7 @@ function drawPauseHelp(width, height) {
   context.fillStyle = LCARS_MUTED_TEXT;
   context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
-    "Clear the field. Strong impacts split; light hits bounce.",
+    "Phasers always cut. Strong body hits split; light hits bounce.",
     HELP_PANEL_WIDTH / 2,
     434,
   );
@@ -4198,20 +4198,29 @@ function splitAsteroid(asteroid, hitPoint, cutDirection) {
 }
 
 /**
- * Apply one impulse threshold and fragmentation rule to every dynamic impact.
- * Below or exactly at the threshold, return the original rock so energy and
- * ricochet bookkeeping can use the same path as a successful split.
+ * Apply fragmentation to a phaser hit or a sufficiently strong body impact.
+ * Phaser contact is already established by the swept geometric hit test, so
+ * it always cuts. Body contacts retain the impulse threshold that prevents
+ * gentle overlaps and resting contacts from shattering the field.
  * @param {Asteroid} asteroid Rock receiving the solved contact impulse.
  * @param {Vector2} hitPoint Impact contact point in world coordinates.
  * @param {Vector2} cutDirection Unit direction of the impact's cut line.
  * @param {ContactResponse} response Impulse transferred by the contact solver.
+ * @param {"phaser" | "body"} impactSource Interaction that caused the impact.
  * @returns {Asteroid[]} Original rock or retained fragments in the field.
  */
-function fragmentAsteroidAtImpact(asteroid, hitPoint, cutDirection, response) {
+function fragmentAsteroidAtImpact(
+  asteroid,
+  hitPoint,
+  cutDirection,
+  response,
+  impactSource,
+) {
   const impactImpulse = contactImpulseMagnitude(response);
   if (
-    !Number.isFinite(impactImpulse) ||
-    impactImpulse <= ASTEROID_SPLIT_IMPULSE_THRESHOLD
+    impactSource !== "phaser" &&
+    (!Number.isFinite(impactImpulse) ||
+      impactImpulse <= ASTEROID_SPLIT_IMPULSE_THRESHOLD)
   ) {
     return [asteroid];
   }
@@ -4697,6 +4706,7 @@ function resolveBulletCollisions(width, height) {
           hitPoint,
           incomingDirection,
           response,
+          "phaser",
         );
         const afterEnergy = fragments.reduce(
           (energy, fragment) => energy + bodyKineticEnergy(fragment),
@@ -5252,12 +5262,14 @@ function resolveAsteroidPairCollision(
       manifold.contactPoint,
       manifold.normal,
       response,
+      "body",
     );
     const secondFragments = fragmentAsteroidAtImpact(
       secondAsteroid,
       manifold.contactPoint,
       manifold.normal,
       response,
+      "body",
     );
     if (!firstFragments.includes(firstAsteroid)) {
       fragmentedAsteroids.add(firstAsteroid);
@@ -5375,6 +5387,7 @@ function resolveAsteroidCollisions() {
         manifold.contactPoint,
         manifold.normal,
         response,
+        "body",
       );
       const afterEnergy = fragments.reduce(
         (energy, fragment) => energy + bodyKineticEnergy(fragment),
