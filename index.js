@@ -197,11 +197,46 @@ const SHIP_FAILURE_REASON = "Hull depleted by a collision.";
 // The win state is intentionally frozen so the player can read the result and
 // see the final score before choosing to start another field.
 const WIN_SCREEN_PANEL_WIDTH = 560;
-const WIN_SCREEN_PANEL_HEIGHT = 300;
+// Four badges per row keep the collection compact. Grow the panel by complete
+// rows; viewport scaling keeps every unlocked icon and its caption visible.
+const WIN_SCREEN_PANEL_HEIGHT = 344;
+const WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT = 120;
+const ACHIEVEMENT_COLUMNS = 4;
+const ACHIEVEMENT_BADGE_WIDTH = 104;
+const ACHIEVEMENT_BADGE_GAP = 16;
+const ACHIEVEMENT_ICON_SIZE = 72;
+// Icons share a 64-unit coordinate system, independent of viewport density.
+const ACHIEVEMENT_GLYPH_SIZE = 64;
+// A flat trophy reads as a completed challenge without emoji or external
+// assets. Cache the vector once, as with the ship, for inexpensive canvas fills.
+const WINNING_ACHIEVEMENT_GLYPH = new Path2D(
+  "M 18 14 H 46 L 43 32 Q 41 40 35 42 V 48 H 42 V 54 H 22 V 48 H 29 V 42 " +
+    "Q 23 40 21 32 Z " +
+    "M 18 18 H 9 V 25 Q 9 35 22 36 L 21 30 Q 15 29 15 24 V 23 H 19 Z " +
+    "M 46 18 H 55 V 25 Q 55 35 42 36 L 43 30 Q 49 29 49 24 V 23 H 45 Z",
+);
 const WIN_SCREEN_BACKDROP_ALPHA = 0.58;
 const WIN_SCREEN_TITLE = "SECTOR CLEAR";
 const WIN_SCREEN_REASON =
   "Tactical simulation complete. All asteroids cleared.";
+// Stable IDs make unlocks idempotent. Catalog order is also display order,
+// so future achievements join the same list without separate rendering code.
+/**
+ * @typedef {Object} SessionAchievement
+ * @property {string} id Stable session unlock identifier.
+ * @property {string} title Readable caption beneath the icon.
+ * @property {Path2D} glyph Cached vector in the shared icon coordinate system.
+ * @property {string} color LCARS background color for this achievement.
+ */
+/** @type {ReadonlyArray<Readonly<SessionAchievement>>} */
+const SESSION_ACHIEVEMENTS = Object.freeze([
+  Object.freeze({
+    id: "winning",
+    title: "WINNING",
+    glyph: WINNING_ACHIEVEMENT_GLYPH,
+    color: LCARS_GOLD,
+  }),
+]);
 
 // Phaser pulses are intentionally fast and short-lived. The frequency is expressed
 // in shots per second so holding Space feels regular at every frame rate.
@@ -309,7 +344,7 @@ const PLAY_HELP = Object.freeze([
   }),
 ]);
 const HELP_PANEL_WIDTH = 540;
-const HELP_PANEL_HEIGHT = 530;
+const HELP_PANEL_HEIGHT = 560;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -405,6 +440,10 @@ const autopilotPressedKeys = new Set();
 const asteroids = [];
 const bullets = [];
 const sparks = [];
+// Achievements survive completed fields and pauses, but never ship destruction
+// or a page reload. A Set prevents repeated wins from duplicating an unlock.
+/** @type {Set<string>} */
+const sessionAchievements = new Set();
 let playerAngle = -Math.PI / 2;
 let playerVelocityX = 0;
 let playerVelocityY = 0;
@@ -442,8 +481,7 @@ let autopilotTurnDirection = 0;
 let autopilotLastTurnDirection = 0;
 let autopilotTurnReversalTimeRemaining = 0;
 let autopilotDecisionTime = 0;
-// Session points belong to one ship life; a fresh life starts at zero. Future
-// lifetime achievements must keep their own state outside this session score.
+// Points reset with each field; session achievements independently survive wins.
 // Points measure material that really leaves the playfield. A successful cut
 // preserves area across its retained fragments, while fragments below the
 // minimum area (and terminal asteroids) contribute the area that disappears.
@@ -2071,8 +2109,9 @@ function applyCollisionDamage(collisionMomentum) {
 }
 
 /**
- * Begin a fresh session (one ship life) after destruction or a completed field.
- * Reset the session score together with the world. Rebuilding the asteroid field
+ * Begin a fresh field after destruction or a completed field. Achievements
+ * persist across wins and are cleared only when ship failure begins.
+ * Reset the field score together with the world. Rebuilding the asteroid field
  * makes the restart a real game restart instead of leaving the player inside
  * the collision that ended the previous life.
  * @param {number} width Viewport width in CSS pixels.
@@ -2125,6 +2164,7 @@ function beginShipFailure() {
   }
 
   shipFailureActive = true;
+  sessionAchievements.clear();
   shipFailureTimeRemaining = SHIP_FAILURE_DISPLAY_SECONDS;
   restartRequested = false;
   defeatSound.playRandom();
@@ -2133,9 +2173,9 @@ function beginShipFailure() {
 }
 
 /**
- * Freeze the completed field and show the final score until the player starts
- * another game. Keeping this separate from pause makes the win screen a real
- * terminal gameplay state rather than a paused empty arena.
+ * Unlock Winning before displaying the session's achievements and final score
+ * until the player starts another game. Keeping this separate from pause makes
+ * the win screen a terminal gameplay state rather than a paused empty arena.
  * @returns {void}
  */
 function beginWin() {
@@ -2144,6 +2184,7 @@ function beginWin() {
   }
 
   gameWon = true;
+  sessionAchievements.add("winning");
   gamePaused = true;
   winSound.playRandom();
   for (const bullet of bullets) {
@@ -2879,6 +2920,56 @@ function drawShipFailure(width, height) {
 }
 
 /**
+ * Draw a flat LCARS achievement tile with a recognizable glyph and caption.
+ * Matching asymmetric corners and segmented accents tie it to the console;
+ * the name preserves meaning without requiring the player to guess the icon.
+ * @param {Readonly<SessionAchievement>} achievement Unlocked catalog entry.
+ * @param {number} x Left edge of the badge in panel coordinates.
+ * @param {number} y Top edge of the badge in panel coordinates.
+ * @returns {void}
+ */
+function drawAchievementBadge(achievement, x, y) {
+  const iconX = (ACHIEVEMENT_BADGE_WIDTH - ACHIEVEMENT_ICON_SIZE) / 2;
+
+  context.save();
+  context.translate(x, y);
+  context.fillStyle = achievement.color;
+  context.beginPath();
+  context.roundRect(
+    iconX,
+    0,
+    ACHIEVEMENT_ICON_SIZE,
+    ACHIEVEMENT_ICON_SIZE,
+    [24, 6, 24, 6],
+  );
+  context.fill();
+  context.save();
+  context.translate(iconX, 0);
+  context.scale(
+    ACHIEVEMENT_ICON_SIZE / ACHIEVEMENT_GLYPH_SIZE,
+    ACHIEVEMENT_ICON_SIZE / ACHIEVEMENT_GLYPH_SIZE,
+  );
+  context.fillStyle = LCARS_BLACK;
+  context.fill(achievement.glyph);
+  context.restore();
+
+  context.fillStyle = LCARS_LILAC;
+  context.fillRect(iconX, ACHIEVEMENT_ICON_SIZE + 6, 24, 4);
+  context.fillRect(iconX + 30, ACHIEVEMENT_ICON_SIZE + 6, 42, 4);
+  context.textAlign = "center";
+  context.textBaseline = "middle";
+  context.fillStyle = LCARS_TEXT;
+  context.font = `700 18px ${LCARS_FONT_FAMILY}`;
+  context.fillText(
+    achievement.title,
+    ACHIEVEMENT_BADGE_WIDTH / 2,
+    ACHIEVEMENT_ICON_SIZE + 30,
+    ACHIEVEMENT_BADGE_WIDTH,
+  );
+  context.restore();
+}
+
+/**
  * Draw the final result over the empty arena and keep the restart instruction
  * aligned with the pause control used everywhere else in the game.
  * @param {number} width Viewport width in CSS pixels.
@@ -2886,12 +2977,19 @@ function drawShipFailure(width, height) {
  * @returns {void}
  */
 function drawWinScreen(width, height) {
+  const unlockedAchievements = SESSION_ACHIEVEMENTS.filter((achievement) =>
+    sessionAchievements.has(achievement.id),
+  );
+  const panelHeight =
+    WIN_SCREEN_PANEL_HEIGHT +
+    Math.ceil(unlockedAchievements.length / ACHIEVEMENT_COLUMNS) *
+      WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT;
   const winScale = Math.max(
     0,
     Math.min(
       1,
       (width - 32) / WIN_SCREEN_PANEL_WIDTH,
-      (height - 32) / WIN_SCREEN_PANEL_HEIGHT,
+      (height - 32) / panelHeight,
     ),
   );
 
@@ -2905,15 +3003,11 @@ function drawWinScreen(width, height) {
   }
 
   const panelX = (width - WIN_SCREEN_PANEL_WIDTH * winScale) / 2;
-  const panelY = (height - WIN_SCREEN_PANEL_HEIGHT * winScale) / 2;
+  const panelY = (height - panelHeight * winScale) / 2;
 
   context.translate(panelX, panelY);
   context.scale(winScale, winScale);
-  drawLCARSOverlayFrame(
-    WIN_SCREEN_PANEL_WIDTH,
-    WIN_SCREEN_PANEL_HEIGHT,
-    LCARS_LILAC,
-  );
+  drawLCARSOverlayFrame(WIN_SCREEN_PANEL_WIDTH, panelHeight, LCARS_LILAC);
 
   context.textAlign = "center";
   context.textBaseline = "middle";
@@ -2932,12 +3026,34 @@ function drawWinScreen(width, height) {
     WIN_SCREEN_PANEL_WIDTH / 2,
     212,
   );
+  context.fillStyle = LCARS_LILAC;
+  context.font = `600 18px ${LCARS_BODY_FONT_FAMILY}`;
+  context.fillText("SESSION ACHIEVEMENTS", WIN_SCREEN_PANEL_WIDTH / 2, 254);
+  for (const [index, achievement] of unlockedAchievements.entries()) {
+    const row = Math.floor(index / ACHIEVEMENT_COLUMNS);
+    const column = index % ACHIEVEMENT_COLUMNS;
+    const rowCount = Math.min(
+      ACHIEVEMENT_COLUMNS,
+      unlockedAchievements.length - row * ACHIEVEMENT_COLUMNS,
+    );
+    // Center incomplete rows too, so a single unlock feels deliberate and
+    // future icons never leave an awkward empty side of the collection.
+    const rowWidth =
+      rowCount * ACHIEVEMENT_BADGE_WIDTH +
+      (rowCount - 1) * ACHIEVEMENT_BADGE_GAP;
+    const badgeX =
+      (WIN_SCREEN_PANEL_WIDTH - rowWidth) / 2 +
+      column * (ACHIEVEMENT_BADGE_WIDTH + ACHIEVEMENT_BADGE_GAP);
+    const badgeY = 280 + row * WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT;
+
+    drawAchievementBadge(achievement, badgeX, badgeY);
+  }
   context.fillStyle = LCARS_MUTED_TEXT;
   context.font = `500 20px ${LCARS_BODY_FONT_FAMILY}`;
   context.fillText(
     `PRESS ${PAUSE_KEY_LABEL} TO PLAY AGAIN`,
     WIN_SCREEN_PANEL_WIDTH / 2,
-    254,
+    panelHeight - 46,
   );
   context.restore();
 }
@@ -3025,9 +3141,14 @@ function drawPauseHelp(width, height) {
     464,
   );
   context.fillText(
-    "One life = one session. New sessions reset the score.",
+    "Win once for the Winning badge. Wins keep badges.",
     HELP_PANEL_WIDTH / 2,
     494,
+  );
+  context.fillText(
+    "Death resets achievements; new fields reset the score.",
+    HELP_PANEL_WIDTH / 2,
+    524,
   );
   context.restore();
 }
