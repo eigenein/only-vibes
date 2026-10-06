@@ -374,8 +374,8 @@ const PLAY_HELP = Object.freeze([
   }),
 ]);
 const HELP_PANEL_WIDTH = 540;
-// Leave room for the shared impact rule, achievements, and their reset rules.
-const HELP_PANEL_HEIGHT = 620;
+// Leave room for impact rules, ricochet colors, achievements, and reset rules.
+const HELP_PANEL_HEIGHT = 650;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -1152,14 +1152,22 @@ class Bullet {
     this.velocityX = Math.cos(angle) * BULLET_SPEED;
     this.velocityY = Math.sin(angle) * BULLET_SPEED;
     this.reflectionCount = 0;
+    this.materialColor = undefined;
   }
 
   get mass() {
     return BULLET_MASS;
   }
 
-  recordReflection() {
+  /**
+   * Count a bounce and retain the latest asteroid's material color. Walls and
+   * the ship preserve that color; a fresh pulse keeps its launch gradient.
+   * @param {string} [materialColor] Color of the asteroid causing this bounce.
+   * @returns {void}
+   */
+  recordReflection(materialColor = this.materialColor) {
     this.reflectionCount += 1;
+    this.materialColor = materialColor;
   }
 
   update(deltaTime) {
@@ -1198,13 +1206,13 @@ class Bullet {
     const endY = this.y + directionY * BULLET_HALF_LENGTH;
     const gradient = context.createLinearGradient(startX, startY, endX, endY);
 
-    // A symmetric orange gradient presents the projectile as a phaser pulse:
-    // both ends fade to black while the midpoint carries the full brightness.
-    gradient.addColorStop(0, "rgba(255, 153, 0, 0)");
-    gradient.addColorStop(0.3, LCARS_AMBER);
-    gradient.addColorStop(0.5, LCARS_GOLD);
-    gradient.addColorStop(0.7, LCARS_AMBER);
-    gradient.addColorStop(1, "rgba(255, 153, 0, 0)");
+    // Transparent ends keep the phaser silhouette soft. After an asteroid
+    // ricochet, the whole pulse uses that rock's hue so its origin is readable.
+    gradient.addColorStop(0, "rgba(0, 0, 0, 0)");
+    gradient.addColorStop(0.3, this.materialColor ?? LCARS_AMBER);
+    gradient.addColorStop(0.5, this.materialColor ?? LCARS_GOLD);
+    gradient.addColorStop(0.7, this.materialColor ?? LCARS_AMBER);
+    gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
 
     context.save();
     context.beginPath();
@@ -3411,14 +3419,19 @@ function drawPauseHelp(width, height) {
     524,
   );
   context.fillText(
-    "Rammer: win with more ram than blaster damage.",
+    "Ricochets take the last asteroid's color.",
     HELP_PANEL_WIDTH / 2,
     554,
   );
   context.fillText(
-    "Wins keep badges; death resets them. Fields reset totals.",
+    "Rammer: win with more ram than blaster damage.",
     HELP_PANEL_WIDTH / 2,
     584,
+  );
+  context.fillText(
+    "Wins keep badges; death resets them. Fields reset totals.",
+    HELP_PANEL_WIDTH / 2,
+    614,
   );
   context.restore();
 }
@@ -4696,7 +4709,7 @@ function resolveBulletCollisions(width, height) {
         recordAsteroidDamage(response, "blasters");
         bullet.syncAngle();
         if (canReflect) {
-          bullet.recordReflection();
+          bullet.recordReflection(asteroid.materialColor);
         }
         const fragments = fragmentAsteroidAtImpact(
           asteroid,
