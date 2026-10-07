@@ -359,25 +359,14 @@ const BORG_AVOIDANCE_LOOKAHEAD = 2;
 const BORG_AVOIDANCE_MARGIN = 95;
 const BORG_PURSUIT_WEIGHT = 0.22;
 const BORG_WALL_MARGIN = 85;
-// Heavy green pulses use the shared contact solver. At the launch speed, a
-// centered hit on a stationary ship costs about 50 shield points and imparts
-// about 93 px/s of velocity. The stronger hit makes each Borg volley matter
-// while the slower cadence and dodge window preserve counterplay.
-// Player phasers and the shared damage rule retain their existing behavior.
-// A wider pulse signals its energy; the slower speed leaves room to dodge.
-// Aim follows instantaneous velocity during early charging, then commits for
-// the final reaction window. This is ballistic lead, not learned behavior.
-// The interval is the quiet cooldown between the end of one shot and the
-// beginning of the next charge, in active simulation seconds.
+// Green pulses retain their distinct paint but share starship projectile mass,
+// speed and impact rules. They disappear after their first contact, preventing
+// return ricochets. Early charging tracks exact ballistic lead; the final aim
+// lock gives a visible reaction window without adding any random spread.
+// The interval is the quiet cooldown after a shot, in active simulation seconds.
 const BORG_FIRE_INTERVAL = 2.2;
 const BORG_FIRE_CHARGE_SECONDS = 0.55;
 const BORG_AIM_LOCK_SECONDS = 0.15;
-// Sample one bounded angular error when aim locks. The final warning and shot
-// share that heading; slight off-center impacts vary the natural ricochet
-// rather than forcing a centered shot straight back into its source.
-const BORG_AIM_SPREAD = Math.PI / 180;
-const BORG_BULLET_SPEED = 540;
-const BORG_BULLET_MASS = 100;
 const BORG_BULLET_LINE_WIDTH = 6;
 const BORG_MUZZLE_FLASH_SECONDS = 0.2;
 // Physical damage ignores phaser adaptation. A shared replenishing contact
@@ -601,7 +590,7 @@ const FIRE_KEY_LABEL = "SPACE";
 const PLAY_HELP = Object.freeze([
     Object.freeze({
         label: FIRE_KEY_LABEL,
-        description: "phasers: long cold bursts; hold heats faster",
+        description: "fire phasers",
     }),
     Object.freeze({
         label: "W / S",
@@ -609,7 +598,7 @@ const PLAY_HELP = Object.freeze([
     }),
     Object.freeze({
         label: "A / D",
-        description: "CCW / CW; tap fine, hold fast",
+        description: "turn counter-clockwise / clockwise",
     }),
     Object.freeze({
         label: PAUSE_KEY_LABEL,
@@ -617,25 +606,21 @@ const PLAY_HELP = Object.freeze([
     }),
     Object.freeze({
         label: AUTOPILOT_TOGGLE_KEY_LABEL,
-        description: "autopilot: fly / ram rocks; helm cancels",
+        description: "toggle autopilot",
     }),
     Object.freeze({
         label: AUTO_GUNNER_TOGGLE_KEY_LABEL,
-        description: "auto-gunner: bursts; Space cancels",
+        description: "toggle auto-gunner",
     }),
     Object.freeze({
         label: AIM_ASSIST_TOGGLE_KEY_LABEL,
-        description: "aim assist: lead crosshair; lock follows splits",
-    }),
-    Object.freeze({
-        label: "COLOR",
-        description: "redder asteroids are heavier and hit harder",
+        description: "toggle aim assist",
     }),
 ]);
 const HELP_PANEL_WIDTH = 540;
-// Fit the essential controls, objective, and survival rules without turning the
-// pause screen into a complete mechanics reference.
-const HELP_PANEL_HEIGHT = 716;
+// Keep pause help focused on controls; README.md holds the mechanics reference.
+// The final control row ends at 434, leaving breathing room below the table.
+const HELP_PANEL_HEIGHT = 482;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -2297,7 +2282,7 @@ class BorgCube extends Asteroid {
             const time = linearInterceptTime(
                 this,
                 target,
-                BORG_BULLET_SPEED,
+                BULLET_SPEED,
                 this.muzzleDistance(
                     angle,
                     this.rotation + this.angularVelocity * delay,
@@ -2328,12 +2313,6 @@ class BorgCube extends Asteroid {
             const remainingCharge = Math.max(0, this.fireCharge - deltaTime);
             if (this.fireCharge > BORG_AIM_LOCK_SECONDS) {
                 this.fireAngle = this.aimAtTarget(remainingCharge);
-                if (remainingCharge <= BORG_AIM_LOCK_SECONDS) {
-                    this.fireAngle += randomBetween(
-                        -BORG_AIM_SPREAD,
-                        BORG_AIM_SPREAD,
-                    );
-                }
             }
             this.fireCharge = remainingCharge;
             if (this.fireCharge > 0) return;
@@ -2341,8 +2320,6 @@ class BorgCube extends Asteroid {
             const bullet = new Bullet({
                 ...muzzle,
                 angle: this.fireAngle,
-                speed: BORG_BULLET_SPEED,
-                mass: BORG_BULLET_MASS,
                 lineWidth: BORG_BULLET_LINE_WIDTH,
                 source: "borg",
                 materialColor: BORG_GREEN,
@@ -3011,7 +2988,7 @@ class Bullet {
      * @param {number} [options.speed] Launch speed in CSS pixels per second.
      * @param {number} [options.mass] Positive physical mass retained through ricochets.
      * @param {number} [options.lineWidth] Painted pulse thickness in CSS pixels.
-     * @param {"starship"|"borg"} [options.source] Origin for damage attribution and Borg fleet immunity.
+     * @param {"starship"|"borg"} [options.source] Origin for attribution and the Borg zero-ricochet rule.
      * @param {string} [options.materialColor] Launch color retained for the projectile lifetime.
      */
     constructor({
@@ -5831,39 +5808,6 @@ function drawPauseHelp(width, height) {
         context.font = `700 18px ${LCARS_FONT_FAMILY}`;
     }
 
-    context.textAlign = "center";
-    context.fillStyle = LCARS_MUTED_TEXT;
-    context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText(
-        "Gold = you; lavender = ally. One ricochet; 3s spawn immunity.",
-        HELP_PANEL_WIDTH / 2,
-        518,
-    );
-    context.fillText(
-        "Alerts: yellow = aim assist; red = autopilot; green = engaged.",
-        HELP_PANEL_WIDTH / 2,
-        548,
-    );
-    context.fillText(
-        "Shields regenerate; hull damage persists. Walls hurt.",
-        HELP_PANEL_WIDTH / 2,
-        578,
-    );
-    context.fillText(
-        "Borg: vary faces / bursts; rocks hurt. Orange cracks = hull loss.",
-        HELP_PANEL_WIDTH / 2,
-        608,
-    );
-    context.fillText(
-        "Borg: green links average hull; 6s/cube. Allied bolts harmless.",
-        HELP_PANEL_WIDTH / 2,
-        638,
-    );
-    context.fillText(
-        "Borg: +1 cube each field; support joins from field 2.",
-        HELP_PANEL_WIDTH / 2,
-        668,
-    );
     context.restore();
 }
 
@@ -7150,7 +7094,11 @@ function resolveBulletCollisions(width, height) {
                     segmentEnd.y - segmentStart.y,
                 ) *
                 (1 - hitParameter);
-            const canReflect = bullet.reflectionCount < MAX_BULLET_REFLECTIONS;
+            // Every pulse applies the same impact response. Borg pulses are
+            // consumed immediately afterward; starship pulses may ricochet.
+            const canReflect =
+                bullet.source !== "borg" &&
+                bullet.reflectionCount < MAX_BULLET_REFLECTIONS;
 
             let normal = bodyIsFirst ? undefined : wallHit.normal;
             let interactionBeforeEnergy = bodyKineticEnergy(bullet);
@@ -7158,15 +7106,6 @@ function resolveBulletCollisions(width, height) {
             let removedEnergy = 0;
 
             if (
-                asteroidIsFirst &&
-                hitTarget instanceof BorgCube &&
-                bullet.source === "borg"
-            ) {
-                // Allied bolts dissipate without hull, shield or momentum changes.
-                hitTarget.absorptionPulse = BORG_ABSORPTION_PULSE_SECONDS;
-                bullets.splice(bulletIndex, 1);
-                break;
-            } else if (
                 asteroidIsFirst &&
                 hitTarget instanceof BorgCube &&
                 hitTarget.alive

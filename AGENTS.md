@@ -20,6 +20,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - Must document all world constants.
 - Must group all world constants.
 - Must document the purpose and choices made.
+- Should keep the code type-safe.
 
 # Implementation instructions
 

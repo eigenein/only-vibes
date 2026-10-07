@@ -78,6 +78,14 @@ and auto-gunner share heat and cadence, which mode changes and pauses cannot
 reset. The Space panel reads **PHASERS** when cool, then shows heat or the
 brief wait until firing becomes available.
 
+### Combat cues
+
+Gold identifies your ship and lavender identifies friendly support. Starship
+phasers can ricochet once; Borg pulses disappear on their first contact.
+Your ship has three seconds of protection from collision damage after spawning.
+Yellow alert automatically enables aim assist; red alert also enables autopilot.
+The green AUTOPILOT indicator shows that automatic helm is engaged.
+
 ### Shield and hull
 
 - The ship starts with a full shield and hull.
@@ -127,20 +135,16 @@ Physical impacts bypass phaser adaptation and can split the impacting rock.
 A green charging port and short dashed sight line track an intercept based on
 the ship's current velocity, including charging time and bullet travel. Aim
 locks for the final 0.15 seconds of the charge, when the cue turns pale green.
-Each lock adds up to one degree of random spread in either direction. The
-warning shows the actual firing angle, and off-center hits vary the ricochet
-instead of always sending the pulse directly back toward the cube.
-The cube then fires a thick, heavy green pulse along that committed heading.
-It carries 10 times the mass of a player phaser, using the same collision rules:
-it ricochets off walls and ships, cuts asteroids, and transfers impulse into the
-player's shields and hull. A centered hit on a stationary ship removes about
-14 shield points; at half shields it also removes about 6 hull points. Damage
-varies with relative speed and impact angle. A healthy ship stays below yellow
-alert after a stationary direct hit and can recover its shields before the next
-shot if it avoids other impacts. The cube receives the matching recoil when
-firing. Steady flight can be intercepted; changing course after aim locks or
-while the pulse travels gives room to dodge.
-Enemy shots can also ricochet back into the cube.
+The warning shows the exact firing angle, with no random spread. The cube fires
+a thick green pulse along that committed heading. Its speed, mass, and impact
+rules match starship phasers: it cuts asteroids, damages ships and live cubes,
+and transfers impulse. It disappears on first contact with any body or wall,
+with no ricochets and no immunity for allied cubes. The cube receives matching
+recoil when firing. Changing course after aim locks or while the pulse travels
+gives room to dodge.
+
+Green links redistribute hull evenly between connected cubes, taking six
+seconds per cube. They transfer existing hull rather than creating new hull.
 
 Defeat switches off weapons, shields, and engines. The intact, unlit wreck keeps
 its velocity and spin, floats freely, bounces from walls and rocks, reflects
