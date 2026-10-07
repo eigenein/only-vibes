@@ -436,10 +436,12 @@ const BORG_DEFEAT_SCORE = 8000;
 // continuously adapt to shifting spatial opportunities.
 const BORG_TACTICAL_REEVALUATION_INTERVAL = 0.25;
 const BORG_FOCUS_GROUP_MIN_SIZE = 2;
-const BORG_FOCUS_SYNERGY_BONUS = 1.2;
+// Nearby teamwork can justify about 12% of a field diagonal in extra travel;
+// distant cubes favor their own local targets instead of crossing the field.
+const BORG_FOCUS_SYNERGY_BONUS = 0.6;
 const BORG_FOCUS_MULTI_GROUP_BONUS = 0.8;
 const BORG_FOCUS_OVERSATURATION_PENALTY = 0.6;
-const BORG_FOCUS_DISTANCE_WEIGHT = 2.6;
+const BORG_FOCUS_DISTANCE_WEIGHT = 5.2;
 const BORG_FOCUS_VULNERABILITY_WEIGHT = 0.35;
 const BORG_FOCUS_PLAYER_PRIORITY_WEIGHT = 0.2;
 const BORG_FOCUS_HYSTERESIS_BONUS = 0.05;
