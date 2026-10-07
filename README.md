@@ -97,7 +97,9 @@ The green AUTOPILOT indicator shows that automatic helm is engaged.
   contacts during a scrape. Weapon hits bypass that budget and do not consume it.
 - Hull damage does not regenerate during the current life.
 - Arena walls also damage the ship. Border autobrake overrides thrust near a
-  wall and uses ordinary braking until stopped. It helps approaches below 50%
+  wall and uses ordinary braking until stopped while turning away at the normal
+  turn rate. Corners steer diagonally inward; manual steering overrides the
+  assisted turn. It helps approaches below 50%
   maximum speed; faster approaches can still hit. The gold AUTOBRAKE cue beside
   the controls lights while it intervenes.
 - Yellow alert means shield and hull reserves cannot withstand four heavy

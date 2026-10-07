@@ -1002,6 +1002,7 @@ class ShipControls {
     autoGunnerPressedKeys = new Set();
     autopilotEnabled = false;
     autobrakeActive = false;
+    autobrakeDesiredAngle = 0;
     /** @type {Asteroid | undefined} Independent navigation engagement. */
     autopilotTargetLock = undefined;
     autopilotDesiredAngle = 0;
@@ -5911,12 +5912,12 @@ function drawPauseHelp(width, height) {
     context.fillStyle = LCARS_GOLD;
     context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
-        "Border autobrake helps below 50% speed.",
+        "Border assist brakes and turns away below 50% speed.",
         HELP_PANEL_WIDTH / 2,
         470,
     );
     context.fillText(
-        "Faster approaches can still hit the wall.",
+        "Manual steering overrides the turn; fast approaches can hit.",
         HELP_PANEL_WIDTH / 2,
         493,
     );
@@ -8128,7 +8129,9 @@ function turnDirectionForKeys(keys) {
  * Latch the player's emergency brake until stopped, including after a bounce.
  * One step of lookahead prevents skipping the fixed trigger zone at low FPS;
  * it does not expand the zone to accommodate a faster stopping distance.
- * Moving away from a nearby wall never starts an emergency stop.
+ * Moving away from a nearby wall never starts an emergency stop. The escape
+ * heading stays latched through bounces; corner threats combine inward normals.
+ * Manual steering takes priority over the ordinary-rate assisted turn.
  * @param {Starship} ship Player hull receiving limited border assistance.
  * @param {number} deltaTime Bounded simulation step in seconds.
  * @param {number} width Arena width in CSS pixels.
@@ -8149,11 +8152,31 @@ function updateAutobrake(ship, deltaTime, width, height) {
     const approaches = (distance, outwardSpeed) =>
         outwardSpeed > COLLISION_EPSILON &&
         distance <= AUTOBRAKE_CLEARANCE + outwardSpeed * deltaTime;
-    ship.controls.autobrakeActive ||=
-        approaches(ship.x - ship.radius, -ship.velocityX) ||
-        approaches(width - ship.radius - ship.x, ship.velocityX) ||
-        approaches(ship.y - ship.radius, -ship.velocityY) ||
-        approaches(height - ship.radius - ship.y, ship.velocityY);
+    if (!ship.controls.autobrakeActive) {
+        const inwardX =
+            Number(approaches(ship.x - ship.radius, -ship.velocityX)) -
+            Number(approaches(width - ship.radius - ship.x, ship.velocityX));
+        const inwardY =
+            Number(approaches(ship.y - ship.radius, -ship.velocityY)) -
+            Number(approaches(height - ship.radius - ship.y, ship.velocityY));
+        if (inwardX === 0 && inwardY === 0) return;
+        ship.controls.autobrakeActive = true;
+        ship.controls.autobrakeDesiredAngle = Math.atan2(inwardY, inwardX);
+    }
+    const manuallySteering = ["KeyA", "KeyD", "ArrowLeft", "ArrowRight"].some(
+        (key) => ship.controls.manualPressedKeys.has(key),
+    );
+    if (!manuallySteering) {
+        const error = shortestAngleDifference(
+            ship.controls.autobrakeDesiredAngle,
+            ship.angle,
+        );
+        ship.angle = wrapAngle(
+            ship.angle +
+                Math.sign(error) *
+                    Math.min(ROTATION_SPEED * deltaTime, Math.abs(error)),
+        );
+    }
 }
 
 /**
@@ -8174,10 +8197,16 @@ function updateGame(deltaTime, width, height) {
         ship.regenerateShield(deltaTime);
         updateAutopilotInput(ship, deltaTime, width, height);
 
+        if (ship === playerShip)
+            updateAutobrake(ship, deltaTime, width, height);
         ship.angle = wrapAngle(
             ship.angle +
                 ship.controls.manualTurnControl.advance(performance.now()) +
-                turnDirectionForKeys(ship.controls.autopilotPressedKeys) *
+                (ship.controls.autobrakeActive
+                    ? 0
+                    : turnDirectionForKeys(
+                          ship.controls.autopilotPressedKeys,
+                      )) *
                     Math.min(
                         ROTATION_SPEED * deltaTime,
                         Math.abs(
@@ -8189,8 +8218,6 @@ function updateGame(deltaTime, width, height) {
                     ),
         );
 
-        if (ship === playerShip)
-            updateAutobrake(ship, deltaTime, width, height);
         ship.applyThrottle(
             ship.controls.autobrakeActive
                 ? AUTOBRAKE_KEYS
