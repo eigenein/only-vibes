@@ -428,9 +428,29 @@ const BORG_HULL_FRACTURES = Object.freeze([
 // Defeat awards points once; the intact hull remains a drifting physical
 // obstacle until the field restarts, with no remaining hostile systems.
 const BORG_DEFEAT_SCORE = 8000;
+// Collective tactical coordination allows multiple cubes (2+) to focus fire
+// on priority starships, forming coordinated focus groups across the fleet.
+// Target evaluation rechecks frequently, balances multi-group formation against
+// lone targets, penalizes oversaturating a single ship when other hostiles
+// threaten the fleet, and maintains minimal hysteresis so tactical assignments
+// continuously adapt to shifting spatial opportunities.
+const BORG_TACTICAL_REEVALUATION_INTERVAL = 0.25;
+const BORG_FOCUS_GROUP_MIN_SIZE = 2;
+const BORG_FOCUS_SYNERGY_BONUS = 1.2;
+const BORG_FOCUS_MULTI_GROUP_BONUS = 0.8;
+const BORG_FOCUS_OVERSATURATION_PENALTY = 0.6;
+const BORG_FOCUS_DISTANCE_WEIGHT = 2.6;
+const BORG_FOCUS_VULNERABILITY_WEIGHT = 0.35;
+const BORG_FOCUS_PLAYER_PRIORITY_WEIGHT = 0.2;
+const BORG_FOCUS_HYSTERESIS_BONUS = 0.05;
+const BORG_FOCUS_LOCK_ROTATION_SPEED = 0.85;
+const BORG_FOCUS_LOCK_BRACKET_PADDING = 12;
+const BORG_FOCUS_LOCK_COLOR = "#77ff88";
+const BORG_FOCUS_LOCK_ACCENT = "#b4ffbe";
+const BORG_FOCUS_LOCK_BEAM = "rgba(119, 255, 136, 0.35)";
 
-// The player counts as one friendly, so every field has one fewer friendly
-// hull than Borg cubes. Additional helpers begin on field two.
+// Friendly support arrives from field two onward, providing one friendly
+// helper per additional Borg cube (Borg count minus one).
 const HELPER_SPAWN_DISTANCE = STARSHIP_RADIUS * 4;
 
 // Aim assist advises the player without steering or changing phaser behavior.
@@ -1912,6 +1932,8 @@ class BorgCube extends Asteroid {
         /** @type {BorgCube | undefined} Ally committed for this charge. */
         this.repairTarget = undefined;
         this.repairShotNext = true;
+        /** @type {Starship | undefined} Assigned starship target under collective tactics. */
+        this.targetStarship = undefined;
         this.fireAngle = 0;
         this.muzzleFlash = 0;
         this.wreckTexture = undefined;
@@ -2223,7 +2245,11 @@ class BorgCube extends Asteroid {
     aimAtTarget(delay, ally = undefined) {
         const originX = this.x + this.velocityX * delay;
         const originY = this.y + this.velocityY * delay;
-        const recipient = ally ?? nearestStarship(this);
+        const targetShip =
+            this.targetStarship && this.targetStarship.alive
+                ? this.targetStarship
+                : nearestStarship(this);
+        const recipient = ally ?? targetShip;
         if (recipient === undefined) return this.rotation;
         const target = {
             x: recipient.x + recipient.velocityX * delay,
@@ -2326,7 +2352,10 @@ class BorgCube extends Asteroid {
         }
         // At contact distance the ordinary body collision supplies the threat;
         // avoid spawning a shot inside the ship's shield circle.
-        const opponent = nearestStarship(this);
+        const opponent =
+            this.targetStarship && this.targetStarship.alive
+                ? this.targetStarship
+                : nearestStarship(this);
         if (
             this.repairTarget === undefined &&
             (opponent === undefined ||
@@ -2343,6 +2372,8 @@ class BorgCube extends Asteroid {
      * Slow pursuit provides pressure without predicting player movement.
      * Project rocks and collective members (including wrecks) to closest
      * approach and push away from threatened regions.
+     * When focusing in a multi-cube group, cubes coordinate encirclement
+     * offsets around the target to cut off escape lanes.
      * Engines cannot instantly cancel inertia or dodge a rock already touching.
      * @param {number} width Arena width in CSS pixels.
      * @param {number} height Arena height in CSS pixels.
@@ -2350,11 +2381,39 @@ class BorgCube extends Asteroid {
      * @returns {void}
      */
     navigate(width, height, deltaTime) {
-        const opponent = nearestStarship(this);
-        const pursuit = normalizedVector(
-            (opponent?.x ?? this.x) - this.x,
-            (opponent?.y ?? this.y) - this.y,
-        );
+        const opponent =
+            this.targetStarship && this.targetStarship.alive
+                ? this.targetStarship
+                : nearestStarship(this);
+        let pursuitX = (opponent?.x ?? this.x) - this.x;
+        let pursuitY = (opponent?.y ?? this.y) - this.y;
+        if (opponent !== undefined) {
+            const focusGroup = borgCubes.filter(
+                (cube) => cube.alive && cube.targetStarship === opponent,
+            );
+            if (focusGroup.length >= BORG_FOCUS_GROUP_MIN_SIZE) {
+                const groupIndex = focusGroup.indexOf(this);
+                if (groupIndex >= 0) {
+                    const spreadAngle =
+                        ((groupIndex - (focusGroup.length - 1) / 2) * Math.PI) /
+                        Math.max(2, focusGroup.length);
+                    const distanceToTarget = Math.hypot(pursuitX, pursuitY);
+                    const baseAngle = Math.atan2(pursuitY, pursuitX);
+                    const flankAngle = baseAngle + spreadAngle;
+                    const offsetDistance = Math.min(
+                        140,
+                        distanceToTarget * 0.35,
+                    );
+                    const targetOffsetX =
+                        Math.cos(flankAngle + Math.PI) * offsetDistance;
+                    const targetOffsetY =
+                        Math.sin(flankAngle + Math.PI) * offsetDistance;
+                    pursuitX = opponent.x + targetOffsetX - this.x;
+                    pursuitY = opponent.y + targetOffsetY - this.y;
+                }
+            }
+        }
+        const pursuit = normalizedVector(pursuitX, pursuitY);
         let steerX = pursuit.x * BORG_PURSUIT_WEIGHT;
         let steerY = pursuit.y * BORG_PURSUIT_WEIGHT;
         for (const rock of physicalTargets()) {
@@ -2727,6 +2786,151 @@ class BorgCube extends Asteroid {
     }
 }
 
+/**
+ * Dynamic tactical assignment timer for Borg collective decision making.
+ * Evaluated periodically to continuously reconsider focus group organization.
+ * @type {number}
+ */
+let borgTacticsEvaluationTimer = 0;
+
+/**
+ * Assign live Borg cubes to starships by finding the collective tactical
+ * distribution that maximizes collective efficiency, prioritizing multi-cube
+ * (2+) focus groups on vulnerable or proximate starships while tolerating
+ * split groups when several targets are in play.
+ * @param {BorgCube[]} liveCubes Active, undamaged or damaged live cubes.
+ * @param {Starship[]} liveShips Active, undamaged or damaged live starships.
+ * @param {number} arenaDiagonal Approximate maximum arena dimension for distance normalization.
+ * @returns {number[]} Array of starship target indices for each live cube.
+ */
+function findBestBorgTargetAssignment(liveCubes, liveShips, arenaDiagonal) {
+    const cubeCount = liveCubes.length;
+    const shipCount = liveShips.length;
+    let bestScore = -Infinity;
+    const bestAssignment = new Array(cubeCount).fill(0);
+    const currentAssignment = new Array(cubeCount).fill(0);
+    const counts = new Array(shipCount).fill(0);
+
+    const evaluateAssignment = () => {
+        let score = 0;
+        let focusGroupCount = 0;
+        // Focus group synergy bonus rewards concentrating 2+ cubes on a single target,
+        // while penalizing excessive dogpiling on one target when other hostiles exist.
+        for (let shipIndex = 0; shipIndex < shipCount; shipIndex += 1) {
+            const count = counts[shipIndex];
+            if (count >= BORG_FOCUS_GROUP_MIN_SIZE) {
+                focusGroupCount += 1;
+                score += BORG_FOCUS_SYNERGY_BONUS;
+                if (count > 3 && shipCount > 1) {
+                    score -= (count - 3) * BORG_FOCUS_OVERSATURATION_PENALTY;
+                }
+            }
+        }
+        // Reward multi-group fleet tactical coverage when the fleet has sufficient numbers (4+ cubes)
+        if (shipCount > 1 && cubeCount >= 4 && focusGroupCount >= 2) {
+            score += BORG_FOCUS_MULTI_GROUP_BONUS;
+        }
+        for (let cubeIndex = 0; cubeIndex < cubeCount; cubeIndex += 1) {
+            const shipIndex = currentAssignment[cubeIndex];
+            const cube = liveCubes[cubeIndex];
+            const target = liveShips[shipIndex];
+            const distance = Math.hypot(cube.x - target.x, cube.y - target.y);
+            score -=
+                (distance / Math.max(1, arenaDiagonal)) *
+                BORG_FOCUS_DISTANCE_WEIGHT;
+            const healthRatio =
+                ((target.hullState ?? SHIP_MAX_STATE) +
+                    (target.shieldState ?? SHIELD_MAX_STATE)) /
+                (SHIP_MAX_STATE + SHIELD_MAX_STATE);
+            score +=
+                (1 - Math.max(0, Math.min(1, healthRatio))) *
+                BORG_FOCUS_VULNERABILITY_WEIGHT;
+            if (target === playerShip) {
+                score += BORG_FOCUS_PLAYER_PRIORITY_WEIGHT;
+            }
+            if (cube.targetStarship === target) {
+                score += BORG_FOCUS_HYSTERESIS_BONUS;
+            }
+        }
+        if (score > bestScore) {
+            bestScore = score;
+            for (let index = 0; index < cubeCount; index += 1) {
+                bestAssignment[index] = currentAssignment[index];
+            }
+        }
+    };
+
+    /**
+     * @param {number} cubeIndex Index of the cube currently being assigned.
+     * @returns {void}
+     */
+    const search = (cubeIndex) => {
+        if (cubeIndex === cubeCount) {
+            evaluateAssignment();
+            return;
+        }
+        for (let shipIndex = 0; shipIndex < shipCount; shipIndex += 1) {
+            currentAssignment[cubeIndex] = shipIndex;
+            counts[shipIndex] += 1;
+            search(cubeIndex + 1);
+            counts[shipIndex] -= 1;
+        }
+    };
+
+    search(0);
+    return bestAssignment;
+}
+
+/**
+ * Reconsider Borg fleet tactical assignments and focus group composition.
+ * Cubes dynamically organize into single or multiple focus groups (2+ cubes)
+ * to overwhelm starships, converging fire and coordinating approach vectors.
+ * @param {number} deltaTime Simulation seconds since the last step.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {void}
+ */
+function updateBorgFleetTactics(deltaTime, width, height) {
+    const liveCubes = borgCubes.filter((cube) => cube.alive);
+    const liveShips = starships.filter((ship) => ship.alive);
+
+    if (liveCubes.length === 0 || liveShips.length === 0) {
+        for (const cube of liveCubes) {
+            cube.targetStarship = undefined;
+        }
+        return;
+    }
+
+    borgTacticsEvaluationTimer -= deltaTime;
+    const needsImmediateReevaluation = liveCubes.some(
+        (cube) => cube.targetStarship === undefined || !cube.targetStarship.alive,
+    );
+
+    if (borgTacticsEvaluationTimer > 0 && !needsImmediateReevaluation) {
+        return;
+    }
+
+    borgTacticsEvaluationTimer = BORG_TACTICAL_REEVALUATION_INTERVAL;
+
+    if (liveShips.length === 1) {
+        const onlyTarget = liveShips[0];
+        for (const cube of liveCubes) {
+            cube.targetStarship = onlyTarget;
+        }
+        return;
+    }
+
+    const arenaDiagonal = Math.hypot(width, height);
+    const bestAssignment = findBestBorgTargetAssignment(
+        liveCubes,
+        liveShips,
+        arenaDiagonal,
+    );
+    for (let index = 0; index < liveCubes.length; index += 1) {
+        liveCubes[index].targetStarship = liveShips[bestAssignment[index]];
+    }
+}
+
 class Bullet {
     /**
      * @param {Object} options Projectile launch configuration.
@@ -3081,8 +3285,8 @@ function generateAsteroids(width, height) {
 
 /**
  * Return the number of autonomous hulls supporting the player in a field.
- * Each field has one Borg cube per field number, and the player counts as one
- * friendly; helpers make the friendly fleet one hull smaller than the Borg fleet.
+ * Each round adds one Borg cube. Friendly support arrives from the second round
+ * onward, scaling with one helper per additional Borg cube (Borg count minus one).
  * @param {number} field One-based session field number.
  * @returns {number} Number of helper ships.
  */
@@ -3090,7 +3294,7 @@ function helperCountForField(field) {
     if (!Number.isFinite(field) || field < 1) {
         return 0;
     }
-    return Math.max(0, field - 2);
+    return Math.max(0, field - 1);
 }
 
 /**
@@ -4275,6 +4479,7 @@ function restartGame(width, height) {
     asteroids.length = 0;
     asteroidsGenerated = false;
     borgCubes.length = 0;
+    borgTacticsEvaluationTimer = 0;
     generateAsteroids(width, height);
 }
 
@@ -4889,6 +5094,7 @@ function drawGame(width, height) {
     }
 
     drawAimAssist(width, playfieldHeight);
+    drawBorgFocusLock(width, playfieldHeight);
     for (const ship of starships) drawStarship(ship);
 
     drawSparks();
@@ -4959,6 +5165,134 @@ function drawAimAssist(width, height) {
             context.stroke();
         }
     }
+    context.restore();
+}
+
+/**
+ * Render the poisonous Borg green locked-on target markers and cybernetic focus
+ * effects for any starship currently targeted by a focus group of 2 or more Borg cubes.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {void}
+ */
+function drawBorgFocusLock(width, height) {
+    if (shipFailureActive || gameWon) {
+        return;
+    }
+
+    const liveCubes = borgCubes.filter((cube) => cube.alive);
+    if (liveCubes.length === 0) {
+        return;
+    }
+
+    const animTime = performance.now() / 1000;
+    const pulse = 0.5 + 0.5 * Math.sin(animTime * 6);
+
+    context.save();
+    context.beginPath();
+    context.rect(0, 0, width, height);
+    context.clip();
+
+    for (const ship of starships) {
+        if (!ship.alive) continue;
+
+        const focusingCubes = liveCubes.filter(
+            (cube) => cube.targetStarship === ship,
+        );
+        const focusCount = focusingCubes.length;
+        if (focusCount < BORG_FOCUS_GROUP_MIN_SIZE) {
+            continue;
+        }
+
+        const radius =
+            ship.radius + BORG_FOCUS_LOCK_BRACKET_PADDING + pulse * 2.5;
+        const cornerLength = 9;
+
+        // 1. Poisonous Borg green telemetry laser beams converging from focusing cubes
+        context.strokeStyle = BORG_FOCUS_LOCK_BEAM;
+        context.lineWidth = 1.5;
+        context.setLineDash([4, 6]);
+        context.lineDashOffset = -animTime * 36;
+        for (const cube of focusingCubes) {
+            context.beginPath();
+            context.moveTo(cube.x, cube.y);
+            context.lineTo(ship.x, ship.y);
+            context.stroke();
+        }
+        context.setLineDash([]);
+
+        // 2. Faint toxic green scanning aura behind the targeted ship
+        context.fillStyle = `rgba(119, 255, 136, ${0.06 + pulse * 0.05})`;
+        context.beginPath();
+        context.arc(ship.x, ship.y, radius, 0, Math.PI * 2);
+        context.fill();
+
+        // 3. Rotating segmented cybernetic reticle ring
+        const rotationAngle = animTime * BORG_FOCUS_LOCK_ROTATION_SPEED;
+        context.strokeStyle = BORG_FOCUS_LOCK_COLOR;
+        context.lineWidth = 2;
+        context.beginPath();
+        for (let arcIndex = 0; arcIndex < 4; arcIndex += 1) {
+            const startAngle = rotationAngle + (arcIndex * Math.PI) / 2 + 0.18;
+            const endAngle = startAngle + Math.PI / 2 - 0.36;
+            context.arc(ship.x, ship.y, radius - 2, startAngle, endAngle);
+        }
+        context.stroke();
+
+        // 4. Cybernetic square corner brackets framing the ship
+        context.strokeStyle = BORG_FOCUS_LOCK_ACCENT;
+        context.lineWidth = 2.5;
+        const halfBox = radius + 3;
+        context.beginPath();
+        // Top-Left corner
+        context.moveTo(ship.x - halfBox, ship.y - halfBox + cornerLength);
+        context.lineTo(ship.x - halfBox, ship.y - halfBox);
+        context.lineTo(ship.x - halfBox + cornerLength, ship.y - halfBox);
+        // Top-Right corner
+        context.moveTo(ship.x + halfBox - cornerLength, ship.y - halfBox);
+        context.lineTo(ship.x + halfBox, ship.y - halfBox);
+        context.lineTo(ship.x + halfBox, ship.y - halfBox + cornerLength);
+        // Bottom-Right corner
+        context.moveTo(ship.x + halfBox, ship.y + halfBox - cornerLength);
+        context.lineTo(ship.x + halfBox, ship.y + halfBox);
+        context.lineTo(ship.x + halfBox - cornerLength, ship.y + halfBox);
+        // Bottom-Left corner
+        context.moveTo(ship.x - halfBox + cornerLength, ship.y + halfBox);
+        context.lineTo(ship.x - halfBox, ship.y + halfBox);
+        context.lineTo(ship.x - halfBox, ship.y + halfBox - cornerLength);
+        context.stroke();
+
+        // 5. Poisonous Borg HUD telemetry lock badge
+        const badgeX = ship.x + halfBox + 6;
+        const badgeY = ship.y - halfBox;
+        const badgeWidth = 96;
+        const badgeHeight = 22;
+
+        context.fillStyle = "rgba(10, 26, 14, 0.88)";
+        context.strokeStyle = BORG_FOCUS_LOCK_COLOR;
+        context.lineWidth = 1;
+        context.beginPath();
+        context.roundRect(badgeX, badgeY, badgeWidth, badgeHeight, [2, 6, 6, 2]);
+        context.fill();
+        context.stroke();
+
+        context.textAlign = "left";
+        context.textBaseline = "middle";
+        context.fillStyle = BORG_FOCUS_LOCK_ACCENT;
+        context.font = `700 12px ${LCARS_FONT_FAMILY}`;
+        context.fillText(`BORG FOCUS x${focusCount}`, badgeX + 7, badgeY + 11);
+
+        // Status pips for each focusing cube
+        for (let pipIndex = 0; pipIndex < focusCount; pipIndex += 1) {
+            const pipX = badgeX + badgeWidth - 8 - pipIndex * 7;
+            const pipY = badgeY + 11;
+            context.fillStyle = BORG_FOCUS_LOCK_COLOR;
+            context.beginPath();
+            context.arc(pipX, pipY, 2, 0, Math.PI * 2);
+            context.fill();
+        }
+    }
+
     context.restore();
 }
 
@@ -5475,7 +5809,7 @@ function drawPauseHelp(width, height) {
         608,
     );
     context.fillText(
-        "Borg: +1 cube each field; support joins from field 3.",
+        "Borg: +1 cube each field; support joins from field 2.",
         HELP_PANEL_WIDTH / 2,
         638,
     );
@@ -7702,6 +8036,7 @@ function updateGame(deltaTime, width, height) {
         asteroid.update(width, height, deltaTime);
     }
 
+    updateBorgFleetTactics(deltaTime, width, height);
     for (const cube of borgCubes) cube.update(width, height, deltaTime);
 
     for (const ship of starships) {
