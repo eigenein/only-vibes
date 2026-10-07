@@ -251,7 +251,7 @@ const RAMMER_ACHIEVEMENT_GLYPH = new Path2D(
 );
 const WIN_SCREEN_BACKDROP_ALPHA = 0.58;
 const WIN_SCREEN_TITLE = "SECTOR CLEAR";
-const WIN_SCREEN_REASON = "Asteroids cleared. Borg cube defeated.";
+const WIN_SCREEN_REASON = "Asteroids cleared. Borg fleet defeated.";
 // Stable IDs make unlocks idempotent. Catalog order is also display order,
 // so future achievements join the same list without separate rendering code.
 /**
@@ -311,9 +311,15 @@ const BORG_GREEN = "#77ff88";
 // encounter without increasing the adaptation cap or removing counterplay.
 const BORG_HULL = 240;
 const BORG_FACE_SHIELD = 22;
-// Shield absorption always leaks hull damage. Neither adaptation nor repair
-// can erase progress, even if the player keeps attacking a reinforced face.
+// Shield absorption always leaks hull damage. Adaptation and shield repair
+// cannot erase hull damage; absorbed collective bolts can repair a small part.
 const BORG_PHASER_DAMAGE = 9;
+// Reclaim one quarter of an unadapted phaser hit per allied bolt. Fixed recovery
+// keeps ricochet speed from amplifying healing; destroyed hulls never revive.
+const BORG_REABSORPTION_REPAIR = BORG_PHASER_DAMAGE * 0.25;
+// A brief inward green pulse and repair cross distinguish regained hull from
+// damage flashes. One timer per cube bounds drawing work during repeated hits.
+const BORG_REPAIR_PULSE_SECONDS = 0.8;
 const BORG_SHIELD_ABSORPTION = 0.65;
 const BORG_DIRECTIONAL_RESISTANCE = 0.45;
 const BORG_BURST_RESISTANCE = 0.3;
@@ -518,6 +524,10 @@ const AUTOPILOT_TURN_START_TOLERANCE = Math.PI / 180;
 // reaction pause before another press. Never keep turning the wrong way just
 // to satisfy a minimum hold duration; navigation and firing stay independent.
 const AUTOPILOT_TURN_REACTION_SECONDS = 0.2;
+// Allow a half-turn plus helm reaction before reconsidering an escape lane.
+// Recheck afterward because an initially clear lane can approach a wall.
+const AUTOPILOT_ESCAPE_COMMITMENT_SECONDS =
+  Math.PI / ROTATION_SPEED + AUTOPILOT_TURN_REACTION_SECONDS;
 // Aim inside the collision circle rather than merely inside a broad cone.
 const AUTO_GUNNER_FIRE_RADIUS_RATIO = 0.9;
 
@@ -766,19 +776,21 @@ const autoGunnerPressedKeys = new Set();
 const asteroids = [];
 const bullets = [];
 const sparks = [];
-/** @type {BorgCube | undefined} One encounter per generated field. */
-let borgCube = undefined;
+/** @type {BorgCube[]} Live cubes and drifting wrecks in the current field. */
+const borgCubes = [];
+/** @type {number} Each completed field adds one cube until ship destruction. */
+let sessionField = 1;
 
 /** @returns {Generator<Asteroid>} Solid bodies, including the drifting wreck. */
 function* physicalTargets() {
   yield* asteroids;
-  if (borgCube !== undefined) yield borgCube;
+  yield* borgCubes;
 }
 
 /** @returns {Generator<Asteroid>} Live bodies available for combat targeting. */
 function* combatTargets() {
   for (const body of physicalTargets()) {
-    if (body !== borgCube || body.alive) yield body;
+    if (!(body instanceof BorgCube) || body.alive) yield body;
   }
 }
 
@@ -787,7 +799,9 @@ function* combatTargets() {
  * @returns {boolean} Whether the body remains a live combat target.
  */
 function isLiveTarget(target) {
-  return asteroids.includes(target) || (target === borgCube && borgCube.alive);
+  return (
+    asteroids.includes(target) || (borgCubes.includes(target) && target.alive)
+  );
 }
 // Achievements survive completed fields and pauses, but never ship destruction
 // or a page reload. A Set prevents repeated wins from duplicating an unlock.
@@ -945,6 +959,12 @@ let gamePaused = true;
 let autopilotEnabled = false;
 let autopilotTargetLock = undefined;
 let autopilotDesiredAngle = 0;
+// Briefly commit to one escape lane; contact motion must not keep
+// reversing the helm before it can turn and accelerate past a heavy body.
+/** @type {Asteroid | undefined} Body whose escape lane is committed. */
+let autopilotEscapeTarget = undefined;
+let autopilotEscapeHeading = 0;
+let autopilotEscapeTimeRemaining = 0;
 let autopilotTurnDirection = 0;
 let autopilotTurnTimeRemaining = 0;
 let autopilotTargetLockTimeRemaining = 0;
@@ -1546,13 +1566,27 @@ class BorgCube extends Asteroid {
       { x: width - inset, y: height - inset },
       { x: inset, y: height - inset },
     ];
+    // Add perimeter candidates as the fleet grows; include earlier cubes in
+    // clearance so reinforcements spread around the arena instead of stacking.
+    const divisions = Math.max(2, Math.ceil(sessionField / 4));
+    for (let step = 1; step < divisions; step += 1) {
+      const fraction = step / divisions;
+      const x = inset + (width - inset * 2) * fraction;
+      const y = inset + (height - inset * 2) * fraction;
+      positions.push(
+        { x, y: inset },
+        { x, y: height - inset },
+        { x: inset, y },
+        { x: width - inset, y },
+      );
+    }
     let position = positions[0];
     let bestClearance = -Infinity;
     for (const candidate of positions) {
       let clearance =
         Math.hypot(candidate.x - playerX, candidate.y - playerY) -
         PLAYER_RADIUS;
-      for (const rock of asteroids) {
+      for (const rock of physicalTargets()) {
         clearance = Math.min(
           clearance,
           Math.hypot(candidate.x - rock.x, candidate.y - rock.y) - rock.radius,
@@ -1593,11 +1627,15 @@ class BorgCube extends Asteroid {
     this.scars = [];
     this.time = 0;
     this.recovery = 0;
+    this.repairPulse = 0;
     this.engineX = 0;
     this.engineY = 0;
     this.contactBudget = BORG_CONTACT_DAMAGE_CAP;
     this.fireCooldown = BORG_FIRE_INTERVAL;
     this.fireCharge = 0;
+    /** @type {BorgCube | undefined} Ally committed for this charge. */
+    this.repairTarget = undefined;
+    this.repairShotNext = true;
     this.fireAngle = 0;
     this.muzzleFlash = 0;
     this.wreckTexture = undefined;
@@ -1827,6 +1865,7 @@ class BorgCube extends Asteroid {
    */
   update(width, height, deltaTime) {
     this.time += deltaTime;
+    this.repairPulse = Math.max(0, this.repairPulse - deltaTime);
     if (!this.alive) {
       // A wreck has no navigation, braking, repair or weapons. Contact and
       // wall impulses are the only things that can change its free motion.
@@ -1902,16 +1941,17 @@ class BorgCube extends Asteroid {
    * with a small bounded iteration instead of duplicating the stable solver.
    * Future thrust, turns and wall bounces remain unknown to the weapon.
    * @param {number} delay Remaining simulation seconds before launch.
+   * @param {BorgCube | undefined} [ally] Repair recipient; otherwise target the ship.
    * @returns {number} World heading for an intercept, or a finite direct bearing.
    */
-  aimAtPlayer(delay) {
+  aimAtTarget(delay, ally = undefined) {
     const originX = this.x + this.velocityX * delay;
     const originY = this.y + this.velocityY * delay;
     const target = {
-      x: playerX + playerVelocityX * delay,
-      y: playerY + playerVelocityY * delay,
-      velocityX: playerVelocityX,
-      velocityY: playerVelocityY,
+      x: (ally?.x ?? playerX) + (ally?.velocityX ?? playerVelocityX) * delay,
+      y: (ally?.y ?? playerY) + (ally?.velocityY ?? playerVelocityY) * delay,
+      velocityX: ally?.velocityX ?? playerVelocityX,
+      velocityY: ally?.velocityY ?? playerVelocityY,
     };
     let angle = Math.atan2(target.y - originY, target.x - originX);
     for (let iteration = 0; iteration < 5; iteration += 1) {
@@ -1945,9 +1985,16 @@ class BorgCube extends Asteroid {
     if (!this.alive) return;
     this.muzzleFlash = Math.max(0, this.muzzleFlash - deltaTime);
     if (this.fireCharge > 0) {
+      // Retarget a destroyed or fully repaired ally before the aim locks.
+      if (
+        this.repairTarget !== undefined &&
+        (!this.repairTarget.alive || this.repairTarget.hull >= BORG_HULL)
+      ) {
+        this.repairTarget = undefined;
+      }
       const remainingCharge = Math.max(0, this.fireCharge - deltaTime);
       if (this.fireCharge > BORG_AIM_LOCK_SECONDS) {
-        this.fireAngle = this.aimAtPlayer(remainingCharge);
+        this.fireAngle = this.aimAtTarget(remainingCharge, this.repairTarget);
         if (remainingCharge <= BORG_AIM_LOCK_SECONDS) {
           this.fireAngle += randomBetween(-BORG_AIM_SPREAD, BORG_AIM_SPREAD);
         }
@@ -1978,20 +2025,43 @@ class BorgCube extends Asteroid {
     }
     this.fireCooldown = Math.max(0, this.fireCooldown - deltaTime);
     if (this.fireCooldown > 0) return;
+    // Alternate repair opportunities with attacks so collective support never
+    // removes player pressure. Favor the most damaged reachable live ally.
+    this.repairTarget = undefined;
+    if (this.repairShotNext) {
+      for (const ally of borgCubes) {
+        if (
+          ally === this ||
+          !ally.alive ||
+          BORG_HULL - ally.hull < BORG_REABSORPTION_REPAIR ||
+          Math.hypot(ally.x - this.x, ally.y - this.y) <=
+            this.radius + ally.radius + BULLET_HALF_LENGTH
+        )
+          continue;
+        if (
+          this.repairTarget === undefined ||
+          ally.hull < this.repairTarget.hull
+        )
+          this.repairTarget = ally;
+      }
+    }
     // At contact distance the ordinary body collision supplies the threat;
     // avoid spawning a shot inside the ship's shield circle.
     if (
+      this.repairTarget === undefined &&
       Math.hypot(playerX - this.x, playerY - this.y) <=
-      this.radius + PLAYER_RADIUS + BULLET_HALF_LENGTH
+        this.radius + PLAYER_RADIUS + BULLET_HALF_LENGTH
     )
       return;
+    this.repairShotNext = !this.repairShotNext;
     this.fireCharge = BORG_FIRE_CHARGE_SECONDS;
-    this.fireAngle = this.aimAtPlayer(this.fireCharge);
+    this.fireAngle = this.aimAtTarget(this.fireCharge, this.repairTarget);
   }
 
   /**
    * Slow pursuit provides pressure without predicting player movement.
-   * Project rocks to closest approach and push away from threatened regions.
+   * Project rocks and collective members (including wrecks) to closest
+   * approach and push away from threatened regions.
    * Engines cannot instantly cancel inertia or dodge a rock already touching.
    * @param {number} width Arena width in CSS pixels.
    * @param {number} height Arena height in CSS pixels.
@@ -2002,7 +2072,8 @@ class BorgCube extends Asteroid {
     const pursuit = normalizedVector(playerX - this.x, playerY - this.y);
     let steerX = pursuit.x * BORG_PURSUIT_WEIGHT;
     let steerY = pursuit.y * BORG_PURSUIT_WEIGHT;
-    for (const rock of asteroids) {
+    for (const rock of physicalTargets()) {
+      if (rock === this) continue;
       const x = rock.x - this.x;
       const y = rock.y - this.y;
       const vx = rock.velocityX - this.velocityX;
@@ -2066,6 +2137,25 @@ class BorgCube extends Asteroid {
       -BORG_MAX_TURN_SPEED,
       Math.min(BORG_MAX_TURN_SPEED, this.angularVelocity),
     );
+  }
+
+  /** @returns {void} Show absorbed energy flowing inward with a repair cross. */
+  drawRepairPulse() {
+    if (this.repairPulse <= 0) return;
+    const progress = 1 - this.repairPulse / BORG_REPAIR_PULSE_SECONDS;
+    const half = this.half * (0.95 - progress * 0.65);
+    context.save();
+    context.strokeStyle = BORG_GREEN;
+    context.fillStyle = BORG_GREEN;
+    context.globalAlpha = (1 - progress) * 0.9;
+    context.lineWidth = 3;
+    context.strokeRect(-half, -half, half * 2, half * 2);
+    // A fixed cross makes the meaning readable even during a moving impact.
+    const size = this.half * 0.22;
+    const thickness = Math.max(2, size * 0.3);
+    context.fillRect(-size, -thickness / 2, size * 2, thickness);
+    context.fillRect(-thickness / 2, -size, thickness, size * 2);
+    context.restore();
   }
 
   /** @returns {void} Draw the powered cube or its intact, unlit wreck. */
@@ -2180,6 +2270,7 @@ class BorgCube extends Asteroid {
       context.fillRect(-half + 8, sweep, half * 2 - 16, 2);
       context.restore();
     }
+    this.drawRepairPulse();
     this.drawWeapon();
     // Exhaust is opposite the actual commanded acceleration, so machinery
     // identifies the maneuver that avoids the currently highlighted threat.
@@ -2360,7 +2451,7 @@ class Bullet {
    * @param {number} [options.speed] Launch speed in CSS pixels per second.
    * @param {number} [options.mass] Positive physical mass retained through ricochets.
    * @param {number} [options.lineWidth] Painted pulse thickness in CSS pixels.
-   * @param {"starship"|"borg"} [options.source] Origin for damage attribution, not immunity.
+   * @param {"starship"|"borg"} [options.source] Origin for damage attribution and Borg fleet immunity.
    * @param {string} [options.materialColor] Initial pulse color before rock ricochets.
    */
   constructor({
@@ -2693,7 +2784,9 @@ function generateAsteroids(width, height) {
       createAsteroid(width, height),
     ),
   );
-  borgCube = new BorgCube(width, height);
+  for (let index = 0; index < sessionField; index += 1) {
+    borgCubes.push(new BorgCube(width, height));
+  }
   asteroidsGenerated = true;
 }
 
@@ -2831,6 +2924,7 @@ function toggleAutopilot() {
   autopilotEnabled = !autopilotEnabled;
   autopilotDesiredAngle = playerAngle;
   autopilotTargetLock = undefined;
+  autopilotEscapeTarget = undefined;
   autopilotTargetLockTimeRemaining = 0;
   autopilotAttackTimeRemaining = 0;
   autopilotAttackRoll = 1;
@@ -3336,7 +3430,7 @@ function autopilotCanApproach() {
 function autopilotCanRam(target) {
   return (
     target !== undefined &&
-    target !== borgCube &&
+    !(target instanceof BorgCube) &&
     autopilotAttackRoll <
       autopilotAttackProbability() * AUTOPILOT_RAM_PROBABILITY_RATIO
   );
@@ -3379,7 +3473,16 @@ function updateAutopilotInput(deltaTime, width, height) {
     const speed = Math.hypot(playerVelocityX, playerVelocityY);
     autopilotDesiredAngle =
       target === undefined ? playerAngle : autopilotAimAngle(target);
-    if (wall !== undefined) {
+    // Inside a body's safety zone, choose a lane that also accounts for walls.
+    // A wall-only heading can otherwise pin the ship against a pursuing cube.
+    const escapingBody =
+      threat !== undefined && threat.distance < threat.safeDistance;
+    autopilotEscapeTimeRemaining = Math.max(
+      0,
+      autopilotEscapeTimeRemaining - decisionDeltaTime,
+    );
+    if (!escapingBody) autopilotEscapeTarget = undefined;
+    if (wall !== undefined && !escapingBody) {
       if (wall.brake) {
         // S removes outward velocity without interrupting the firing heading.
         input.add("KeyS");
@@ -3394,27 +3497,44 @@ function updateAutopilotInput(deltaTime, width, height) {
         }
       }
     } else if (threat !== undefined) {
+      // Turn toward clearance even while braking. Continuing to aim at the
+      // combat target until speed falls lets repeated impacts reset the turn.
+      if (
+        autopilotEscapeTarget !== threat.asteroid ||
+        autopilotEscapeTimeRemaining === 0 ||
+        // Wall danger interrupts commitment before an escape becomes a crash.
+        wall !== undefined
+      ) {
+        autopilotEscapeHeading = autopilotEscapeAngle(
+          threat.asteroid,
+          width,
+          height,
+        );
+        autopilotEscapeTarget = escapingBody ? threat.asteroid : undefined;
+        autopilotEscapeTimeRemaining = AUTOPILOT_ESCAPE_COMMITMENT_SECONDS;
+      }
+      autopilotDesiredAngle = autopilotEscapeHeading;
       const towardThreatSpeed =
         threat.distance > COLLISION_EPSILON
           ? ((threat.asteroid.x - playerX) * playerVelocityX +
               (threat.asteroid.y - playerY) * playerVelocityY) /
             threat.distance
           : speed;
-      if (towardThreatSpeed > AUTOPILOT_MIN_COAST_SPEED) {
+      if (towardThreatSpeed > AUTOPILOT_MIN_COAST_SPEED || wall?.brake) {
         input.add("KeyS");
-      } else if (threat.distance < threat.safeDistance) {
+      } else if (escapingBody) {
         // Incoming asteroid motion cannot be stopped by braking the ship.
         // Keep accelerating away rather than braking that escape next time.
-        autopilotDesiredAngle = autopilotEscapeAngle(
-          threat.asteroid,
-          width,
-          height,
-        );
+        const escapeSpeed =
+          (playerVelocityX - threat.asteroid.velocityX) *
+            Math.cos(autopilotDesiredAngle) +
+          (playerVelocityY - threat.asteroid.velocityY) *
+            Math.sin(autopilotDesiredAngle);
         if (
           Math.abs(
             shortestAngleDifference(autopilotDesiredAngle, playerAngle),
           ) <= AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE &&
-          speed < AUTOPILOT_CRUISE_SPEED
+          escapeSpeed < AUTOPILOT_CRUISE_SPEED
         ) {
           input.add("KeyW");
         }
@@ -3457,7 +3577,7 @@ function updateAutopilotInput(deltaTime, width, height) {
         input.add("KeyW");
       }
     } else if (target !== undefined) {
-      const closePass = target !== borgCube && autopilotCanApproach();
+      const closePass = !(target instanceof BorgCube) && autopilotCanApproach();
       const cruiseSpeed = closePass
         ? AUTOPILOT_CLOSE_SPEED
         : AUTOPILOT_CRUISE_SPEED;
@@ -3629,7 +3749,7 @@ function resizeCanvas() {
   }
 
   generateAsteroids(width, gameplayHeight);
-  borgCube?.keepInside(width, gameplayHeight);
+  for (const cube of borgCubes) cube.keepInside(width, gameplayHeight);
 
   for (const asteroid of asteroids) {
     asteroid.keepInside(width, gameplayHeight);
@@ -3799,6 +3919,8 @@ function updateAlert(deltaTime) {
  * @returns {void}
  */
 function restartGame(width, height) {
+  // Victory advances the same session; destruction starts again at one cube.
+  sessionField = gameWon ? sessionField + 1 : 1;
   sessionPoints = 0;
   fieldAsteroidDamage.ramming = 0;
   fieldAsteroidDamage.blasters = 0;
@@ -3831,6 +3953,7 @@ function restartGame(width, height) {
   clearPressedKeys();
   autopilotDesiredAngle = playerAngle;
   autopilotTargetLock = undefined;
+  autopilotEscapeTarget = undefined;
   autopilotTargetLockTimeRemaining = 0;
   autopilotAttackTimeRemaining = 0;
   autopilotAttackRoll = 1;
@@ -3838,7 +3961,7 @@ function restartGame(width, height) {
   autopilotDecisionTime = 0;
   asteroids.length = 0;
   asteroidsGenerated = false;
-  borgCube = undefined;
+  borgCubes.length = 0;
   generateAsteroids(width, height);
 }
 
@@ -3870,7 +3993,12 @@ function beginShipFailure() {
  * @returns {void}
  */
 function beginWin() {
-  if (gameWon || shipFailureActive || asteroids.length > 0 || borgCube?.alive) {
+  if (
+    gameWon ||
+    shipFailureActive ||
+    asteroids.length > 0 ||
+    borgCubes.some((cube) => cube.alive)
+  ) {
     return;
   }
 
@@ -4433,7 +4561,7 @@ function drawGame(width, height) {
     asteroid.draw();
   }
 
-  borgCube?.draw();
+  for (const cube of borgCubes) cube.draw();
 
   for (const bullet of bullets) {
     bullet.draw();
@@ -5010,7 +5138,8 @@ function drawPauseHelp(width, height) {
     608,
   );
   context.fillText(
-    "Borg: dodge heavy green bolts; its drifting wreck still hurts.",
+    "Borg: +1 cube each field; destruction resets the fleet.",
+    "Cubes fire repair bolts at allies; drifting wrecks still hurt.",
     HELP_PANEL_WIDTH / 2,
     638,
   );
@@ -6268,16 +6397,37 @@ function resolveBulletCollisions(width, height) {
       let interactionAfterEnergy = interactionBeforeEnergy;
       let removedEnergy = 0;
 
-      if (asteroidIsFirst && hitTarget === borgCube && borgCube.alive) {
+      if (
+        asteroidIsFirst &&
+        hitTarget instanceof BorgCube &&
+        bullet.source === "borg"
+      ) {
+        // Collective energy repairs live hulls without changing shields,
+        // adaptation or momentum. Wrecks dissipate it without reviving.
+        if (hitTarget.alive && hitTarget.hull < BORG_HULL) {
+          hitTarget.repairPulse = BORG_REPAIR_PULSE_SECONDS;
+          hitTarget.hull = Math.min(
+            BORG_HULL,
+            hitTarget.hull + BORG_REABSORPTION_REPAIR,
+          );
+        }
+        emitSparksAt(hitPoint, bodyKineticEnergy(bullet));
+        bullets.splice(bulletIndex, 1);
+        break;
+      } else if (
+        asteroidIsFirst &&
+        hitTarget instanceof BorgCube &&
+        hitTarget.alive
+      ) {
         // Absorption transfers the disappearing pulse's linear and angular
         // impulse into the hull through the same rigid-body impulse helper.
         applyBodyImpulse(
-          borgCube,
+          hitTarget,
           bullet.mass * bullet.velocityX,
           bullet.mass * bullet.velocityY,
           hitPoint,
         );
-        borgCube.hitPhaser(hitPoint);
+        hitTarget.hitPhaser(hitPoint);
         // Borg shields absorb the pulse. Existing rock, ship and wall
         // ricochets retain their normal finite reflection behavior.
         bullets.splice(bulletIndex, 1);
@@ -6306,12 +6456,12 @@ function resolveBulletCollisions(width, height) {
           normal,
           hitPoint,
         );
-        if (asteroid !== borgCube && bullet.source === "starship")
+        if (!(asteroid instanceof BorgCube) && bullet.source === "starship")
           recordAsteroidDamage(response, "blasters");
         bullet.syncAngle();
         if (canReflect) {
           bullet.recordReflection(
-            asteroid === borgCube
+            asteroid instanceof BorgCube
               ? bullet.materialColor
               : asteroid.materialColor,
           );
@@ -6319,7 +6469,7 @@ function resolveBulletCollisions(width, height) {
         // A wreck is a solid reflector, never a cuttable asteroid. Enemy
         // and player pulses otherwise share the complete ricochet path.
         const fragments =
-          asteroid === borgCube
+          asteroid instanceof BorgCube
             ? [asteroid]
             : fragmentAsteroidAtImpact(
                 asteroid,
@@ -7048,45 +7198,57 @@ function resolveAsteroidCollisions() {
  * @returns {void}
  */
 function resolveBorgCollisions(contactAsteroids = asteroids.slice()) {
-  const cube = borgCube;
-  if (cube === undefined) return;
-  const ship = playerBody();
-  const shipManifold = bodiesMayOverlap(ship, cube)
-    ? collisionManifold(ship, cube)
-    : undefined;
-  if (shipManifold !== undefined) {
-    const response = resolveCollision(ship, cube, shipManifold);
-    if (response !== undefined) {
-      const impulse = contactImpulseMagnitude(response);
-      applyCollisionDamage(impulse);
-      applyShipCollisionAngleAdjustment(response);
-      cube.hitBody(impulse, shipManifold.contactPoint);
-      applyPlayerBody(ship);
+  for (let first = 0; first < borgCubes.length; first += 1) {
+    const cube = borgCubes[first];
+    for (let second = first + 1; second < borgCubes.length; second += 1) {
+      const other = borgCubes[second];
+      if (!bodiesMayOverlap(cube, other)) continue;
+      const manifold = collisionManifold(cube, other);
+      if (manifold === undefined) continue;
+      // Collective contacts still separate solid hulls and transfer momentum,
+      // but never consume shields, hull health, or contact damage budgets.
+      resolveCollision(cube, other, manifold);
     }
   }
-  for (const rock of contactAsteroids) {
-    if (!bodiesMayOverlap(cube, rock)) continue;
-    const manifold = collisionManifold(cube, rock);
-    if (manifold === undefined) continue;
-    const beforeEnergy = bodyKineticEnergy(cube) + bodyKineticEnergy(rock);
-    const response = resolveCollision(cube, rock, manifold);
-    if (response === undefined) continue;
-    cube.hitBody(contactImpulseMagnitude(response), manifold.contactPoint);
-    const fragments = fragmentAsteroidAtImpact(
-      rock,
-      manifold.contactPoint,
-      manifold.normal,
-      response,
-      "body",
-    );
-    const afterEnergy = fragments.reduce(
-      (energy, fragment) => energy + bodyKineticEnergy(fragment),
-      bodyKineticEnergy(cube),
-    );
-    emitSparksAt(
-      manifold.contactPoint,
-      interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
-    );
+  for (const cube of borgCubes) {
+    const ship = playerBody();
+    const shipManifold = bodiesMayOverlap(ship, cube)
+      ? collisionManifold(ship, cube)
+      : undefined;
+    if (shipManifold !== undefined) {
+      const response = resolveCollision(ship, cube, shipManifold);
+      if (response !== undefined) {
+        const impulse = contactImpulseMagnitude(response);
+        applyCollisionDamage(impulse);
+        applyShipCollisionAngleAdjustment(response);
+        cube.hitBody(impulse, shipManifold.contactPoint);
+        applyPlayerBody(ship);
+      }
+    }
+    for (const rock of contactAsteroids) {
+      if (!asteroids.includes(rock) || !bodiesMayOverlap(cube, rock)) continue;
+      const manifold = collisionManifold(cube, rock);
+      if (manifold === undefined) continue;
+      const beforeEnergy = bodyKineticEnergy(cube) + bodyKineticEnergy(rock);
+      const response = resolveCollision(cube, rock, manifold);
+      if (response === undefined) continue;
+      cube.hitBody(contactImpulseMagnitude(response), manifold.contactPoint);
+      const fragments = fragmentAsteroidAtImpact(
+        rock,
+        manifold.contactPoint,
+        manifold.normal,
+        response,
+        "body",
+      );
+      const afterEnergy = fragments.reduce(
+        (energy, fragment) => energy + bodyKineticEnergy(fragment),
+        bodyKineticEnergy(cube),
+      );
+      emitSparksAt(
+        manifold.contactPoint,
+        interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
+      );
+    }
   }
 }
 
@@ -7171,9 +7333,7 @@ function updateGame(deltaTime, width, height) {
     asteroid.update(width, height, deltaTime);
   }
 
-  if (borgCube !== undefined) {
-    borgCube.update(width, height, deltaTime);
-  }
+  for (const cube of borgCubes) cube.update(width, height, deltaTime);
 
   // The ship is a dynamic rigid body just like an asteroid. The wall callback
   // sends each shield contact through the shared normal/friction solver so a
@@ -7212,7 +7372,7 @@ function updateGame(deltaTime, width, height) {
 
   if (restartRequested) {
     beginShipFailure();
-  } else if (asteroids.length === 0 && !borgCube?.alive) {
+  } else if (asteroids.length === 0 && !borgCubes.some((cube) => cube.alive)) {
     beginWin();
   }
 }
