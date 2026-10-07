@@ -93,6 +93,8 @@ The green AUTOPILOT indicator shows that automatic helm is engaged.
 - Collision damage is split proportionally between the shield and hull based
   on the shield remaining at the moment of impact. The shield regenerates
   while the game is running.
+- Body and wall impacts share a replenishing damage budget that limits repeated
+  contacts during a scrape. Weapon hits bypass that budget and do not consume it.
 - Hull damage does not regenerate during the current life.
 - Arena walls also damage the ship. Border autobrake overrides thrust near a
   wall and uses ordinary braking until stopped. It helps approaches below 50%
@@ -145,8 +147,9 @@ A green charging port and short dashed sight line track an intercept based on
 the ship's current velocity, including charging time and bullet travel. Aim
 locks for the final 0.15 seconds of the charge, when the cue turns pale green.
 The warning shows the exact firing angle, with no random spread. The cube fires
-a thick green pulse along that committed heading. Its speed, mass, and impact
-rules match starship phasers: it cuts asteroids, damages ships and live cubes,
+a thick green pulse along that committed heading. Its speed and physical impact
+rules match starship phasers, but its heavier mass removes about 15% of a full
+shield in a stationary head-on hit: it cuts asteroids, damages ships and live cubes,
 and transfers impulse. It disappears on first contact with any body or wall,
 with no ricochets and no immunity for allied cubes. The cube receives matching
 recoil when firing. Changing course after aim locks or while the pulse travels
