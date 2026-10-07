@@ -241,16 +241,15 @@ const ACHIEVEMENT_BADGE_GAP = 16;
 const ACHIEVEMENT_ICON_SIZE = 72;
 // Icons share a 64-unit coordinate system, independent of viewport density.
 const ACHIEVEMENT_GLYPH_SIZE = 64;
-// A flat trophy reads as a completed challenge without emoji or external
-// assets. Cache the vector once, as with the ship, for inexpensive canvas fills.
-const WINNING_ACHIEVEMENT_GLYPH = new Path2D(
-    "M 18 14 H 46 L 43 32 Q 41 40 35 42 V 48 H 42 V 54 H 22 V 48 H 29 V 42 " +
-    "Q 23 40 21 32 Z " +
-    "M 18 18 H 9 V 25 Q 9 35 22 36 L 21 30 Q 15 29 15 24 V 23 H 19 Z " +
-    "M 46 18 H 55 V 25 Q 55 35 42 36 L 43 30 Q 49 29 49 24 V 23 H 45 Z",
+// A pulse striking a second hull makes the friendly-fire challenge readable
+// without emoji or external assets; cache its vector for inexpensive fills.
+const FRIENDLY_FIRE_ACHIEVEMENT_GLYPH = new Path2D(
+    "M 8 28 H 29 V 21 L 42 32 L 29 43 V 36 H 8 Z " +
+    "M 48 12 L 58 16 L 54 26 L 44 22 Z " +
+    "M 48 38 L 58 42 L 54 52 L 44 48 Z",
 );
 // A forward wedge and fractured rock make ramming recognizable in the same
-// flat, cached vector style as the trophy.
+// flat, cached vector style as the other achievements.
 const RAMMER_ACHIEVEMENT_GLYPH = new Path2D(
     "M 8 23 H 24 V 15 L 42 32 L 24 49 V 41 H 8 Z " +
     "M 46 12 L 57 18 L 53 29 L 45 25 Z " +
@@ -271,10 +270,10 @@ const WIN_SCREEN_REASON = "Asteroids cleared. Borg fleet defeated.";
 /** @type {ReadonlyArray<Readonly<SessionAchievement>>} */
 const SESSION_ACHIEVEMENTS = Object.freeze([
     Object.freeze({
-        id: "winning",
-        title: "WINNING",
-        glyph: WINNING_ACHIEVEMENT_GLYPH,
-        color: LCARS_GOLD,
+        id: "friendly-fire",
+        title: "FRIENDLY FIRE",
+        glyph: FRIENDLY_FIRE_ACHIEVEMENT_GLYPH,
+        color: LCARS_ALERT_RED,
     }),
     Object.freeze({
         id: "rammer",
@@ -816,7 +815,7 @@ function isLiveTarget(target) {
 }
 
 // Achievements survive completed fields and pauses, but never ship destruction
-// or a page reload. A Set prevents repeated wins from duplicating an unlock.
+// or a page reload. A Set prevents repeated events from duplicating an unlock.
 /** @type {Set<string>} */
 const sessionAchievements = new Set();
 // Asteroids have no health pool: compare the impulse-based impact damage
@@ -4301,7 +4300,7 @@ function beginShipFailure() {
 }
 
 /**
- * Unlock completed challenges before displaying achievements and final score.
+ * Unlock the ramming challenge before displaying achievements and final score.
  * Rammer requires strictly more ramming damage in the completed field; ties
  * (including an empty comparison) never qualify. Earned badges survive wins.
  * Keep the result visible until the player starts another field, separately
@@ -4319,7 +4318,6 @@ function beginWin() {
     }
 
     gameWon = true;
-    sessionAchievements.add("winning");
     if (fieldAsteroidDamage.ramming > fieldAsteroidDamage.blasters) {
         sessionAchievements.add("rammer");
     }
@@ -5280,7 +5278,7 @@ function drawAchievementBadge(achievement, x, y) {
     context.fill(achievement.glyph);
     context.restore();
 
-    context.fillStyle = LCARS_LILAC;
+    context.fillStyle = achievement.id === "friendly-fire" ? LCARS_BLACK : LCARS_LILAC;
     context.fillRect(iconX, ACHIEVEMENT_ICON_SIZE + 6, 24, 4);
     context.fillRect(iconX + 30, ACHIEVEMENT_ICON_SIZE + 6, 42, 4);
     context.textAlign = "center";
@@ -6858,6 +6856,11 @@ function resolveBulletCollisions(width, height) {
                     normal,
                     hitPoint,
                 );
+                // Only a player-launched pulse hitting a separate friendly hull
+                // counts; helper fire and self-hits are not friendly-fire acts.
+                if (bullet.source === "starship" && ship !== playerShip) {
+                    sessionAchievements.add("friendly-fire");
+                }
                 applyShipCollisionAngleAdjustment(bulletImpulse, ship);
                 ship.applyCollisionDamage(contactImpulseMagnitude(bulletImpulse));
                 if (bulletImpulse.normalImpulse > COLLISION_EPSILON) {
