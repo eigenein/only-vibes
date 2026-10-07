@@ -41,7 +41,7 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 # How to verify
 
 - Must not spin web server.
-- Must load `index.html` directly in the browser.
+- Must load `index.html` directly in Safari.
 - May toggle the debug interface at your own discretion.
 - May pause and resume the game at your own discretion.
 - May add debug console output.
