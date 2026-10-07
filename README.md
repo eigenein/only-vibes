@@ -102,10 +102,16 @@ The green AUTOPILOT indicator shows that automatic helm is engaged.
   assisted turn. It helps approaches below 50%
   maximum speed; faster approaches can still hit. The gold AUTOBRAKE cue beside
   the controls lights while it intervenes.
-- Yellow alert means shield and hull reserves cannot withstand four heavy
-  contacts: create space to recover shields. Red alert means two heavy contacts
-  could be fatal: avoid impacts. Alerts clear after two seconds of sustained
-  recovery with extra reserve; yellow sounds on entry, red sounds once per life.
+- Yellow alert means ongoing hull damage threatens major loss; give the situation
+  full attention. Red means an immediate destruction risk. Both require depleted
+  shield/hull reserves and recent hull damage, so safe recovery stays quiet.
+  In the [calibration simulations](ALERT_CALIBRATION.md), about 94% of yellow
+  entries preceded at least 20 more hull points lost or destruction within five
+  seconds; about 93% of red entries preceded destruction within five seconds.
+  These rates describe the simulated flight mix, rather than a guaranteed
+  probability for every situation. More selective warnings can miss sudden
+  lethal hits. Alerts clear after two seconds with extra reserve; yellow sounds
+  on escalation from healthy, red sounds once per life. Recovery is silent.
 - Entering yellow or red enables aim assist; entering red also enables
   autopilot. You can override these modes normally while the alert persists.
   Recovery leaves them enabled.

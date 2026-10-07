@@ -168,13 +168,19 @@ const STATUS_BARS_HEIGHT = STATUS_BAR_HEIGHT * 2 + STATUS_BAR_GAP;
 // The alert lives only in the deliberate gap between the fire key and health bars;
 // Two stacked lanes separate danger from engaged automatic helm. Compact
 // consoles retain their mode key and colored hull bar when text cannot fit.
-// Alert thresholds measure reserve against consecutive full-budget contacts.
-// Ignore regeneration during that short burst: yellow asks for recovery room;
-// red means two heavy contacts could destroy the remaining hull. A ten-point
-// reserve margin and two quiet seconds prevent chatter during shield recovery.
-const ALERT_YELLOW_CONTACT_COUNT = 4;
-const ALERT_RED_CONTACT_COUNT = 2;
-const ALERT_CLEAR_RESERVE_MARGIN = 10;
+// Reserve alone confuses recoverable damage with immediate danger. Require both
+// a heavy-contact reserve deficit and ongoing hull attrition. The exponentially
+// weighted loss rate forgets isolated hits in one active second; it is an
+// evidence signal, not a promise that future flight follows the same course.
+// Seeded calibration and the five-second outcome definitions live in
+// ALERT_CALIBRATION.md. Shorter red projection prioritizes precision over lead.
+const ALERT_YELLOW_CONTACT_COUNT = 2;
+const ALERT_RED_CONTACT_COUNT = 1;
+const ALERT_DAMAGE_MEMORY_SECONDS = 1;
+const ALERT_YELLOW_DAMAGE_PROJECTION_SECONDS = 1.5;
+const ALERT_RED_DAMAGE_PROJECTION_SECONDS = 0.25;
+// Five hull points of headroom for two active seconds prevent recovery chatter.
+const ALERT_CLEAR_RESERVE_MARGIN = 5;
 const ALERT_CLEAR_DELAY_SECONDS = 2;
 const RED_ALERT_BLINK_INTERVAL_MILLISECONDS = 450;
 const ALERT_EDGE_GAP = 12;
@@ -648,8 +654,8 @@ const PLAY_HELP = Object.freeze([
 ]);
 const HELP_PANEL_WIDTH = 540;
 // Keep pause help focused on controls; README.md holds the mechanics reference.
-// Leave room below the control table for the automatic border assistance cue.
-const HELP_PANEL_HEIGHT = 522;
+// The final control row keeps the same bottom breathing room as the frame.
+const HELP_PANEL_HEIGHT = 474;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -1298,6 +1304,9 @@ let redAlertSoundPlayed = false;
 let playerSpawnImmunityRemaining = PLAYER_SPAWN_IMMUNITY_SECONDS;
 let alertLevel = 0;
 let alertRecoveryTime = 0;
+// Bridge-local history observes only the player's hull and resets each field.
+let alertHullLossRate = 0;
+let alertPreviousHullState = SHIP_MAX_STATE;
 let shipFailureActive = false;
 let shipFailureTimeRemaining = 0;
 let gameWon = false;
@@ -4543,7 +4552,8 @@ function alertHullLoss(ship, contactCount) {
 
 /**
  * Escalate immediately after damage; clear only after sustained recovery.
- * Yellow sounds only when entered; red remains a single cue per ship life.
+ * Yellow sounds only on escalation from healthy; recovery from red is silent.
+ * Red remains a single cue per ship life.
  * Entry enables appropriate assistance once, so manual overrides continue to
  * work while an alert persists. Recovery leaves the selected modes enabled.
  * @param {Starship} ship Hull shown by the bridge alert output.
@@ -4551,9 +4561,26 @@ function alertHullLoss(ship, contactCount) {
  * @returns {void}
  */
 function updateAlert(ship, deltaTime) {
+    // Destruction has its own failure screen; alarms must precede it to help.
+    if (!ship.alive) return;
+    const activeSeconds = Number.isFinite(deltaTime)
+        ? Math.max(0, deltaTime)
+        : 0;
+    alertHullLossRate =
+        alertHullLossRate *
+            Math.exp(-activeSeconds / ALERT_DAMAGE_MEMORY_SECONDS) +
+        Math.max(0, alertPreviousHullState - ship.hullState) /
+            ALERT_DAMAGE_MEMORY_SECONDS;
+    alertPreviousHullState = ship.hullState;
     const previousLevel = alertLevel;
-    const redLoss = alertHullLoss(ship, ALERT_RED_CONTACT_COUNT);
-    const yellowLoss = alertHullLoss(ship, ALERT_YELLOW_CONTACT_COUNT);
+    const redLoss = Math.min(
+        alertHullLoss(ship, ALERT_RED_CONTACT_COUNT),
+        alertHullLossRate * ALERT_RED_DAMAGE_PROJECTION_SECONDS,
+    );
+    const yellowLoss = Math.min(
+        alertHullLoss(ship, ALERT_YELLOW_CONTACT_COUNT),
+        alertHullLossRate * ALERT_YELLOW_DAMAGE_PROJECTION_SECONDS,
+    );
     const nextLevel =
         ship.hullState <= redLoss ? 2 : ship.hullState <= yellowLoss ? 1 : 0;
     if (nextLevel >= alertLevel) {
@@ -4563,7 +4590,7 @@ function updateAlert(ship, deltaTime) {
         const recoveryLoss = alertLevel === 2 ? redLoss : yellowLoss;
         alertRecoveryTime =
             ship.hullState > recoveryLoss + ALERT_CLEAR_RESERVE_MARGIN
-                ? alertRecoveryTime + Math.max(0, deltaTime)
+                ? alertRecoveryTime + activeSeconds
                 : 0;
         if (alertRecoveryTime >= ALERT_CLEAR_DELAY_SECONDS) {
             alertLevel = nextLevel;
@@ -4575,7 +4602,7 @@ function updateAlert(ship, deltaTime) {
         if (alertLevel === 2 && !ship.controls.autopilotEnabled)
             toggleAutopilot(ship);
     }
-    if (alertLevel === 1 && previousLevel !== 1) {
+    if (alertLevel === 1 && previousLevel === 0) {
         yellowAlertSound.playRandom();
     }
     if (alertLevel === 2 && !redAlertSoundPlayed) {
@@ -4603,6 +4630,8 @@ function restartGame(width, height) {
     redAlertSoundPlayed = false;
     alertLevel = 0;
     alertRecoveryTime = 0;
+    alertHullLossRate = 0;
+    alertPreviousHullState = SHIP_MAX_STATE;
     shipFailureActive = false;
     shipFailureTimeRemaining = 0;
     gameWon = false;
@@ -5908,20 +5937,6 @@ function drawPauseHelp(width, height) {
         context.fillText(helpItem.description, 208, rowY);
         context.font = `700 18px ${LCARS_FONT_FAMILY}`;
     }
-    context.textAlign = "center";
-    context.fillStyle = LCARS_GOLD;
-    context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText(
-        "Border assist brakes and turns away below 50% speed.",
-        HELP_PANEL_WIDTH / 2,
-        470,
-    );
-    context.fillText(
-        "Manual steering overrides the turn; fast approaches can hit.",
-        HELP_PANEL_WIDTH / 2,
-        493,
-    );
-
     context.restore();
 }
 

@@ -1,94 +1,180 @@
-# Alert calibration — 6 October 2026
+# Alert calibration — 8 October 2026
 
-Yellow and red use combined shield/hull reserve, rather than independent
-percentage cutoffs. Yellow means four full-budget contacts could exhaust hull;
-red means two could. Each projected contact uses the game's 34-point damage
-budget, 1.1 shield damage multiplier and pre-impact shield transmission. This
-short-burst estimate deliberately ignores regeneration and assumes the damage
-budget is available for each contact. It is a conservative reserve indicator,
-not a collision probability or a death countdown.
+The 6 October calibration optimized warning coverage during reckless flight.
+That is a different objective from useful, selective warnings. Its four-contact
+yellow threshold also treated full hull with half shields as a warning, although
+current autopilot deliberately spends shields on close attack passes and rams.
+Fleet support, multiple cubes, weapon hits outside the scrape budget, and alert
+assistance also change the outcomes. The earlier numerical results are superseded.
 
-| Shield | Yellow at hull ≤ | Red at hull ≤ |
+## Meaning and measurement
+
+The target is approximately 90–95% precision for serious outcomes within **five
+active seconds**, measured using the current game:
+
+- **Yellow:** at least 20 additional hull points lost, or destruction. Give the
+  situation full attention.
+- **Red:** destruction. Immediate survival intervention is warranted.
+
+These operational definitions use a fixed reaction window; they do not mean an
+unconditional chance of dying eventually. Hull loss before the warning does not
+count toward its outcome. A warning issued after destruction is not useful and
+is suppressed. Victory ends the hazard window; an unfinished 180-second run is
+right-censored when its remaining observation cannot establish the outcome.
+
+Entry precision counts each escalation separately, including yellow-to-red and
+later re-escalations. Red-to-yellow recovery is not a fresh predictive warning
+and is silent. Active-state precision checks whether the same outcome follows
+while each warning remains displayed, including the recovery delay. High
+precision is deliberately traded against coverage: absence of an alert does
+not establish safety.
+
+## Selected rule
+
+For each heavy contact, project 34 damage points using the actual pre-impact
+shield transmission and 1.1 shield depletion multiplier. Regeneration is excluded
+from this short reserve calculation. Weapon hits can exceed this contact budget;
+the alert also observes their actual hull damage through the damage history.
+
+Require **both** depleted reserves and recent hull attrition:
+
+| Parameter | Yellow | Red |
 | --- | ---: | ---: |
-| 100% | 72.1% | 12.7% |
-| 75% | 97.6% | 29.7% |
-| 50% | 114.7% (all hull levels) | 46.7% |
-| 25% | 127.5% (all hull levels) | 59.5% |
-| 0% | 136% (all hull levels) | 68% |
+| Full-budget contacts in reserve projection | 2 | 1 |
+| Recent hull-loss projection | 1.5 seconds | 0.25 seconds |
 
-Escalation is immediate on the simulation step. Downgrading requires hull
-reserve to exceed the current level's projected damage by ten points for two
-continuous active seconds. Pausing freezes this timer. Yellow plays `Radar_04.wav` on each transition into yellow, including recovery
-from red; red retains one alarm per life. Restart clears both severity and recovery history.
+The bridge tracks an exponentially decaying hull-loss rate with a one-second
+memory. At each active step of duration `dt`, it updates
+`rate = rate × exp(-dt / 1 s) + hullLost / 1 s`.
+Each severity's threshold is the smaller of its contact-projected hull loss and
+`rate × projectionSeconds`. Entry occurs when remaining hull is at or below
+that threshold. These projection constants are calibrated gates, **not**
+countdowns or the five-second measurement window. An isolated impact rapidly
+loses influence; a safely recovering damaged hull does not warn simply because
+its reserves remain low.
 
-Entering yellow or red now enables aim assist, and entering red also enables
-normal autopilot. This happens once per transition, preserving manual overrides;
-recovery does not disable assistance. The simulations below predate these
-automatic mode changes, so their outcomes do not measure the assistance benefit.
+Recovery requires remaining hull to exceed the current severity's threshold by
+five points for two continuous active seconds. Pausing freezes the history and
+timer. Every fresh field resets both. Yellow sounds only from healthy; red sounds
+once per life. Entering either level enables aim assist, and entering red enables
+normal autopilot. Manual overrides remain effective until another transition;
+recovery does not turn assistance off.
 
-## Simulations
+## Simulation protocol
 
-An exploratory 100 seeded runs with autopilot and gunner enabled produced no
-deaths, so a second, mixed 100-run cohort included deliberate stress flight.
-The latter is the calibration cohort below: seeds 1–100; 60 physics steps per
-second; maximum 180 seconds per life; stop on destruction or victory. It ran
-9,363 simulated seconds and produced 50 deaths.
+A temporary Node `node:vm` harness loaded the actual `index.js`. Only browser
+services were stubbed: DOM, Canvas 2D, Path2D, audio, font readiness, network audio
+loading, and animation scheduling. Physics, generation, shields, scrape budget,
+Borg weapons, helpers, autopilot, gunner, and alert functions were real. Rendering
+and sound were excluded from these numerical measurements. No server was used.
 
-For zero-based run number modulo four, the policies/arena sizes were:
+Randomness used the same 32-bit LCG as the prior experiment:
+`seed = (imul(seed, 1664525) + 1013904223) >>> 0`, divided by `2 ** 32`.
+Each run reset random state and a simulated monotonic performance clock. The
+simulation explicitly unpaused the game, advanced at 60 steps per second, and
+stopped on player destruction, victory, or 180 active seconds. Spawn protection
+was decremented after each physics step; alerts ran afterward, as in `animate`.
 
-| Remainder | Flight policy | Arena pixels |
+For zero-based run index `r` within a cohort:
+
+- Arena size: `[800×500, 1200×700, 1600×800, 1920×980][r % 4]`, excluding the
+  command strip; these are physical simulation dimensions.
+- Field: `1 + floor(r / 4) % 4`; rebuild the corresponding cube/helper fleet and
+  asteroid field after resetting the life.
+- Flight policy: `floor(r / 16) % 3`, as described below.
+
+| Policy | Flight and firing | Alert assistance |
 | --- | --- | --- |
-| 0 | Autopilot and auto-gunner | 800 × 500 |
-| 1 | Autopilot, no auto-gunner | 1200 × 700 |
-| 2 | Continuous forward thrust and auto-gunner | 1600 × 800 |
-| 3 | Continuous forward thrust and auto-gunner | 1920 × 980 |
+| 0 | Autopilot and auto-gunner | Accepted |
+| 1 | Forward thrust, no gunner | Accepted; manual thrust stops once red engages autopilot |
+| 2 | Forward thrust and auto-gunner; turn direction cycles −1, 0, +1 every two seconds | Manual flight explicitly overrides autopilot each step |
 
-A temporary Deno `node:vm` harness executed the actual `index.js` and
-`updateGame`, including asteroid generation, collision resolution, damage,
-shield regeneration, weapon behavior and automation. DOM, canvas and audio
-were stubbed; no web server was started. Randomness used a seeded 32-bit LCG
-(`seed = imul(seed, 1664525) + 1013904223`, unsigned, divided by 2³²).
-Shield/hull traces were recorded every 0.25 seconds and on termination.
+Controls are synchronized through the game functions. Policy 2 uses the actual
+manual turn ramp and override logic, not an instantaneous heading assignment.
+Policies/sizes/fields are patterned rather than a full factorial player study.
 
-These policies and sizes are paired, not a factorial experiment. They include
-extreme reckless behavior and do not represent measured human-player habits.
-No independent holdout or player study was performed.
+Hull and shield traces were sampled every 0.25 seconds, at every alert transition,
+and on termination. Alert entry and destruction timestamps therefore have
+1/60-second resolution; the five-second hull-loss outcome has up to 0.25-second
+sampling uncertainty. Active precision weights each observed state by elapsed
+time to the next observation. Entry results are pooled by warning; active time
+is pooled by simulated seconds.
 
-## Comparison
+An initial harness check that left automation paused was discarded. Exploratory
+runs used seeds 1–200 to compare reserve-only rules and damage-history gates;
+seeds 201–400 checked assistance and the manual-override protocol. Those cohorts
+were used during development and are **not** independent validation. After
+freezing the final constants and protocol, seeds **401–500** supplied 100 fresh
+validation runs. The old and new rules were run separately on those same seeds;
+alert assistance changes trajectories, so later states are not paired replay
+observations. No parameter was changed after this final validation.
 
-All candidates use the ten-point recovery margin and two-second clear delay.
-Percentages below average each run's fraction of time equally, rather than
-weighting long surviving runs more heavily. Changes count every severity
-transition, including the first warning.
+## Final validation
 
-| Yellow contacts | Red contacts | Changes/run | Yellow time | Red time | Warning coverage | Median red lead |
-| ---: | ---: | ---: | ---: | ---: | ---: | ---: |
-| 2 | 1 | 1.08 | 7.0% | 7.2% | 18.3% | 0.80 s |
-| 3 | 1 | 1.28 | 16.4% | 7.2% | 34.3% | 0.80 s |
-| 3 | 2 | 1.32 | 9.4% | 14.2% | 34.3% | 1.83 s |
-| **4** | **2** | **1.34** | **33.9%** | **14.2%** | **69.0%** | **1.83 s** |
+The tables below summarize all 100 validation seeds for both rules. The
+temporary per-run JSON dump is not retained in the repository.
 
-Warning coverage is the fraction of sampled states preceding a hull loss
-strictly greater than 20 points within the next five seconds that already had
-yellow or red active. It is a recall metric, not precision: a warning with no
-subsequent impact can still correctly indicate depleted survival reserve.
-Median red lead measures time from first red warning to destruction in fatal
-runs that entered red. Values have 0.25-second sampling resolution.
+| Measure | Old reserve-only alerts | Recalibrated alerts |
+| --- | ---: | ---: |
+| Yellow entry precision | 57/100 = 57.0% | **67/71 = 94.4%** |
+| Red entry precision | 30/84 = 35.7% | **28/30 = 93.3%** |
+| Yellow active-state precision | 21.6% | **91.7%** |
+| Red active-state precision | 25.9% | **91.1%** |
+| Time displaying yellow | 31.5% | **4.3%** |
+| Time displaying red | 27.3% | **2.3%** |
+| Median successful yellow lead to destruction | 4.01 s | 1.75 s |
+| Median successful red lead to destruction | 2.19 s | 1.97 s |
+| Fatal runs with a preceding yellow state | 70/70 | 68/75 |
+| Fatal runs with a preceding red state | 70/70 | 30/75 |
+| Destructions / victories / censored runs | 70 / 26 / 4 | 75 / 25 / 0 |
+| Total simulated active time | 3,838.75 s | 2,773.00 s |
 
-Four-contact yellow doubles coverage compared with three-contact yellow with
-only 0.02 extra transitions per run. Two-contact red gives more reaction time
-than one-contact red. The tradeoff is longer yellow exposure during reckless
-flight; sparse switching is supported by these runs, while subjective utility
-still needs human play feedback.
+Lead-time medians include only entries followed by destruction within the
+five-second window. They do not measure all warnings or guarantee reaction time.
+The old implementation could issue an alarm on the fatal step; such entries are
+excluded from predictive precision and preceding-warning coverage.
 
-The final JavaScript alert functions were replayed against all 100 traces:
-134 transitions over 37,575 recorded samples. Separate checks covered healthy,
-yellow and red states, delayed recovery, restart reset and once-per-life alarm
-state. Formatting, Deno checking and diff whitespace checks passed.
+For the new entry proportions, approximate 95% Wilson intervals are **86.4–97.8%**
+for yellow and **78.7–98.2%** for red. The method follows the
+[NIST confidence-interval reference](https://www.itl.nist.gov/div898/handbook/prc/section2/prc241.htm).
+Warnings within one run are not fully independent, so these descriptive
+intervals do not establish a universal 90% lower bound.
 
-Safari loaded `index.html` directly. Healthy, yellow and red text and paused
-help were visually inspected with temporary health fixtures, then the fixtures
-were removed. The narrower-window attempt did not resize the window; further
-computer use was stopped by the URL access policy after browser state changed.
-Compact layout and final hull-bar warning colors remain visually unverified.
-Actual speaker output and 60-FPS browser performance were not measured.
+| Validation flight policy | Yellow outcomes / entries | Red outcomes / entries |
+| --- | ---: | ---: |
+| Autopilot and gunner | 11/13 | 4/4 |
+| Forward thrust, accepting assistance | 27/28 | 13/15 |
+| Turning thrust, overriding assistance | 29/30 | 11/11 |
+
+The aggregate meets the requested precision target, but individual policies have
+small samples and different rates. This is a stress-heavy synthetic mix, not
+measured human behavior. Probability calibration can drift when mechanics or
+flight behavior change.
+
+The more selective red engages autopilot later and warns in only 40% of fatal
+runs. The new cohort also had more deaths than the old-rule cohort. These runs
+support quieter, more predictive alarms; they **do not** demonstrate improved
+survival. A future requirement for both high precision and broad early coverage
+would need additional threat prediction and a larger independent cohort.
+
+## Verification
+
+The actual alert functions passed checks for healthy half shields, yellow and
+red entry, assistance, preserved manual overrides, zero-time history/timer,
+sustained quiet recovery, silent downgrades, once-per-life red audio state,
+restart history reset, and suppression of postmortem warnings. Deno checking and
+whitespace checks passed. Modified code was formatted using the repository's
+four-space style, without unrelated formatting changes.
+
+Safari loaded `index.html` directly. Healthy and red states and the
+paused help were inspected at the full canvas size. A temporary 800×600 canvas
+fixture verified yellow hull coloring and the compact paused help; the compact
+console intentionally omits warning text when it cannot fit. Both temporary
+fixtures were removed afterward. This verifies canvas layout at two sizes,
+rather than claiming the browser window itself was resized. Audible speaker
+output and sustained 60-FPS performance were not measured by this calibration.
+
+The paused help was subsequently reduced to controls only, with a shorter
+panel; border assistance and alert mechanics remain documented in README.md.
+The controls-only layout was checked in Safari at full size and on an 800×600
+canvas. The temporary size fixture was removed.
