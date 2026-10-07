@@ -429,10 +429,8 @@ const BORG_HULL_FRACTURES = Object.freeze([
 // obstacle until the field restarts, with no remaining hostile systems.
 const BORG_DEFEAT_SCORE = 8000;
 
-// Helpers arrive once per pair of Borg cubes, rounded down. This preserves a
-// solo first field and yields one helper for two or three cubes, two for four
-// or five cubes, and so on.
-const BORG_CUBES_PER_HELPER = 2;
+// The player counts as one friendly, so every field has one fewer friendly
+// hull than Borg cubes. Additional helpers begin on field two.
 const HELPER_SPAWN_DISTANCE = STARSHIP_RADIUS * 4;
 
 // Aim assist advises the player without steering or changing phaser behavior.
@@ -3083,7 +3081,8 @@ function generateAsteroids(width, height) {
 
 /**
  * Return the number of autonomous hulls supporting the player in a field.
- * Each field has one Borg cube per field number, with one helper per two cubes.
+ * Each field has one Borg cube per field number, and the player counts as one
+ * friendly; helpers make the friendly fleet one hull smaller than the Borg fleet.
  * @param {number} field One-based session field number.
  * @returns {number} Number of helper ships.
  */
@@ -3091,7 +3090,7 @@ function helperCountForField(field) {
     if (!Number.isFinite(field) || field < 1) {
         return 0;
     }
-    return Math.floor(field / BORG_CUBES_PER_HELPER);
+    return Math.max(0, field - 2);
 }
 
 /**

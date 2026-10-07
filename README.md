@@ -48,6 +48,10 @@ offset, and ignores future collisions. Unreachable targets have no crosshair;
 predictions outside the arena are clipped. Pausing or losing focus clears the
 lock. Every new sector starts with Aim Assist, autopilot, and auto-gunner disabled.
 
+Each field adds one Borg cube. The player counts as a friendly ship, so the
+friendly fleet always has one fewer ship than the Borg count; helpers arrive
+from field 2 onward and use autopilot and auto-gunner.
+
 Autopilot (`T`) pilots close-range attack passes, interception, and ramming.
 Every 1.2 seconds it rolls for an attack pass: healthy shields favor closing
 within about 55 pixels of a target's surface for reliable shots, with the
