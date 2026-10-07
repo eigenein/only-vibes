@@ -115,9 +115,13 @@ area removed, plus 8,000 for defeating the cube.
 
 ### Borg cube
 
-One tougher cube enters each field, with a third more hull and stronger face
-shields. Repeated hits reinforce the attacked face, taking
-power away from the others. Green branches grow along the reinforced edge;
+One cube enters each field, with 200 hull and an 18-point shield buffer per face.
+These reserves keep fights brisk while preserving adaptive protection.
+Each cube routes a fixed 100% energy budget between four faces, starting
+at 25% each. Repeated hits reinforce the attacked face, taking
+power away from the others. A bright green segment on each edge shows its routed
+share by length, from a quarter edge at 25% to the full edge at 100%, even when
+the rechargeable shield buffer is empty. Green branches grow along the reinforced edge;
 sustained fire adds tightly spaced shield bands and changes bright impacts into
 shallow green ripples. Switch faces or briefly pause fire to reduce resistance.
 
@@ -125,8 +129,10 @@ Quiet faces recover shields using power left over from adaptation. A green
 sweep shows recovery. Hull loss widens glowing orange fractures across the cube
 and exposes increasing patches of burned-out machinery. These structural
 failures remain visible when shields recover.
-Resistance is capped, and every phaser hit leaks some damage into the hull,
-so even repeated attacks on one face can eventually defeat the cube.
+A face with all 100% routed to it is immune to phasers, leaving the other three
+faces without routed resistance. Burst adaptation reduces remaining damage but
+cannot grant immunity by itself. Quiet reinforcement relaxes toward equal routing,
+returning energy to the other faces while keeping the total at 100%.
 
 The cube slowly closes on the ship but steers away from asteroid fields.
 Threatened edges flash and maneuvering machinery lights up. Its engines have

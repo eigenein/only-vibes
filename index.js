@@ -321,10 +321,11 @@ const BORG_HALF_SIZE = 76 * WORLD_BODY_SCALE;
 const BORG_ARENA_SIZE_RATIO = 0.16;
 const BORG_TEXTURE_SIZE = 320;
 const BORG_GREEN = "#77ff88";
-// A third more permanent hull and modestly stronger face shields extend the
-// encounter without increasing the adaptation cap or removing counterplay.
-const BORG_HULL = 240;
-const BORG_FACE_SHIELD = 22;
+// Full-face immunity already rewards changing attack angles. Modest hull and
+// buffer reserves keep that tactical loop from becoming an endurance fight:
+// about one sixth less durability, without weakening routing or adaptation.
+const BORG_HULL = 200;
+const BORG_FACE_SHIELD = 18;
 // Shields cannot erase hull damage. Collective transfers conserve total hull;
 // six seconds per participant preserves a window to finish a weakened cube.
 const BORG_PHASER_DAMAGE = 9;
@@ -335,15 +336,32 @@ const BORG_TRANSFER_MIN_DIFFERENCE = 1;
 const BORG_TRANSFER_PULSE_SECONDS = 0.8;
 // Allied bolts dissipate harmlessly with a faint, short inward ripple.
 const BORG_ABSORPTION_PULSE_SECONDS = 0.3;
-const BORG_SHIELD_ABSORPTION = 0.65;
-const BORG_DIRECTIONAL_RESISTANCE = 0.45;
+// Let 55% of post-resistance phaser damage reach hull while buffers are charged,
+// so a successful attack window makes progress before directional immunity.
+const BORG_SHIELD_ABSORPTION = 0.45;
+// Each live cube routes exactly one unit (100%) across its four faces. Equal
+// routing starts at 25%; routing the entire unit to one face stops phaser damage.
+const BORG_FACE_BASE_ALLOCATION = 0.25;
+// A bright, centered edge segment shows routed energy by length: one quarter
+// at spawn and the full edge at immunity. Keep it independent of buffer charge
+// because phaser resistance remains powered after that buffer is depleted.
+const BORG_ROUTING_LINE_WIDTH = 3;
+const BORG_ROUTING_OPACITY = 0.9;
+const BORG_ROUTING_TRACK_COLOR = "#1b3022";
+// Burst memory blocks a fraction of damage remaining after routed resistance;
+// it cannot grant full immunity to a face with less than 100% allocation.
 const BORG_BURST_RESISTANCE = 0.3;
-const BORG_ADAPTATION_PER_HIT = 0.16;
+// Ten hits route a face from 25% to full immunity, keeping a cold eight-shot
+// burst productive while repeated attacks still reward switching sides.
+const BORG_ADAPTATION_PER_HIT = 0.08;
 const BORG_BURST_PER_HIT = 0.22;
 const BORG_BURST_QUIET_SECONDS = 0.7;
 const BORG_BURST_DECAY = 0.5;
 const BORG_ADAPTATION_QUIET_SECONDS = 3;
-const BORG_ADAPTATION_DECAY = 0.12;
+// Quiet faces return seven percentage points of excess routing per second.
+// A fully reinforced face takes about 10.7 seconds to reach 25% after the quiet
+// delay, giving the player time to relocate while routing favors the former side.
+const BORG_ADAPTATION_DECAY = 0.07;
 // Reinforcement and burst resistance spend the same unit power budget that
 // supplies repair. Only quiet shield faces regenerate; hull can be redistributed.
 const BORG_REPAIR_DELAY = 1.6;
@@ -1922,7 +1940,7 @@ class BorgCube extends Asteroid {
         this.hull = BORG_HULL;
         this.faces = Array.from({length: 4}, () => ({
             shield: BORG_FACE_SHIELD,
-            adaptation: 0,
+            adaptation: BORG_FACE_BASE_ALLOCATION,
             burst: 0,
             quiet: 10,
             impact: 0,
@@ -2070,10 +2088,9 @@ class BorgCube extends Asteroid {
     }
 
     /**
-     * Allocate power before recording a hit. The damaged face gains allocation
-     * by taking it proportionally from other faces; total allocation never
-     * exceeds one. Shields leak damage, and combined resistance never exceeds
-     * 75%, so even repeated hits on the same face always reduce hull.
+     * Resolve a hit against current routing, then reinforce the attacked face
+     * by taking power proportionally from the other faces. Full routing grants
+     * phaser immunity even when the face's separate rechargeable buffer is spent.
      * @param {Vector2} point Swept projectile contact in world coordinates.
      * @returns {void}
      */
@@ -2081,8 +2098,8 @@ class BorgCube extends Asteroid {
         if (!this.alive) return;
         const face = this.faces[this.faceAt(point)];
         const resistance =
-            face.adaptation * BORG_DIRECTIONAL_RESISTANCE +
-            face.burst * BORG_BURST_RESISTANCE;
+            face.adaptation +
+            (1 - face.adaptation) * face.burst * BORG_BURST_RESISTANCE;
         const damage = BORG_PHASER_DAMAGE * (1 - resistance);
         const absorbed = Math.min(face.shield, damage * BORG_SHIELD_ABSORPTION);
         face.shield -= absorbed;
@@ -2090,21 +2107,61 @@ class BorgCube extends Asteroid {
         face.impact = BORG_IMPACT_SECONDS;
         face.quiet = 0;
         face.burst = Math.min(1, face.burst + BORG_BURST_PER_HIT);
-        face.adaptation = Math.min(
-            1,
-            face.adaptation + BORG_ADAPTATION_PER_HIT,
+        this.routeFacePower(
+            face,
+            Math.min(1, face.adaptation + BORG_ADAPTATION_PER_HIT),
         );
+        this.damageHull(damage - absorbed, point);
+    }
+
+    /**
+     * Conserve the full routing budget during reinforcement and quiet recovery.
+     * If one face owned all power, share its released power equally; otherwise
+     * preserve the other faces' relative allocations. Quiet recovery instead
+     * replenishes faces below 25%, including faces left at zero by full routing.
+     * Assign the last remainder directly to prevent accumulated rounding drift.
+     * @param {BorgCube["faces"][number]} face Face whose allocation changes.
+     * @param {number} allocation New allocation in the inclusive range [0, 1].
+     * @param {boolean} [equalize] Return released reinforcement toward equal routing.
+     * @returns {void}
+     */
+    routeFacePower(face, allocation, equalize = false) {
         const otherAllocation = this.faces.reduce(
-            (sum, other) => sum + (other === face ? 0 : other.adaptation),
+            (sum, other) => {
+                if (other === face) return sum;
+                return (
+                    sum +
+                    (equalize
+                        ? Math.max(0, BORG_FACE_BASE_ALLOCATION - other.adaptation)
+                        : other.adaptation)
+                );
+            },
             0,
         );
-        const available = 1 - face.adaptation;
-        if (otherAllocation > available && otherAllocation > COLLISION_EPSILON) {
-            for (const other of this.faces) {
-                if (other !== face) other.adaptation *= available / otherAllocation;
-            }
+        const available = equalize
+            ? face.adaptation - allocation
+            : 1 - allocation;
+        face.adaptation = allocation;
+        let remaining = available;
+        let otherCount = this.faces.length - 1;
+        for (const other of this.faces) {
+            if (other === face) continue;
+            const weight = equalize
+                ? Math.max(0, BORG_FACE_BASE_ALLOCATION - other.adaptation)
+                : other.adaptation;
+            const share =
+                otherCount === 1
+                    ? remaining
+                    : Math.min(
+                          remaining,
+                          otherAllocation > 0
+                              ? available * (weight / otherAllocation)
+                              : available / (this.faces.length - 1),
+                      );
+            other.adaptation = (equalize ? other.adaptation : 0) + share;
+            remaining -= share;
+            otherCount -= 1;
         }
-        this.damageHull(damage - absorbed, point);
     }
 
     /**
@@ -2199,10 +2256,19 @@ class BorgCube extends Asteroid {
                     0,
                     face.burst - BORG_BURST_DECAY * deltaTime,
                 );
-            if (face.quiet > BORG_ADAPTATION_QUIET_SECONDS)
-                face.adaptation = Math.max(
-                    0,
-                    face.adaptation - BORG_ADAPTATION_DECAY * deltaTime,
+            // Quiet reinforcement relaxes toward equal routing, returning all
+            // released energy to the other faces instead of deleting it.
+            if (
+                face.quiet > BORG_ADAPTATION_QUIET_SECONDS &&
+                face.adaptation > BORG_FACE_BASE_ALLOCATION
+            )
+                this.routeFacePower(
+                    face,
+                    Math.max(
+                        BORG_FACE_BASE_ALLOCATION,
+                        face.adaptation - BORG_ADAPTATION_DECAY * deltaTime,
+                    ),
+                    true,
                 );
         }
         const powerUsed =
@@ -2548,23 +2614,30 @@ class BorgCube extends Asteroid {
             context.save();
             context.rotate((index * Math.PI) / 2);
             const charge = face.shield / BORG_FACE_SHIELD;
-            const otherPower = this.faces.reduce(
-                (sum, other) => sum + (other === face ? 0 : other.adaptation),
-                0,
-            );
+            const edgeHalfLength = Math.max(0, half - 7);
+            // A muted rail marks the full range; its luminous center is the
+            // fraction routed to this face. Zero routing leaves only the rail.
+            context.strokeStyle = BORG_ROUTING_TRACK_COLOR;
+            context.lineWidth = BORG_ROUTING_LINE_WIDTH;
+            context.beginPath();
+            context.moveTo(-edgeHalfLength, -half + 4);
+            context.lineTo(edgeHalfLength, -half + 4);
+            context.stroke();
+            if (face.adaptation > 0) {
+                context.strokeStyle = BORG_GREEN;
+                context.globalAlpha = BORG_ROUTING_OPACITY;
+                context.beginPath();
+                context.moveTo(-edgeHalfLength * face.adaptation, -half + 4);
+                context.lineTo(edgeHalfLength * face.adaptation, -half + 4);
+                context.stroke();
+            }
             // Adapted hull machinery remains visible after shield charge is spent;
             // its resistance still affects incoming fire on this face.
             const intensity =
-                (0.18 + face.adaptation * 0.8) *
-                (0.3 + charge * 0.7) *
-                (1 - otherPower * 0.65);
+                (0.18 + face.adaptation * 0.8) * (0.3 + charge * 0.7);
             context.strokeStyle = BORG_GREEN;
             context.globalAlpha = intensity;
             context.lineWidth = 1 + face.adaptation * 2;
-            context.beginPath();
-            context.moveTo(-half + 7, -half + 4);
-            context.lineTo(half - 7, -half + 4);
-            context.stroke();
             // Circuit branches grow with directional allocation. Sustained-fire
             // adaptation adds closely spaced transverse bars on that same face.
             for (
