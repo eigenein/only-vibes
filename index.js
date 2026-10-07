@@ -182,7 +182,8 @@ const ALERT_EDGE_GAP = 12;
 const ALERT_LCD_SILHOUETTE_OPACITY = 0.08;
 // Three active-play seconds protect the human hull at every field start.
 // Contacts retain their physical response; shields, hull and damage budget
-// remain untouched. Pausing never consumes this spawn grace period.
+// remain untouched. Borg focus assignments also exclude the player during
+// this grace period. Pausing never consumes it.
 const PLAYER_SPAWN_IMMUNITY_SECONDS = 3;
 // Sound effects retain a small number of independent voices so a rapid burst
 // of shots or impacts does not cut off the sound that preceded it.
@@ -3022,7 +3023,13 @@ function findBestBorgTargetAssignment(liveCubes, liveShips, arenaDiagonal) {
  */
 function updateBorgFleetTactics(deltaTime, width, height) {
     const liveCubes = borgCubes.filter((cube) => cube.alive);
-    const liveShips = starships.filter((ship) => ship.alive);
+    // Share collision immunity's timer so coordinated focus starts only after
+    // the player's spawn grace period; ordinary pursuit remains available.
+    const liveShips = starships.filter(
+        (ship) =>
+            ship.alive &&
+            (ship !== playerShip || playerSpawnImmunityRemaining <= 0),
+    );
 
     if (liveCubes.length === 0 || liveShips.length === 0) {
         for (const cube of liveCubes) {
@@ -3033,7 +3040,7 @@ function updateBorgFleetTactics(deltaTime, width, height) {
 
     borgTacticsEvaluationTimer -= deltaTime;
     const needsImmediateReevaluation = liveCubes.some(
-        (cube) => cube.targetStarship === undefined || !cube.targetStarship.alive,
+        (cube) => !liveShips.some((ship) => ship === cube.targetStarship),
     );
 
     if (borgTacticsEvaluationTimer > 0 && !needsImmediateReevaluation) {
@@ -5319,7 +5326,11 @@ function drawBorgFocusLock(width, height) {
     context.clip();
 
     for (const ship of starships) {
-        if (!ship.alive) continue;
+        if (
+            !ship.alive ||
+            (ship === playerShip && playerSpawnImmunityRemaining > 0)
+        )
+            continue;
 
         const focusingCubes = liveCubes.filter(
             (cube) => cube.targetStarship === ship,
