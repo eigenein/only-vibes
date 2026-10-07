@@ -317,15 +317,16 @@ const BORG_GREEN = "#77ff88";
 // encounter without increasing the adaptation cap or removing counterplay.
 const BORG_HULL = 240;
 const BORG_FACE_SHIELD = 22;
-// Shield absorption always leaks hull damage. Adaptation and shield repair
-// cannot erase hull damage; absorbed collective bolts can repair a small part.
+// Shields cannot erase hull damage. Collective transfers conserve total hull;
+// six seconds per participant preserves a window to finish a weakened cube.
 const BORG_PHASER_DAMAGE = 9;
-// Reclaim one quarter of an unadapted phaser hit per allied bolt. Fixed recovery
-// keeps ricochet speed from amplifying healing; destroyed hulls never revive.
-const BORG_REABSORPTION_REPAIR = BORG_PHASER_DAMAGE * 0.25;
-// A brief inward green pulse and repair cross distinguish regained hull from
-// damage flashes. One timer per cube bounds drawing work during repeated hits.
-const BORG_REPAIR_PULSE_SECONDS = 0.8;
+const BORG_TRANSFER_COOLDOWN_SECONDS = 6;
+// Ignore tiny differences to avoid spending exchanges on floating-point noise.
+const BORG_TRANSFER_MIN_DIFFERENCE = 1;
+// The radiation tether follows both moving endpoints and fades after exchange.
+const BORG_TRANSFER_PULSE_SECONDS = 0.8;
+// Allied bolts dissipate harmlessly with a faint, short inward ripple.
+const BORG_ABSORPTION_PULSE_SECONDS = 0.3;
 const BORG_SHIELD_ABSORPTION = 0.65;
 const BORG_DIRECTIONAL_RESISTANCE = 0.45;
 const BORG_BURST_RESISTANCE = 0.3;
@@ -336,7 +337,7 @@ const BORG_BURST_DECAY = 0.5;
 const BORG_ADAPTATION_QUIET_SECONDS = 3;
 const BORG_ADAPTATION_DECAY = 0.12;
 // Reinforcement and burst resistance spend the same unit power budget that
-// supplies repair. Hull is never repaired; only quiet shield faces recover.
+// supplies repair. Only quiet shield faces regenerate; hull can be redistributed.
 const BORG_REPAIR_DELAY = 1.6;
 const BORG_SHIELD_REPAIR_RATE = 6;
 const BORG_REINFORCEMENT_POWER = 0.55;
@@ -629,7 +630,7 @@ const PLAY_HELP = Object.freeze([
 const HELP_PANEL_WIDTH = 540;
 // Fit the essential controls, objective, and survival rules without turning the
 // pause screen into a complete mechanics reference.
-const HELP_PANEL_HEIGHT = 686;
+const HELP_PANEL_HEIGHT = 716;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -1925,15 +1926,16 @@ class BorgCube extends Asteroid {
         this.scars = [];
         this.time = 0;
         this.recovery = 0;
-        this.repairPulse = 0;
+        this.absorptionPulse = 0;
+        this.transferCooldown = 0;
+        this.transferPulse = 0;
+        /** @type {BorgCube | undefined} Recipient of the visible radiation tether. */
+        this.transferTarget = undefined;
         this.engineX = 0;
         this.engineY = 0;
         this.contactBudget = BORG_CONTACT_DAMAGE_CAP;
         this.fireCooldown = BORG_FIRE_INTERVAL;
         this.fireCharge = 0;
-        /** @type {BorgCube | undefined} Ally committed for this charge. */
-        this.repairTarget = undefined;
-        this.repairShotNext = true;
         /** @type {Starship | undefined} Assigned starship target under collective tactics. */
         this.targetStarship = undefined;
         this.fireAngle = 0;
@@ -2165,7 +2167,7 @@ class BorgCube extends Asteroid {
      */
     update(width, height, deltaTime) {
         this.time += deltaTime;
-        this.repairPulse = Math.max(0, this.repairPulse - deltaTime);
+        this.absorptionPulse = Math.max(0, this.absorptionPulse - deltaTime);
         if (!this.alive) {
             // A wreck has no navigation, braking, repair or weapons. Contact and
             // wall impulses are the only things that can change its free motion.
@@ -2241,17 +2243,16 @@ class BorgCube extends Asteroid {
      * with a small bounded iteration instead of duplicating the stable solver.
      * Future thrust, turns and wall bounces remain unknown to the weapon.
      * @param {number} delay Remaining simulation seconds before launch.
-     * @param {BorgCube | undefined} [ally] Repair recipient; otherwise target the ship.
      * @returns {number} World heading for an intercept, or a finite direct bearing.
      */
-    aimAtTarget(delay, ally = undefined) {
+    aimAtTarget(delay) {
         const originX = this.x + this.velocityX * delay;
         const originY = this.y + this.velocityY * delay;
         const targetShip =
             this.targetStarship && this.targetStarship.alive
                 ? this.targetStarship
                 : nearestStarship(this);
-        const recipient = ally ?? targetShip;
+        const recipient = targetShip;
         if (recipient === undefined) return this.rotation;
         const target = {
             x: recipient.x + recipient.velocityX * delay,
@@ -2292,16 +2293,9 @@ class BorgCube extends Asteroid {
         if (!this.alive) return;
         this.muzzleFlash = Math.max(0, this.muzzleFlash - deltaTime);
         if (this.fireCharge > 0) {
-            // Retarget a destroyed or fully repaired ally before the aim locks.
-            if (
-                this.repairTarget !== undefined &&
-                (!this.repairTarget.alive || this.repairTarget.hull >= BORG_HULL)
-            ) {
-                this.repairTarget = undefined;
-            }
             const remainingCharge = Math.max(0, this.fireCharge - deltaTime);
             if (this.fireCharge > BORG_AIM_LOCK_SECONDS) {
-                this.fireAngle = this.aimAtTarget(remainingCharge, this.repairTarget);
+                this.fireAngle = this.aimAtTarget(remainingCharge);
                 if (remainingCharge <= BORG_AIM_LOCK_SECONDS) {
                     this.fireAngle += randomBetween(-BORG_AIM_SPREAD, BORG_AIM_SPREAD);
                 }
@@ -2332,26 +2326,6 @@ class BorgCube extends Asteroid {
         }
         this.fireCooldown = Math.max(0, this.fireCooldown - deltaTime);
         if (this.fireCooldown > 0) return;
-        // Alternate repair opportunities with attacks so collective support never
-        // removes player pressure. Favor the most damaged reachable live ally.
-        this.repairTarget = undefined;
-        if (this.repairShotNext) {
-            for (const ally of borgCubes) {
-                if (
-                    ally === this ||
-                    !ally.alive ||
-                    BORG_HULL - ally.hull < BORG_REABSORPTION_REPAIR ||
-                    Math.hypot(ally.x - this.x, ally.y - this.y) <=
-                    this.radius + ally.radius + BULLET_HALF_LENGTH
-                )
-                    continue;
-                if (
-                    this.repairTarget === undefined ||
-                    ally.hull < this.repairTarget.hull
-                )
-                    this.repairTarget = ally;
-            }
-        }
         // At contact distance the ordinary body collision supplies the threat;
         // avoid spawning a shot inside the ship's shield circle.
         const opponent =
@@ -2359,15 +2333,13 @@ class BorgCube extends Asteroid {
                 ? this.targetStarship
                 : nearestStarship(this);
         if (
-            this.repairTarget === undefined &&
-            (opponent === undefined ||
-                Math.hypot(opponent.x - this.x, opponent.y - this.y) <=
-                this.radius + STARSHIP_RADIUS + BULLET_HALF_LENGTH)
+            opponent === undefined ||
+            Math.hypot(opponent.x - this.x, opponent.y - this.y) <=
+                this.radius + STARSHIP_RADIUS + BULLET_HALF_LENGTH
         )
             return;
-        this.repairShotNext = !this.repairShotNext;
         this.fireCharge = BORG_FIRE_CHARGE_SECONDS;
-        this.fireAngle = this.aimAtTarget(this.fireCharge, this.repairTarget);
+        this.fireAngle = this.aimAtTarget(this.fireCharge);
     }
 
     /**
@@ -2485,22 +2457,36 @@ class BorgCube extends Asteroid {
         );
     }
 
-    /** @returns {void} Show absorbed energy flowing inward with a repair cross. */
-    drawRepairPulse() {
-        if (this.repairPulse <= 0) return;
-        const progress = 1 - this.repairPulse / BORG_REPAIR_PULSE_SECONDS;
-        const half = this.half * (0.95 - progress * 0.65);
+    /** @returns {void} Show harmless dissipation without a healing symbol. */
+    drawAbsorptionPulse() {
+        if (this.absorptionPulse <= 0) return;
+        const progress =
+            1 - this.absorptionPulse / BORG_ABSORPTION_PULSE_SECONDS;
+        const half = this.half * (0.95 - progress * 0.25);
         context.save();
         context.strokeStyle = BORG_GREEN;
-        context.fillStyle = BORG_GREEN;
-        context.globalAlpha = (1 - progress) * 0.9;
-        context.lineWidth = 3;
+        context.globalAlpha = (1 - progress) * 0.25;
+        context.lineWidth = 1;
         context.strokeRect(-half, -half, half * 2, half * 2);
-        // A fixed cross makes the meaning readable even during a moving impact.
-        const size = this.half * 0.22;
-        const thickness = Math.max(2, size * 0.3);
-        context.fillRect(-size, -thickness / 2, size * 2, thickness);
-        context.fillRect(-thickness / 2, -size, thickness, size * 2);
+        context.restore();
+    }
+
+    /** @returns {void} Draw a fading radiation tether in world coordinates. */
+    drawTransfer() {
+        const target = this.transferTarget;
+        if (this.transferPulse <= 0 || !this.alive || !target?.alive) return;
+        context.save();
+        context.strokeStyle = BORG_GREEN;
+        context.globalAlpha = this.transferPulse / BORG_TRANSFER_PULSE_SECONDS;
+        context.beginPath();
+        context.moveTo(this.x, this.y);
+        context.lineTo(target.x, target.y);
+        context.lineWidth = 7;
+        context.globalAlpha *= 0.15;
+        context.stroke();
+        context.lineWidth = 1.5;
+        context.globalAlpha *= 4;
+        context.stroke();
         context.restore();
     }
 
@@ -2616,7 +2602,7 @@ class BorgCube extends Asteroid {
             context.fillRect(-half + 8, sweep, half * 2 - 16, 2);
             context.restore();
         }
-        this.drawRepairPulse();
+        this.drawAbsorptionPulse();
         this.drawWeapon();
         // Exhaust is opposite the actual commanded acceleration, so machinery
         // identifies the maneuver that avoids the currently highlighted threat.
@@ -2785,6 +2771,43 @@ class BorgCube extends Asteroid {
             context.stroke();
         }
         context.restore();
+    }
+}
+
+/**
+ * Negotiate mutually preferred pairs among available live cubes. The healthiest
+ * offers to the least healthy, which requests the healthiest in return. Pairing
+ * extremes maximizes the reduction in squared hull dispersion: (a-b)^2 / 2.
+ * Exchanges are instantaneous, conserve total hull, and never revive wrecks.
+ * Sorting once avoids a quadratic negotiation search; no range restriction
+ * makes fleet-wide support independent of arena size and weapon interception.
+ * @param {number} deltaTime Active simulation seconds; pause freezes all clocks.
+ * @returns {void}
+ */
+function updateBorgHealthTransfers(deltaTime) {
+    for (const cube of borgCubes) {
+        cube.transferCooldown = Math.max(0, cube.transferCooldown - deltaTime);
+        cube.transferPulse = Math.max(0, cube.transferPulse - deltaTime);
+        if (cube.transferPulse === 0) cube.transferTarget = undefined;
+    }
+    const available = borgCubes
+        .filter((cube) => cube.alive && cube.transferCooldown === 0)
+        .sort((first, second) => first.hull - second.hull);
+    for (
+        let low = 0, high = available.length - 1;
+        low < high;
+        low += 1, high -= 1
+    ) {
+        const recipient = available[low];
+        const donor = available[high];
+        if (donor.hull - recipient.hull < BORG_TRANSFER_MIN_DIFFERENCE) break;
+        const average = recipient.hull + (donor.hull - recipient.hull) / 2;
+        donor.hull = average;
+        recipient.hull = average;
+        donor.transferCooldown = BORG_TRANSFER_COOLDOWN_SECONDS;
+        recipient.transferCooldown = BORG_TRANSFER_COOLDOWN_SECONDS;
+        donor.transferTarget = recipient;
+        donor.transferPulse = BORG_TRANSFER_PULSE_SECONDS;
     }
 }
 
@@ -5089,6 +5112,7 @@ function drawGame(width, height) {
         asteroid.draw();
     }
 
+    for (const cube of borgCubes) cube.drawTransfer();
     for (const cube of borgCubes) cube.draw();
 
     for (const bullet of bullets) {
@@ -5811,9 +5835,14 @@ function drawPauseHelp(width, height) {
         608,
     );
     context.fillText(
-        "Borg: +1 cube each field; support joins from field 2.",
+        "Borg: green links average hull; 6s/cube. Allied bolts harmless.",
         HELP_PANEL_WIDTH / 2,
         638,
+    );
+    context.fillText(
+        "Borg: +1 cube each field; support joins from field 2.",
+        HELP_PANEL_WIDTH / 2,
+        668,
     );
     context.restore();
 }
@@ -7088,16 +7117,8 @@ function resolveBulletCollisions(width, height) {
                 hitTarget instanceof BorgCube &&
                 bullet.source === "borg"
             ) {
-                // Collective energy repairs live hulls without changing shields,
-                // adaptation or momentum. Wrecks dissipate it without reviving.
-                if (hitTarget.alive && hitTarget.hull < BORG_HULL) {
-                    hitTarget.repairPulse = BORG_REPAIR_PULSE_SECONDS;
-                    hitTarget.hull = Math.min(
-                        BORG_HULL,
-                        hitTarget.hull + BORG_REABSORPTION_REPAIR,
-                    );
-                }
-                emitSparksAt(hitPoint, bodyKineticEnergy(bullet));
+                // Allied bolts dissipate without hull, shield or momentum changes.
+                hitTarget.absorptionPulse = BORG_ABSORPTION_PULSE_SECONDS;
                 bullets.splice(bulletIndex, 1);
                 break;
             } else if (
@@ -8038,6 +8059,7 @@ function updateGame(deltaTime, width, height) {
         asteroid.update(width, height, deltaTime);
     }
 
+    updateBorgHealthTransfers(deltaTime);
     updateBorgFleetTactics(deltaTime, width, height);
     for (const cube of borgCubes) cube.update(width, height, deltaTime);
 
