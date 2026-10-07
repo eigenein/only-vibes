@@ -94,7 +94,10 @@ The green AUTOPILOT indicator shows that automatic helm is engaged.
   on the shield remaining at the moment of impact. The shield regenerates
   while the game is running.
 - Hull damage does not regenerate during the current life.
-- Arena walls also damage the ship.
+- Arena walls also damage the ship. Border autobrake overrides thrust near a
+  wall and uses ordinary braking until stopped. It helps approaches below 50%
+  maximum speed; faster approaches can still hit. The gold AUTOBRAKE cue beside
+  the controls lights while it intervenes.
 - Yellow alert means shield and hull reserves cannot withstand four heavy
   contacts: create space to recover shields. Red alert means two heavy contacts
   could be fatal: avoid impacts. Alerts clear after two seconds of sustained

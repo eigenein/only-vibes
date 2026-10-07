@@ -80,6 +80,14 @@ const MAX_SPEED = 360;
 // This is the rate at which the ship gains or loses speed while a throttle key
 // is held. Keeping it global makes the handling easy to tune.
 const MOVEMENT_RESPONSIVENESS = 480;
+// Emergency assistance uses ordinary braking, never extra engine power. The
+// fixed rim clearance is v²/(2a) at half maximum speed (33.75 CSS pixels).
+// Faster head-on approaches retain too much momentum and can still hit walls.
+// https://en.wikipedia.org/wiki/Equations_of_motion
+const AUTOBRAKE_CLEARANCE =
+    (MAX_SPEED * 0.5) ** 2 / (2 * MOVEMENT_RESPONSIVENESS);
+// Reuse one immutable input set; emergency braking overrides held thrust.
+const AUTOBRAKE_KEYS = new Set(["KeyS"]);
 
 // The LCARS palette is shared by every presentation layer so the arena,
 // objects, and overlays read as one interface rather than independent styles.
@@ -637,8 +645,8 @@ const PLAY_HELP = Object.freeze([
 ]);
 const HELP_PANEL_WIDTH = 540;
 // Keep pause help focused on controls; README.md holds the mechanics reference.
-// The final control row ends at 434, leaving breathing room below the table.
-const HELP_PANEL_HEIGHT = 482;
+// Leave room below the control table for the automatic border assistance cue.
+const HELP_PANEL_HEIGHT = 522;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -990,6 +998,7 @@ class ShipControls {
     autopilotPressedKeys = new Set();
     autoGunnerPressedKeys = new Set();
     autopilotEnabled = false;
+    autobrakeActive = false;
     /** @type {Asteroid | undefined} Independent navigation engagement. */
     autopilotTargetLock = undefined;
     autopilotDesiredAngle = 0;
@@ -4883,10 +4892,27 @@ function drawAlert(controlRightX, statusBarsLeft) {
      */
     const laneY = (index) =>
         LCARS_CONSOLE_TOP + (STATUS_BARS_HEIGHT * (index + 0.5)) / lanes.length;
+    // Reserve the left half-lane only when both legends fit; compact consoles
+    // prioritize the active emergency cue without overlapping right-side text.
+    const brakeWidth = context.measureText("AUTOBRAKE").width;
+    const rightWidth = context.measureText("YELLOW ALERT").width;
+    if (
+        brakeWidth <= availableWidth &&
+        (brakeWidth + rightWidth + ALERT_EDGE_GAP <= availableWidth ||
+            (alertLevel === 0 && !playerShip.controls.autopilotEnabled))
+    ) {
+        context.textAlign = "left";
+        context.fillStyle = LCARS_GOLD;
+        context.globalAlpha = playerShip.controls.autobrakeActive
+            ? 1
+            : ALERT_LCD_SILHOUETTE_OPACITY;
+        context.fillText("AUTOBRAKE", alertLeft, laneY(1));
+        context.textAlign = "right";
+    }
     const legends = [
-        { text: "RED ALERT", color: LCARS_ALERT_RED, index: 0 },
-        { text: "YELLOW ALERT", color: LCARS_GOLD, index: 0 },
-        { text: "AUTOPILOT", color: LCARS_AUTOPILOT_GREEN, index: 1 },
+        {text: "RED ALERT", color: LCARS_ALERT_RED, index: 0},
+        {text: "YELLOW ALERT", color: LCARS_GOLD, index: 0},
+        {text: "AUTOPILOT", color: LCARS_AUTOPILOT_GREEN, index: 1},
     ];
     for (const legend of legends) {
         if (context.measureText(legend.text).width > availableWidth) continue;
@@ -5572,8 +5598,10 @@ function drawFlightControls(width) {
         titleWidth * rowScale,
         buttonHeight,
         "HELM CONTROL",
-        playerShip.controls.autopilotEnabled ? "AUTOPILOT" : "MANUAL HELM",
-        playerShip.controls.autopilotEnabled ? LCARS_AMBER : LCARS_LILAC,
+        playerShip.controls.autobrakeActive
+            ? "AUTOBRAKE"
+            : playerShip.controls.autopilotEnabled ? "AUTOPILOT" : "MANUAL HELM",
+        playerShip.controls.autobrakeActive || playerShip.controls.autopilotEnabled ? LCARS_AMBER : LCARS_LILAC,
         playerShip.controls.autopilotEnabled,
         true,
     );
@@ -5880,6 +5908,19 @@ function drawPauseHelp(width, height) {
         context.fillText(helpItem.description, 208, rowY);
         context.font = `700 18px ${LCARS_FONT_FAMILY}`;
     }
+    context.textAlign = "center";
+    context.fillStyle = LCARS_GOLD;
+    context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
+    context.fillText(
+        "Border autobrake helps below 50% speed.",
+        HELP_PANEL_WIDTH / 2,
+        470,
+    );
+    context.fillText(
+        "Faster approaches can still hit the wall.",
+        HELP_PANEL_WIDTH / 2,
+        493,
+    );
 
     context.restore();
 }
@@ -8087,6 +8128,38 @@ function turnDirectionForKeys(keys) {
 }
 
 /**
+ * Latch the player's emergency brake until stopped, including after a bounce.
+ * One step of lookahead prevents skipping the fixed trigger zone at low FPS;
+ * it does not expand the zone to accommodate a faster stopping distance.
+ * Moving away from a nearby wall never starts an emergency stop.
+ * @param {Starship} ship Player hull receiving limited border assistance.
+ * @param {number} deltaTime Bounded simulation step in seconds.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {void}
+ */
+function updateAutobrake(ship, deltaTime, width, height) {
+    const speed = Math.hypot(ship.velocityX, ship.velocityY);
+    if (speed <= COLLISION_EPSILON) {
+        ship.controls.autobrakeActive = false;
+        return;
+    }
+    /**
+     * @param {number} distance Shield-rim clearance in CSS pixels.
+     * @param {number} outwardSpeed Velocity toward this wall in CSS pixels/s.
+     * @returns {boolean} Whether this step reaches the emergency zone.
+     */
+    const approaches = (distance, outwardSpeed) =>
+        outwardSpeed > COLLISION_EPSILON &&
+        distance <= AUTOBRAKE_CLEARANCE + outwardSpeed * deltaTime;
+    ship.controls.autobrakeActive ||=
+        approaches(ship.x - ship.radius, -ship.velocityX) ||
+        approaches(width - ship.radius - ship.x, ship.velocityX) ||
+        approaches(ship.y - ship.radius, -ship.velocityY) ||
+        approaches(height - ship.radius - ship.y, ship.velocityY);
+}
+
+/**
  * A/D and the left/right arrows gently ramp the ship's facing speed. Collision
  * friction applies separate one-time heading adjustments. The velocity vector
  * remains free, so a ship can drift sideways or backwards while its nose
@@ -8119,7 +8192,14 @@ function updateGame(deltaTime, width, height) {
             ),
         );
 
-        ship.applyThrottle(ship.controls.pressedKeys, deltaTime);
+        if (ship === playerShip)
+            updateAutobrake(ship, deltaTime, width, height);
+        ship.applyThrottle(
+            ship.controls.autobrakeActive
+                ? AUTOBRAKE_KEYS
+                : ship.controls.pressedKeys,
+            deltaTime,
+        );
     }
 
     for (const asteroid of asteroids) {
