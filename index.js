@@ -43,7 +43,7 @@ canvas.focus({ preventScroll: true });
 
 // The shield circle is the collision boundary. The saucer and nacelles stay
 // inside it at every heading, so the new silhouette preserves familiar handling.
-const PLAYER_RADIUS = 28;
+const STARSHIP_RADIUS = 28;
 // Collision bodies use a mass rather than a gameplay health value. The ship is
 // intentionally heavier than a small asteroid, while still being light enough
 // for a large asteroid to noticeably change its trajectory.
@@ -52,7 +52,7 @@ const STARSHIP_MASS = 1000;
 // into one immediate heading adjustment; the ship does not retain angular
 // velocity or intrinsic angular momentum after the contact.
 const STARSHIP_COLLISION_TURN_INERTIA =
-  (STARSHIP_MASS * PLAYER_RADIUS ** 2) / 2;
+  (STARSHIP_MASS * STARSHIP_RADIUS ** 2) / 2;
 // Collision turning is intentionally a subtle heading nudge rather than a
 // physical spin replacement. The cap prevents a high-speed scrape from
 // producing a chaotic turn-around in ordinary play.
@@ -768,11 +768,6 @@ class ManualTurnControl {
   }
 }
 
-const manualTurnControl = new ManualTurnControl();
-const pressedKeys = new Set();
-const manualPressedKeys = new Set();
-const autopilotPressedKeys = new Set();
-const autoGunnerPressedKeys = new Set();
 const asteroids = [];
 const bullets = [];
 const sparks = [];
@@ -818,6 +813,12 @@ const fieldAsteroidDamage = { ramming: 0, blasters: 0 };
  * disables assistance. Target centers define the sector and nearest distance.
  */
 class AimAssist {
+  /** @param {Starship} ship Hull owning this independent target lock. */
+  constructor(ship) {
+    /** @type {Starship} Hull whose heading and position define acquisition. */
+    this.ship = ship;
+  }
+
   enabled = false;
   /** @type {Asteroid | undefined} Currently committed live body. */
   target = undefined;
@@ -854,7 +855,7 @@ class AimAssist {
     let closestDistance = Infinity;
     for (const fragment of fragments) {
       const distance =
-        (fragment.x - playerX) ** 2 + (fragment.y - playerY) ** 2;
+        (fragment.x - this.ship.x) ** 2 + (fragment.y - this.ship.y) ** 2;
       if (distance < closestDistance) {
         closest = fragment;
         closestDistance = distance;
@@ -876,8 +877,8 @@ class AimAssist {
     return (
       Math.abs(
         shortestAngleDifference(
-          Math.atan2(target.y - playerY, target.x - playerX),
-          playerAngle,
+          Math.atan2(target.y - this.ship.y, target.x - this.ship.x),
+          this.ship.angle,
         ),
       ) <= AIM_ASSIST_SECTOR_HALF_ANGLE
     );
@@ -902,10 +903,10 @@ class AimAssist {
     }
     if (
       this.heading === undefined ||
-      Math.abs(shortestAngleDifference(playerAngle, this.heading)) >
+      Math.abs(shortestAngleDifference(this.ship.angle, this.heading)) >
         AIM_ASSIST_SECTOR_HALF_ANGLE
     ) {
-      this.heading = playerAngle;
+      this.heading = this.ship.angle;
       this.dwell = 0;
       return;
     }
@@ -913,7 +914,8 @@ class AimAssist {
     if (this.dwell + COLLISION_EPSILON < AIM_ASSIST_ACQUIRE_SECONDS) return;
     let closestDistance = Infinity;
     for (const target of combatTargets()) {
-      const distance = (target.x - playerX) ** 2 + (target.y - playerY) ** 2;
+      const distance =
+        (target.x - this.ship.x) ** 2 + (target.y - this.ship.y) ** 2;
       if (distance < closestDistance && this.inSector(target)) {
         this.target = target;
         closestDistance = distance;
@@ -927,53 +929,289 @@ class AimAssist {
   }
 }
 
-const aimAssist = new AimAssist();
+/**
+ * Input producers and tactical commitments are private to one hull. Helpers
+ * use the same navigation and weapon policy as the player, with independent
+ * locks, escape lanes, reaction clocks, bursts and key sets. Only the player's
+ * controller receives DOM keyboard events or supplies the bridge indicators.
+ */
+class ShipControls {
+  manualTurnControl = new ManualTurnControl();
+  pressedKeys = new Set();
+  manualPressedKeys = new Set();
+  autopilotPressedKeys = new Set();
+  autoGunnerPressedKeys = new Set();
+  autopilotEnabled = false;
+  /** @type {Asteroid | undefined} Independent navigation engagement. */
+  autopilotTargetLock = undefined;
+  autopilotDesiredAngle = 0;
+  /** @type {Asteroid | Starship | undefined} Committed avoidance body. */
+  autopilotEscapeTarget = undefined;
+  autopilotEscapeHeading = 0;
+  autopilotEscapeTimeRemaining = 0;
+  autopilotTurnDirection = 0;
+  autopilotTurnTimeRemaining = 0;
+  autopilotTargetLockTimeRemaining = 0;
+  autopilotDecisionTime = 0;
+  autopilotAttackTimeRemaining = 0;
+  autopilotAttackRoll = 1;
+  autoGunnerEnabled = false;
+  autoGunnerBurstActive = false;
+}
 
-let playerAngle = -Math.PI / 2;
-let playerVelocityX = 0;
-let playerVelocityY = 0;
-let playerX;
-let playerY;
-let shieldState = SHIELD_MAX_STATE;
-let shipState = SHIP_MAX_STATE;
-let displayedShieldState = SHIELD_MAX_STATE;
-let displayedShipState = SHIP_MAX_STATE;
+/**
+ * Identical ships share geometry and tuning, but own their motion, defenses,
+ * damage protection and weapon state. Each controller owns independent
+ * tactical state; helper controllers can supply input without sharing a hull or
+ * weapon cooldown. Destruction is reported to the session by the controller,
+ * never by the reusable ship itself.
+ * @implements {PhysicsBody}
+ */
+class Starship {
+  controls = new ShipControls();
+  aimAssist = new AimAssist(this);
+  x = 0;
+  y = 0;
+  angle = -Math.PI / 2;
+  velocityX = 0;
+  velocityY = 0;
+  radius = STARSHIP_RADIUS;
+  mass = STARSHIP_MASS;
+  shieldState = SHIELD_MAX_STATE;
+  hullState = SHIP_MAX_STATE;
+  displayedShieldState = SHIELD_MAX_STATE;
+  displayedHullState = SHIP_MAX_STATE;
+  collisionDamageBudget = COLLISION_DAMAGE_BUDGET_CAP;
+  phaserShotCooldown = 0;
+  phaserHeat = 0;
+
+  /**
+   * @param {number} x Initial center x in CSS pixels.
+   * @param {number} y Initial center y in CSS pixels.
+   */
+  constructor(x, y) {
+    this.x = x;
+    this.y = y;
+  }
+
+  /**
+   * Restore a fresh identical hull without invalidating controller references.
+   * Defaults come from construction so a new ship and a restarted ship cannot
+   * drift apart when a per-ship subsystem is added later.
+   * @param {number} x Spawn center x in CSS pixels.
+   * @param {number} y Spawn center y in CSS pixels.
+   * @param {number} [angle] Initial heading in radians.
+   * @returns {void}
+   */
+  reset(x, y, angle = 0) {
+    Object.assign(this, new Starship(x, y));
+    this.aimAssist = new AimAssist(this);
+    this.angle = angle;
+  }
+
+  /**
+   * @param {number} width Arena width in CSS pixels.
+   * @param {number} height Arena height in CSS pixels.
+   * @returns {void} Clamp this shield inside a resized playfield.
+   */
+  keepInside(width, height) {
+    this.x = constrainPosition(this.x, this.radius, width);
+    this.y = constrainPosition(this.y, this.radius, height);
+  }
+
+  /** @returns {boolean} Whether the hull can still participate in combat. */
+  get alive() {
+    return this.hullState > COLLISION_EPSILON;
+  }
+
+  /**
+   * Launch a pulse and apply recoil to its own ship.
+   * @returns {void}
+   */
+  emitBullet() {
+    const directionX = Math.cos(this.angle);
+    const directionY = Math.sin(this.angle);
+    const spawnDistance = STARSHIP_RADIUS + BULLET_HALF_LENGTH;
+    const bullet = new Bullet({
+      x: this.x + directionX * spawnDistance,
+      y: this.y + directionY * spawnDistance,
+      angle: this.angle,
+    });
+    const bulletImpulseX = bullet.mass * bullet.velocityX;
+    const bulletImpulseY = bullet.mass * bullet.velocityY;
+
+    // Firing transfers the bullet's launch impulse out of the ship. Applying
+    // equal and opposite recoil keeps the ship-plus-bullet total impulse equal
+    // to the ship's impulse before firing, while making the nudge visible even
+    // when the ship was initially at rest.
+    const recoilVelocityX = -bulletImpulseX / STARSHIP_MASS;
+    const recoilVelocityY = -bulletImpulseY / STARSHIP_MASS;
+    this.velocityX += recoilVelocityX;
+    this.velocityY += recoilVelocityY;
+
+    heavyShotSound.playRandom();
+    bullets.push(bullet);
+  }
+
+  /**
+   * Restore this ship's shield during active simulation.
+   * @param {number} deltaTime Active simulation seconds.
+   * @returns {void}
+   */
+  regenerateShield(deltaTime) {
+    if (!Number.isFinite(deltaTime)) {
+      return;
+    }
+
+    this.shieldState = Math.min(
+      SHIELD_MAX_STATE,
+      this.shieldState + SHIELD_REGENERATION_RATE * Math.max(0, deltaTime),
+    );
+  }
+
+  /**
+   * Refill this ship's independent contact protection.
+   * @param {number} deltaTime Active simulation seconds.
+   * @returns {void}
+   */
+  refillCollisionDamageBudget(deltaTime) {
+    if (!Number.isFinite(deltaTime)) {
+      return;
+    }
+
+    this.collisionDamageBudget = Math.min(
+      COLLISION_DAMAGE_BUDGET_CAP,
+      this.collisionDamageBudget +
+        Math.max(0, deltaTime) * COLLISION_DAMAGE_BUDGET_REFILL_RATE,
+    );
+  }
+
+  /**
+   * Absorb an impact using the shield charge before contact.
+   * @param {number} collisionMomentum Contact impulse magnitude.
+   * @returns {void}
+   */
+  applyCollisionDamage(collisionMomentum) {
+    const safeCollisionMomentum = Number.isFinite(collisionMomentum)
+      ? Math.max(0, collisionMomentum)
+      : 0;
+    const rawImpactDamage = safeCollisionMomentum * COLLISION_DAMAGE_SCALE;
+    const impactDamage = Math.min(rawImpactDamage, this.collisionDamageBudget);
+    const shieldFraction = this.shieldState / SHIELD_MAX_STATE;
+    const transmittedFraction = 1 - shieldFraction;
+    const shieldDamage = Math.min(
+      this.shieldState,
+      impactDamage * SHIELD_DAMAGE_COEFFICIENT,
+    );
+    const shipDamage = Math.min(
+      this.hullState,
+      impactDamage * transmittedFraction * SHIP_DAMAGE_COEFFICIENT,
+    );
+
+    this.shieldState = Math.max(0, this.shieldState - shieldDamage);
+    this.hullState = Math.max(0, this.hullState - shipDamage);
+    this.collisionDamageBudget = Math.max(
+      0,
+      this.collisionDamageBudget - impactDamage,
+    );
+
+    if (this.hullState <= COLLISION_EPSILON) {
+      this.hullState = 0;
+    }
+  }
+  /**
+   * Apply thrust or braking from a controller's independent held-key set.
+   * Turning remains with the controller so manual and automated helm timing
+   * can differ without changing the identical ship's acceleration model.
+   * @param {Set<string>} keys Effective flight input for this ship.
+   * @param {number} deltaTime Bounded simulation step in seconds.
+   * @returns {void}
+   */
+  applyThrottle(keys, deltaTime) {
+    if (!Number.isFinite(deltaTime) || deltaTime < 0) return;
+    const accelerates = keys.has("ArrowUp") || keys.has("KeyW");
+    const decelerates = keys.has("ArrowDown") || keys.has("KeyS");
+
+    if (accelerates !== decelerates) {
+      if (accelerates) {
+        const acceleration = MOVEMENT_RESPONSIVENESS * deltaTime;
+        this.velocityX += Math.cos(this.angle) * acceleration;
+        this.velocityY += Math.sin(this.angle) * acceleration;
+
+        const acceleratedSpeed = Math.hypot(this.velocityX, this.velocityY);
+
+        if (acceleratedSpeed > MAX_SPEED) {
+          const speedRatio = MAX_SPEED / acceleratedSpeed;
+          this.velocityX *= speedRatio;
+          this.velocityY *= speedRatio;
+        }
+      } else {
+        const currentSpeed = Math.hypot(this.velocityX, this.velocityY);
+
+        if (currentSpeed > COLLISION_EPSILON) {
+          const deceleration = Math.min(
+            currentSpeed,
+            MOVEMENT_RESPONSIVENESS * deltaTime,
+          );
+          const speedRatio = (currentSpeed - deceleration) / currentSpeed;
+          this.velocityX *= speedRatio;
+          this.velocityY *= speedRatio;
+        }
+      }
+    }
+  }
+
+  /**
+   * @param {number} deltaTime Active simulation seconds; pause freezes cooling.
+   * @returns {void}
+   */
+  coolWeapon(deltaTime) {
+    if (!Number.isFinite(deltaTime)) return;
+    const elapsed = Math.max(0, deltaTime);
+    this.phaserShotCooldown = Math.max(0, this.phaserShotCooldown - elapsed);
+    this.phaserHeat = Math.max(
+      0,
+      this.phaserHeat - PHASER_COOLING_RATE * elapsed,
+    );
+  }
+
+  /** @returns {void} Fire only while this hull and its weapon are ready. */
+  tryFire() {
+    if (
+      !this.alive ||
+      this.phaserHeat >= PHASER_OVERHEAT_THRESHOLD ||
+      this.phaserShotCooldown > COLLISION_EPSILON
+    )
+      return;
+    this.emitBullet();
+    this.phaserShotCooldown = PHASER_FIRE_INTERVAL;
+    this.phaserHeat +=
+      PHASER_SHOT_HEAT +
+      PHASER_WARM_SHOT_HEAT *
+        (this.phaserHeat / PHASER_OVERHEAT_THRESHOLD) ** 2;
+  }
+}
+
+// Keep the player reference stable across field resets. Fleet membership is
+// explicit, while manual input, alarms and session failure belong to the player.
+/** @type {Starship[]} Active friendly hulls; helpers are not spawned yet. */
+const starships = [new Starship(0, 0)];
+// The UI selects one hull; world systems only receive hulls or the fleet.
+const playerShip = starships[0];
+
 // The alarm is a transition cue, not a loop: one red alert per ship life.
 let redAlertSoundPlayed = false;
 let alertLevel = 0;
 let alertRecoveryTime = 0;
-let restartRequested = false;
 let shipFailureActive = false;
 let shipFailureTimeRemaining = 0;
 let gameWon = false;
-let collisionDamageBudget = COLLISION_DAMAGE_BUDGET_CAP;
-let previousFrameTime;
-let phaserShotCooldown = 0;
-let phaserHeat = 0;
+let previousFrameTime = undefined;
 let asteroidsGenerated = false;
 // Pausing stops simulation time while leaving the render loop alive, so the
 // player can inspect a frozen collision result and resume without a time jump.
 // Starting paused gives the player the controls before any movement begins.
 let gamePaused = true;
-// Every sector starts with manual helm; manual flight also turns autopilot off.
-let autopilotEnabled = false;
-let autopilotTargetLock = undefined;
-let autopilotDesiredAngle = 0;
-// Briefly commit to one escape lane; contact motion must not keep
-// reversing the helm before it can turn and accelerate past a heavy body.
-/** @type {Asteroid | undefined} Body whose escape lane is committed. */
-let autopilotEscapeTarget = undefined;
-let autopilotEscapeHeading = 0;
-let autopilotEscapeTimeRemaining = 0;
-let autopilotTurnDirection = 0;
-let autopilotTurnTimeRemaining = 0;
-let autopilotTargetLockTimeRemaining = 0;
-let autopilotDecisionTime = 0;
-let autopilotAttackTimeRemaining = 0;
-let autopilotAttackRoll = 1;
-// Automatic gunnery also starts disabled in each sector.
-let autoGunnerEnabled = false;
-let autoGunnerBurstActive = false;
 // Points reset with each field; session achievements independently survive wins.
 // Points measure material that really leaves the playfield. A successful cut
 // preserves area across its retained fragments, while fragments below the
@@ -1547,6 +1785,24 @@ class Asteroid {
  * The four perimeter faces have shields and recent-fire memory, but share one
  * reinforcement allocation. Presentation belongs to the body, never the HUD.
  */
+/**
+ * @param {PhysicsBody} origin Body seeking the closest live friendly hull.
+ * @returns {Starship | undefined} Opponent, or none when the fleet is destroyed.
+ */
+function nearestStarship(origin) {
+  let nearest = undefined;
+  let distance = Infinity;
+  for (const ship of starships) {
+    if (!ship.alive) continue;
+    const squared = (ship.x - origin.x) ** 2 + (ship.y - origin.y) ** 2;
+    if (squared < distance) {
+      nearest = ship;
+      distance = squared;
+    }
+  }
+  return nearest;
+}
+
 class BorgCube extends Asteroid {
   /**
    * @param {number} width Arena width in CSS pixels.
@@ -1583,9 +1839,13 @@ class BorgCube extends Asteroid {
     let position = positions[0];
     let bestClearance = -Infinity;
     for (const candidate of positions) {
-      let clearance =
-        Math.hypot(candidate.x - playerX, candidate.y - playerY) -
-        PLAYER_RADIUS;
+      let clearance = Infinity;
+      for (const ship of starships) {
+        clearance = Math.min(
+          clearance,
+          Math.hypot(candidate.x - ship.x, candidate.y - ship.y) - ship.radius,
+        );
+      }
       for (const rock of physicalTargets()) {
         clearance = Math.min(
           clearance,
@@ -1947,15 +2207,18 @@ class BorgCube extends Asteroid {
   aimAtTarget(delay, ally = undefined) {
     const originX = this.x + this.velocityX * delay;
     const originY = this.y + this.velocityY * delay;
+    const recipient = ally ?? nearestStarship(this);
+    if (recipient === undefined) return this.rotation;
     const target = {
-      x: (ally?.x ?? playerX) + (ally?.velocityX ?? playerVelocityX) * delay,
-      y: (ally?.y ?? playerY) + (ally?.velocityY ?? playerVelocityY) * delay,
-      velocityX: ally?.velocityX ?? playerVelocityX,
-      velocityY: ally?.velocityY ?? playerVelocityY,
+      x: recipient.x + recipient.velocityX * delay,
+      y: recipient.y + recipient.velocityY * delay,
+      velocityX: recipient.velocityX,
+      velocityY: recipient.velocityY,
     };
     let angle = Math.atan2(target.y - originY, target.x - originX);
     for (let iteration = 0; iteration < 5; iteration += 1) {
       const time = linearInterceptTime(
+        this,
         target,
         BORG_BULLET_SPEED,
         this.muzzleDistance(
@@ -2047,10 +2310,12 @@ class BorgCube extends Asteroid {
     }
     // At contact distance the ordinary body collision supplies the threat;
     // avoid spawning a shot inside the ship's shield circle.
+    const opponent = nearestStarship(this);
     if (
       this.repairTarget === undefined &&
-      Math.hypot(playerX - this.x, playerY - this.y) <=
-        this.radius + PLAYER_RADIUS + BULLET_HALF_LENGTH
+      (opponent === undefined ||
+        Math.hypot(opponent.x - this.x, opponent.y - this.y) <=
+          this.radius + STARSHIP_RADIUS + BULLET_HALF_LENGTH)
     )
       return;
     this.repairShotNext = !this.repairShotNext;
@@ -2069,7 +2334,11 @@ class BorgCube extends Asteroid {
    * @returns {void}
    */
   navigate(width, height, deltaTime) {
-    const pursuit = normalizedVector(playerX - this.x, playerY - this.y);
+    const opponent = nearestStarship(this);
+    const pursuit = normalizedVector(
+      (opponent?.x ?? this.x) - this.x,
+      (opponent?.y ?? this.y) - this.y,
+    );
     let steerX = pursuit.x * BORG_PURSUIT_WEIGHT;
     let steerY = pursuit.y * BORG_PURSUIT_WEIGHT;
     for (const rock of physicalTargets()) {
@@ -2790,31 +3059,6 @@ function generateAsteroids(width, height) {
   asteroidsGenerated = true;
 }
 
-function emitBullet() {
-  const directionX = Math.cos(playerAngle);
-  const directionY = Math.sin(playerAngle);
-  const spawnDistance = PLAYER_RADIUS + BULLET_HALF_LENGTH;
-  const bullet = new Bullet({
-    x: playerX + directionX * spawnDistance,
-    y: playerY + directionY * spawnDistance,
-    angle: playerAngle,
-  });
-  const bulletImpulseX = bullet.mass * bullet.velocityX;
-  const bulletImpulseY = bullet.mass * bullet.velocityY;
-
-  // Firing transfers the bullet's launch impulse out of the ship. Applying
-  // equal and opposite recoil keeps the ship-plus-bullet total impulse equal
-  // to the ship's impulse before firing, while making the nudge visible even
-  // when the ship was initially at rest.
-  const recoilVelocityX = -bulletImpulseX / STARSHIP_MASS;
-  const recoilVelocityY = -bulletImpulseY / STARSHIP_MASS;
-  playerVelocityX += recoilVelocityX;
-  playerVelocityY += recoilVelocityY;
-
-  heavyShotSound.playRandom();
-  bullets.push(bullet);
-}
-
 function updateBullets(deltaTime) {
   for (
     let bulletIndex = bullets.length - 1;
@@ -2855,119 +3099,127 @@ function updateSparks(deltaTime) {
  * autopilot without allowing one producer to forge the other producer's
  * events. Settle manual turn timing at each edge; the combined held-key set
  * still supplies thrust, braking, firing, and the command-strip highlights.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @returns {void}
  */
-function syncPressedKeys() {
-  playerAngle = wrapAngle(
-    playerAngle +
-      manualTurnControl.setDirection(
-        turnDirectionForKeys(manualPressedKeys),
+function syncPressedKeys(ship) {
+  ship.angle = wrapAngle(
+    ship.angle +
+      ship.controls.manualTurnControl.setDirection(
+        turnDirectionForKeys(ship.controls.manualPressedKeys),
         performance.now(),
       ),
   );
-  pressedKeys.clear();
+  ship.controls.pressedKeys.clear();
 
-  for (const key of manualPressedKeys) {
-    pressedKeys.add(key);
+  for (const key of ship.controls.manualPressedKeys) {
+    ship.controls.pressedKeys.add(key);
   }
 
-  for (const key of autopilotPressedKeys) {
-    pressedKeys.add(key);
+  for (const key of ship.controls.autopilotPressedKeys) {
+    ship.controls.pressedKeys.add(key);
   }
-  for (const key of autoGunnerPressedKeys) {
-    pressedKeys.add(key);
+  for (const key of ship.controls.autoGunnerPressedKeys) {
+    ship.controls.pressedKeys.add(key);
   }
 }
 
 /**
  * Clear all input sources. This is used for pause, focus loss, and life
  * transitions so no stale held key can survive a state boundary.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @returns {void}
  */
-function clearPressedKeys() {
-  autopilotTurnDirection = 0;
-  autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
-  manualTurnControl.reset();
-  aimAssist.reset();
-  manualPressedKeys.clear();
-  autopilotPressedKeys.clear();
-  autoGunnerPressedKeys.clear();
-  pressedKeys.clear();
+function clearPressedKeys(ship) {
+  ship.controls.autopilotTurnDirection = 0;
+  ship.controls.autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
+  ship.controls.manualTurnControl.reset();
+  ship.aimAssist.reset();
+  ship.controls.manualPressedKeys.clear();
+  ship.controls.autopilotPressedKeys.clear();
+  ship.controls.autoGunnerPressedKeys.clear();
+  ship.controls.pressedKeys.clear();
 }
 
 /**
  * Return the corresponding automated control to the player.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {string} controlKey Manual flight or firing control supplied.
  * @returns {void}
  */
-function disableAutomationForManualInput(controlKey) {
+function disableAutomationForManualInput(ship, controlKey) {
   // Manual helm overrides only piloting; manual fire overrides only gunnery.
   // This lets the player fly with automatic shots or fire during autopilot.
   if (controlKey === FIRE_KEY) {
-    autoGunnerEnabled = false;
-    autoGunnerBurstActive = false;
-    autoGunnerPressedKeys.clear();
+    ship.controls.autoGunnerEnabled = false;
+    ship.controls.autoGunnerBurstActive = false;
+    ship.controls.autoGunnerPressedKeys.clear();
   } else {
-    autopilotEnabled = false;
-    autopilotPressedKeys.clear();
+    ship.controls.autopilotEnabled = false;
+    ship.controls.autopilotPressedKeys.clear();
   }
-  syncPressedKeys();
+  syncPressedKeys(ship);
 }
 
 /**
  * Toggle autopilot and reset the flight input edge state. T itself is a mode
  * control, not one of the simulated gameplay inputs, so it is never added to
  * either held-key set.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @returns {void}
  */
-function toggleAutopilot() {
-  autopilotEnabled = !autopilotEnabled;
-  autopilotDesiredAngle = playerAngle;
-  autopilotTargetLock = undefined;
-  autopilotEscapeTarget = undefined;
-  autopilotTargetLockTimeRemaining = 0;
-  autopilotAttackTimeRemaining = 0;
-  autopilotAttackRoll = 1;
-  autopilotDecisionTime = autopilotEnabled ? AUTOPILOT_UPDATE_INTERVAL : 0;
-  autopilotTurnDirection = 0;
-  autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
-  manualTurnControl.reset();
-  aimAssist.reset();
-  for (const key of manualPressedKeys) {
-    if (key !== FIRE_KEY) manualPressedKeys.delete(key);
+function toggleAutopilot(ship) {
+  ship.controls.autopilotEnabled = !ship.controls.autopilotEnabled;
+  ship.controls.autopilotDesiredAngle = ship.angle;
+  ship.controls.autopilotTargetLock = undefined;
+  ship.controls.autopilotEscapeTarget = undefined;
+  ship.controls.autopilotTargetLockTimeRemaining = 0;
+  ship.controls.autopilotAttackTimeRemaining = 0;
+  ship.controls.autopilotAttackRoll = 1;
+  ship.controls.autopilotDecisionTime = ship.controls.autopilotEnabled
+    ? AUTOPILOT_UPDATE_INTERVAL
+    : 0;
+  ship.controls.autopilotTurnDirection = 0;
+  ship.controls.autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
+  ship.controls.manualTurnControl.reset();
+  ship.aimAssist.reset();
+  for (const key of ship.controls.manualPressedKeys) {
+    if (key !== FIRE_KEY) ship.controls.manualPressedKeys.delete(key);
   }
-  autopilotPressedKeys.clear();
-  syncPressedKeys();
+  ship.controls.autopilotPressedKeys.clear();
+  syncPressedKeys(ship);
 }
 
 /**
  * Toggle automatic firing without changing helm or manual input state.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @returns {void}
  */
-function toggleAutoGunner() {
-  autoGunnerEnabled = !autoGunnerEnabled;
-  autoGunnerBurstActive = false;
-  autoGunnerPressedKeys.clear();
-  syncPressedKeys();
+function toggleAutoGunner(ship) {
+  ship.controls.autoGunnerEnabled = !ship.controls.autoGunnerEnabled;
+  ship.controls.autoGunnerBurstActive = false;
+  ship.controls.autoGunnerPressedKeys.clear();
+  syncPressedKeys(ship);
 }
 
 /**
  * Supply the autopilot's current held controls through the same set consumed
  * by normal movement and firing. No ship, asteroid, health, or bullet state
  * is changed here.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {Iterable<string>} keys W/A/S/D flight controls to hold.
  * @returns {void}
  */
-function setAutopilotInput(keys) {
-  autopilotPressedKeys.clear();
+function setAutopilotInput(ship, keys) {
+  ship.controls.autopilotPressedKeys.clear();
 
-  if (autopilotEnabled && !shipFailureActive && !gameWon) {
+  if (ship.controls.autopilotEnabled && !shipFailureActive && !gameWon) {
     for (const key of keys) {
-      autopilotPressedKeys.add(key);
+      ship.controls.autopilotPressedKeys.add(key);
     }
   }
 
-  syncPressedKeys();
+  syncPressedKeys(ship);
 }
 
 /**
@@ -2990,11 +3242,15 @@ function shortestAngleDifference(desiredAngle, currentAngle) {
  * Convert current shield and hull state into extra avoidance distance. A full
  * shield is intentionally treated as a renewable buffer: only shield below
  * the recovery threshold adds caution, while hull damage always adds caution.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @returns {number} Additional safe distance in CSS pixels.
  */
-function autopilotHealthSafetyMargin() {
-  const shieldRatio = Math.max(0, Math.min(1, shieldState / SHIELD_MAX_STATE));
-  const hullRatio = Math.max(0, Math.min(1, shipState / SHIP_MAX_STATE));
+function autopilotHealthSafetyMargin(ship) {
+  const shieldRatio = Math.max(
+    0,
+    Math.min(1, ship.shieldState / SHIELD_MAX_STATE),
+  );
+  const hullRatio = Math.max(0, Math.min(1, ship.hullState / SHIP_MAX_STATE));
   const shieldRecoveryRatio = Math.max(
     0,
     (AUTOPILOT_SHIELD_RECOVERY_THRESHOLD - shieldRatio) /
@@ -3012,35 +3268,39 @@ function autopilotHealthSafetyMargin() {
  * Hold ordinary A/D input through a correction, releasing on alignment or
  * reversal. A short reaction pause between presses and separate start/stop
  * thresholds suppress rapid alternating taps without changing tactical goals.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {Set<string>} input Controls receiving the steering keys.
  * @param {number} deltaTime Elapsed simulation time in seconds.
  * @returns {void}
  */
-function applyAutopilotTurnInput(input, deltaTime) {
+function applyAutopilotTurnInput(ship, input, deltaTime) {
   input.delete("KeyA");
   input.delete("KeyD");
-  autopilotTurnTimeRemaining = Math.max(
+  ship.controls.autopilotTurnTimeRemaining = Math.max(
     0,
-    autopilotTurnTimeRemaining - Math.max(0, deltaTime),
+    ship.controls.autopilotTurnTimeRemaining - Math.max(0, deltaTime),
   );
-  const error = shortestAngleDifference(autopilotDesiredAngle, playerAngle);
+  const error = shortestAngleDifference(
+    ship.controls.autopilotDesiredAngle,
+    ship.angle,
+  );
   const desiredDirection = Math.sign(error);
   if (
-    autopilotTurnDirection !== 0 &&
+    ship.controls.autopilotTurnDirection !== 0 &&
     (Math.abs(error) <= AUTOPILOT_TURN_STOP_TOLERANCE ||
-      desiredDirection !== autopilotTurnDirection)
+      desiredDirection !== ship.controls.autopilotTurnDirection)
   ) {
-    autopilotTurnDirection = 0;
-    autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
+    ship.controls.autopilotTurnDirection = 0;
+    ship.controls.autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
   } else if (
-    autopilotTurnDirection === 0 &&
-    autopilotTurnTimeRemaining === 0 &&
+    ship.controls.autopilotTurnDirection === 0 &&
+    ship.controls.autopilotTurnTimeRemaining === 0 &&
     Math.abs(error) > AUTOPILOT_TURN_START_TOLERANCE
   ) {
-    autopilotTurnDirection = desiredDirection;
+    ship.controls.autopilotTurnDirection = desiredDirection;
   }
-  if (autopilotTurnDirection !== 0) {
-    input.add(autopilotTurnDirection > 0 ? "KeyD" : "KeyA");
+  if (ship.controls.autopilotTurnDirection !== 0) {
+    input.add(ship.controls.autopilotTurnDirection > 0 ? "KeyD" : "KeyA");
   }
 }
 
@@ -3052,19 +3312,21 @@ function applyAutopilotTurnInput(input, deltaTime) {
  * Solve |r + v*t| = launchOffset + approachSpeed*t. No future collision,
  * wall bounce, target rotation, or ship movement is predicted.
  * Unreachable targets have no marker rather than an incorrect firing cue.
+ * @param {Pick<PhysicsBody, "x"|"y">} origin Firing hull; never an implicit player origin.
  * @param {Pick<PhysicsBody, "x"|"y"|"velocityX"|"velocityY">} target Moving target in world coordinates.
  * @param {number} [approachSpeed] Projectile or desired ship speed in pixels/second.
  * @param {number} [launchOffset] Muzzle offset or combined ram-contact radii.
- * @param {number} [originX] Launch origin x position, defaulting to the player.
- * @param {number} [originY] Launch origin y position, defaulting to the player.
+ * @param {number} [originX] Launch origin x position, defaulting to the firing hull.
+ * @param {number} [originY] Launch origin y position, defaulting to the firing hull.
  * @returns {number | undefined} Earliest nonnegative interception time in seconds.
  */
 function linearInterceptTime(
+  origin,
   target,
   approachSpeed = BULLET_SPEED,
-  launchOffset = PLAYER_RADIUS + BULLET_HALF_LENGTH,
-  originX = playerX,
-  originY = playerY,
+  launchOffset = STARSHIP_RADIUS + BULLET_HALF_LENGTH,
+  originX = origin.x,
+  originY = origin.y,
 ) {
   const x = target.x - originX;
   const y = target.y - originY;
@@ -3096,17 +3358,20 @@ function linearInterceptTime(
 
 /**
  * Retain autopilot's bounded lookahead and current-bearing fallback.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {Asteroid} asteroid Moving target read from the world.
  * @param {number} approachSpeed Projectile or ship speed in CSS pixels/second.
  * @param {number} launchOffset Muzzle or ram-contact offset in CSS pixels.
  * @returns {number} World-space firing heading in radians.
  */
 function autopilotAimAngle(
+  ship,
   asteroid,
   approachSpeed = BULLET_SPEED,
-  launchOffset = PLAYER_RADIUS + BULLET_HALF_LENGTH,
+  launchOffset = STARSHIP_RADIUS + BULLET_HALF_LENGTH,
 ) {
   const interceptTime = linearInterceptTime(
+    ship,
     asteroid,
     approachSpeed,
     launchOffset,
@@ -3117,8 +3382,8 @@ function autopilotAimAngle(
       ? interceptTime
       : 0;
   return Math.atan2(
-    asteroid.y - playerY + asteroid.velocityY * time,
-    asteroid.x - playerX + asteroid.velocityX * time,
+    asteroid.y - ship.y + asteroid.velocityY * time,
+    asteroid.x - ship.x + asteroid.velocityX * time,
   );
 }
 
@@ -3126,13 +3391,14 @@ function autopilotAimAngle(
  * Prefer a nearby, large target that needs little nose rotation. Momentum no
  * longer dictates which direction to aim: braking can preserve an engagement
  * without thrusting back and forth through it.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {Asteroid} asteroid Candidate read from the world.
  * @returns {number} Lower scores are easier engagements.
  */
-function autopilotTargetScore(asteroid) {
-  const distance = Math.hypot(asteroid.x - playerX, asteroid.y - playerY);
+function autopilotTargetScore(ship, asteroid) {
+  const distance = Math.hypot(asteroid.x - ship.x, asteroid.y - ship.y);
   const turn = Math.abs(
-    shortestAngleDifference(autopilotAimAngle(asteroid), playerAngle),
+    shortestAngleDifference(autopilotAimAngle(ship, asteroid), ship.angle),
   );
   return (
     distance +
@@ -3144,23 +3410,28 @@ function autopilotTargetScore(asteroid) {
 /**
  * Hold an engagement through small score changes; release destroyed targets
  * immediately. Endgame uses the same policy rather than an infinite lock.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {number} deltaTime Seconds since the previous navigation decision.
  * @returns {Asteroid | undefined} Selected aiming and positioning target.
  */
-function autopilotTarget(deltaTime) {
-  autopilotTargetLockTimeRemaining = Math.max(
+function autopilotTarget(ship, deltaTime) {
+  ship.controls.autopilotTargetLockTimeRemaining = Math.max(
     0,
-    autopilotTargetLockTimeRemaining - deltaTime,
+    ship.controls.autopilotTargetLockTimeRemaining - deltaTime,
   );
   const lockedTargetIsPresent =
-    autopilotTargetLock !== undefined && isLiveTarget(autopilotTargetLock);
-  if (lockedTargetIsPresent && autopilotTargetLockTimeRemaining > 0) {
-    return autopilotTargetLock;
+    ship.controls.autopilotTargetLock !== undefined &&
+    isLiveTarget(ship.controls.autopilotTargetLock);
+  if (
+    lockedTargetIsPresent &&
+    ship.controls.autopilotTargetLockTimeRemaining > 0
+  ) {
+    return ship.controls.autopilotTargetLock;
   }
   let selectedAsteroid = undefined;
   let selectedScore = Infinity;
   for (const asteroid of combatTargets()) {
-    const score = autopilotTargetScore(asteroid);
+    const score = autopilotTargetScore(ship, asteroid);
     if (score < selectedScore) {
       selectedAsteroid = asteroid;
       selectedScore = score;
@@ -3168,14 +3439,16 @@ function autopilotTarget(deltaTime) {
   }
   if (
     lockedTargetIsPresent &&
-    autopilotTargetScore(autopilotTargetLock) <=
+    autopilotTargetScore(ship, ship.controls.autopilotTargetLock) <=
       selectedScore + AUTOPILOT_TARGET_SWITCH_ADVANTAGE
   ) {
-    autopilotTargetLockTimeRemaining = AUTOPILOT_TARGET_RECHECK_SECONDS;
-    return autopilotTargetLock;
+    ship.controls.autopilotTargetLockTimeRemaining =
+      AUTOPILOT_TARGET_RECHECK_SECONDS;
+    return ship.controls.autopilotTargetLock;
   }
-  autopilotTargetLock = selectedAsteroid;
-  autopilotTargetLockTimeRemaining = AUTOPILOT_TARGET_COMMITMENT_SECONDS;
+  ship.controls.autopilotTargetLock = selectedAsteroid;
+  ship.controls.autopilotTargetLockTimeRemaining =
+    AUTOPILOT_TARGET_COMMITMENT_SECONDS;
   return selectedAsteroid;
 }
 
@@ -3184,15 +3457,16 @@ function autopilotTarget(deltaTime) {
  * opportunistic shot check is independent of navigation, ship speed, and wall
  * avoidance. Relative-motion closest approach also catches crossing targets
  * that a fixed angular cone would miss or over-lead.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @returns {boolean} Whether a direct shot has a useful predicted contact.
  */
-function autoGunnerHasShot() {
-  const directionX = Math.cos(playerAngle);
-  const directionY = Math.sin(playerAngle);
-  const muzzle = PLAYER_RADIUS + BULLET_HALF_LENGTH;
+function autoGunnerHasShot(ship) {
+  const directionX = Math.cos(ship.angle);
+  const directionY = Math.sin(ship.angle);
+  const muzzle = STARSHIP_RADIUS + BULLET_HALF_LENGTH;
   for (const asteroid of combatTargets()) {
-    const x = asteroid.x - playerX - directionX * muzzle;
-    const y = asteroid.y - playerY - directionY * muzzle;
+    const x = asteroid.x - ship.x - directionX * muzzle;
+    const y = asteroid.y - ship.y - directionY * muzzle;
     const velocityX = asteroid.velocityX - directionX * BULLET_SPEED;
     const velocityY = asteroid.velocityY - directionY * BULLET_SPEED;
     const velocitySquared = velocityX ** 2 + velocityY ** 2;
@@ -3216,26 +3490,39 @@ function autoGunnerHasShot() {
 }
 
 /**
+ * @param {Starship} ship Hull whose own body must be excluded.
+ * @yields {Asteroid | Starship} Solid obstacles, including other live helpers.
+ */
+function* navigationObstacles(ship) {
+  yield* physicalTargets();
+  for (const other of starships) {
+    if (other !== ship && other.alive) yield other;
+  }
+}
+
+/**
  * Find a solid body's predicted closest approach or incomplete escape.
  * Relative linear motion is enough for a useful warning between frames; the
  * collision solver remains the authority when bodies actually touch.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {Asteroid} [ramTarget] Intended rock contact to allow during a ram.
- * @returns {{ asteroid: Asteroid, distance: number,
+ * @returns {{ asteroid: Asteroid | Starship, distance: number,
  *   safeDistance: number } | undefined} Solid body needing avoidance.
  */
-function autopilotThreat(ramTarget = undefined) {
-  const safeMargin = AUTOPILOT_BASE_SAFE_MARGIN + autopilotHealthSafetyMargin();
+function autopilotThreat(ship, ramTarget = undefined) {
+  const safeMargin =
+    AUTOPILOT_BASE_SAFE_MARGIN + autopilotHealthSafetyMargin(ship);
   let selectedThreat = undefined;
   let selectedScore = Infinity;
 
-  for (const asteroid of physicalTargets()) {
+  for (const asteroid of navigationObstacles(ship)) {
     if (asteroid === ramTarget) continue;
-    const relativeX = asteroid.x - playerX;
-    const relativeY = asteroid.y - playerY;
-    const relativeVelocityX = asteroid.velocityX - playerVelocityX;
-    const relativeVelocityY = asteroid.velocityY - playerVelocityY;
+    const relativeX = asteroid.x - ship.x;
+    const relativeY = asteroid.y - ship.y;
+    const relativeVelocityX = asteroid.velocityX - ship.velocityX;
+    const relativeVelocityY = asteroid.velocityY - ship.velocityY;
     const distance = Math.hypot(relativeX, relativeY);
-    const safeDistance = PLAYER_RADIUS + asteroid.radius + safeMargin;
+    const safeDistance = STARSHIP_RADIUS + asteroid.radius + safeMargin;
     const velocitySquared = relativeVelocityX ** 2 + relativeVelocityY ** 2;
     const closestTime =
       velocitySquared > COLLISION_EPSILON
@@ -3273,7 +3560,7 @@ function autopilotThreat(ramTarget = undefined) {
     // distance would rank a tiny rock ahead of an imminent cube hit.
     const score =
       futureDistance -
-      PLAYER_RADIUS -
+      STARSHIP_RADIUS -
       asteroid.radius +
       closestTime * AUTOPILOT_THREAT_TIME_COST;
 
@@ -3295,19 +3582,20 @@ function autopilotThreat(ramTarget = undefined) {
  * Forecast ordinary thrust after the nose can turn; compare wall and moving
  * body clearance midway and at the end. This is a steering preference only:
  * movement, weapon availability and impact damage stay on their normal paths.
- * @param {Asteroid} obstacle Body whose safety zone must be cleared.
+ * @param {Starship} ship Hull and independent controller being operated.
+ * @param {Asteroid | Starship} obstacle Body whose safety zone must be cleared.
  * @param {number} width Arena width in CSS pixels.
  * @param {number} height Arena height in CSS pixels.
  * @returns {number} World heading with the most predicted free space.
  */
-function autopilotEscapeAngle(obstacle, width, height) {
-  const away = Math.atan2(playerY - obstacle.y, playerX - obstacle.x);
+function autopilotEscapeAngle(ship, obstacle, width, height) {
+  const away = Math.atan2(ship.y - obstacle.y, ship.x - obstacle.x);
   let selectedAngle = away;
   let selectedClearance = -Infinity;
   for (const offset of AUTOPILOT_ESCAPE_ANGLE_OFFSETS) {
     const angle = away + offset;
     const turnTime =
-      Math.abs(shortestAngleDifference(angle, playerAngle)) / ROTATION_SPEED +
+      Math.abs(shortestAngleDifference(angle, ship.angle)) / ROTATION_SPEED +
       AUTOPILOT_TURN_REACTION_SECONDS;
     let clearance = Infinity;
     for (const fraction of AUTOPILOT_ESCAPE_SAMPLE_FRACTIONS) {
@@ -3315,24 +3603,24 @@ function autopilotEscapeAngle(obstacle, width, height) {
       const thrustTime = Math.max(0, time - turnTime);
       const thrustDistance = MOVEMENT_RESPONSIVENESS * thrustTime ** 2 * 0.5;
       const x =
-        playerX + playerVelocityX * time + Math.cos(angle) * thrustDistance;
+        ship.x + ship.velocityX * time + Math.cos(angle) * thrustDistance;
       const y =
-        playerY + playerVelocityY * time + Math.sin(angle) * thrustDistance;
+        ship.y + ship.velocityY * time + Math.sin(angle) * thrustDistance;
       clearance = Math.min(
         clearance,
-        x - PLAYER_RADIUS,
-        width - PLAYER_RADIUS - x,
-        y - PLAYER_RADIUS,
-        height - PLAYER_RADIUS - y,
+        x - STARSHIP_RADIUS,
+        width - STARSHIP_RADIUS - x,
+        y - STARSHIP_RADIUS,
+        height - STARSHIP_RADIUS - y,
       );
-      for (const body of physicalTargets()) {
+      for (const body of navigationObstacles(ship)) {
         clearance = Math.min(
           clearance,
           Math.hypot(
             x - body.x - body.velocityX * time,
             y - body.y - body.velocityY * time,
           ) -
-            PLAYER_RADIUS -
+            STARSHIP_RADIUS -
             body.radius,
         );
       }
@@ -3349,19 +3637,30 @@ function autopilotEscapeAngle(obstacle, width, height) {
  * Check each wall against outward stopping distance. A ship already moving
  * inward can continue its engagement; corners combine their inward normals
  * rather than alternating between two perpendicular escape headings.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {number} width Arena width in CSS pixels.
  * @param {number} height Arena height in CSS pixels.
  * @returns {{ desiredAngle: number, brake: boolean } | undefined} Wall response.
  */
-function autopilotWallThreat(width, height) {
-  const margin = autopilotCanApproach()
+function autopilotWallThreat(ship, width, height) {
+  const margin = autopilotCanApproach(ship)
     ? AUTOPILOT_RAM_WALL_MARGIN
-    : AUTOPILOT_WALL_SAFE_MARGIN + autopilotHealthSafetyMargin();
+    : AUTOPILOT_WALL_SAFE_MARGIN + autopilotHealthSafetyMargin(ship);
   const edges = [
-    { distance: playerX - PLAYER_RADIUS, x: 1, y: 0, extent: width },
-    { distance: width - playerX - PLAYER_RADIUS, x: -1, y: 0, extent: width },
-    { distance: playerY - PLAYER_RADIUS, x: 0, y: 1, extent: height },
-    { distance: height - playerY - PLAYER_RADIUS, x: 0, y: -1, extent: height },
+    { distance: ship.x - STARSHIP_RADIUS, x: 1, y: 0, extent: width },
+    {
+      distance: width - ship.x - STARSHIP_RADIUS,
+      x: -1,
+      y: 0,
+      extent: width,
+    },
+    { distance: ship.y - STARSHIP_RADIUS, x: 0, y: 1, extent: height },
+    {
+      distance: height - ship.y - STARSHIP_RADIUS,
+      x: 0,
+      y: -1,
+      extent: height,
+    },
   ];
   let inwardX = 0;
   let inwardY = 0;
@@ -3371,7 +3670,7 @@ function autopilotWallThreat(width, height) {
       margin,
       edge.extent * AUTOPILOT_WALL_MARGIN_RATIO,
     );
-    const inwardSpeed = playerVelocityX * edge.x + playerVelocityY * edge.y;
+    const inwardSpeed = ship.velocityX * edge.x + ship.velocityY * edge.y;
     const outwardSpeed = Math.max(0, -inwardSpeed);
     const stoppingDistance = outwardSpeed ** 2 / (2 * MOVEMENT_RESPONSIVENESS);
     if (
@@ -3394,11 +3693,15 @@ function autopilotWallThreat(width, height) {
  * the same roll as shields fall aborts an unsafe pass immediately, while a
  * fresh roll only arrives at the next commitment boundary. This prevents
  * random steering jitter and preserves ordinary damage and regeneration.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @returns {number} Attack probability from zero to one.
  */
-function autopilotAttackProbability() {
-  const shieldRatio = Math.max(0, Math.min(1, shieldState / SHIELD_MAX_STATE));
-  const hullRatio = Math.max(0, Math.min(1, shipState / SHIP_MAX_STATE));
+function autopilotAttackProbability(ship) {
+  const shieldRatio = Math.max(
+    0,
+    Math.min(1, ship.shieldState / SHIELD_MAX_STATE),
+  );
+  const hullRatio = Math.max(0, Math.min(1, ship.hullState / SHIP_MAX_STATE));
   const availableShield = Math.max(
     0,
     (shieldRatio - AUTOPILOT_ATTACK_MIN_SHIELD_RATIO) /
@@ -3414,25 +3717,27 @@ function autopilotAttackProbability() {
 /**
  * Compare one committed roll with shield-weighted risk; close passes are more
  * common than rams, so regenerated shields fund useful shots as well as hits.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @returns {boolean} Whether approaching within phaser burst range is affordable.
  */
-function autopilotCanApproach() {
-  return autopilotAttackRoll < autopilotAttackProbability();
+function autopilotCanApproach(ship) {
+  return ship.controls.autopilotAttackRoll < autopilotAttackProbability(ship);
 }
 
 /**
  * Reserve deliberate contact for the boldest subset of affordable passes.
  * Cube hulls do not fragment on contact, so ramming them spends ship health
  * without the rock-clearing benefit. Engage that durable body with phasers.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {Asteroid | undefined} target Selected combat body.
  * @returns {boolean} Whether this pass may commit to ramming.
  */
-function autopilotCanRam(target) {
+function autopilotCanRam(ship, target) {
   return (
     target !== undefined &&
     !(target instanceof BorgCube) &&
-    autopilotAttackRoll <
-      autopilotAttackProbability() * AUTOPILOT_RAM_PROBABILITY_RATIO
+    ship.controls.autopilotAttackRoll <
+      autopilotAttackProbability(ship) * AUTOPILOT_RAM_PROBABILITY_RATIO
   );
 }
 
@@ -3443,54 +3748,64 @@ function autopilotCanRam(target) {
  * regenerate; hull damage reduces risk without disabling later attacks.
  * Walls trigger braking rather than a wasteful impact.
  * Independent firing exploits any useful shot throughout the maneuver.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {number} deltaTime Elapsed simulation time in seconds.
  * @param {number} width Arena width in CSS pixels.
  * @param {number} height Arena height in CSS pixels.
  * @returns {void}
  */
-function updateAutopilotInput(deltaTime, width, height) {
-  if (!autopilotEnabled || gamePaused || shipFailureActive || gameWon) {
-    autopilotDecisionTime = 0;
-    setAutopilotInput([]);
+function updateAutopilotInput(ship, deltaTime, width, height) {
+  if (
+    !ship.controls.autopilotEnabled ||
+    gamePaused ||
+    shipFailureActive ||
+    gameWon
+  ) {
+    ship.controls.autopilotDecisionTime = 0;
+    setAutopilotInput(ship, []);
     return;
   }
-  autopilotDecisionTime += Math.max(0, deltaTime);
-  const input = new Set(autopilotPressedKeys);
-  if (autopilotDecisionTime >= AUTOPILOT_UPDATE_INTERVAL) {
-    const decisionDeltaTime = autopilotDecisionTime;
-    autopilotDecisionTime = 0;
+  ship.controls.autopilotDecisionTime += Math.max(0, deltaTime);
+  const input = new Set(ship.controls.autopilotPressedKeys);
+  if (ship.controls.autopilotDecisionTime >= AUTOPILOT_UPDATE_INTERVAL) {
+    const decisionDeltaTime = ship.controls.autopilotDecisionTime;
+    ship.controls.autopilotDecisionTime = 0;
     input.delete("KeyW");
     input.delete("KeyS");
-    autopilotAttackTimeRemaining -= decisionDeltaTime;
-    if (autopilotAttackTimeRemaining <= 0) {
-      autopilotAttackRoll = Math.random();
-      autopilotAttackTimeRemaining = AUTOPILOT_ATTACK_COMMITMENT_SECONDS;
+    ship.controls.autopilotAttackTimeRemaining -= decisionDeltaTime;
+    if (ship.controls.autopilotAttackTimeRemaining <= 0) {
+      ship.controls.autopilotAttackRoll = Math.random();
+      ship.controls.autopilotAttackTimeRemaining =
+        AUTOPILOT_ATTACK_COMMITMENT_SECONDS;
     }
-    const target = autopilotTarget(decisionDeltaTime);
-    const wall = autopilotWallThreat(width, height);
-    const ram = autopilotCanRam(target);
-    const threat = autopilotThreat(ram ? target : undefined);
-    const speed = Math.hypot(playerVelocityX, playerVelocityY);
-    autopilotDesiredAngle =
-      target === undefined ? playerAngle : autopilotAimAngle(target);
+    const target = autopilotTarget(ship, decisionDeltaTime);
+    const wall = autopilotWallThreat(ship, width, height);
+    const ram = autopilotCanRam(ship, target);
+    const threat = autopilotThreat(ship, ram ? target : undefined);
+    const speed = Math.hypot(ship.velocityX, ship.velocityY);
+    ship.controls.autopilotDesiredAngle =
+      target === undefined ? ship.angle : autopilotAimAngle(ship, target);
     // Inside a body's safety zone, choose a lane that also accounts for walls.
     // A wall-only heading can otherwise pin the ship against a pursuing cube.
     const escapingBody =
       threat !== undefined && threat.distance < threat.safeDistance;
-    autopilotEscapeTimeRemaining = Math.max(
+    ship.controls.autopilotEscapeTimeRemaining = Math.max(
       0,
-      autopilotEscapeTimeRemaining - decisionDeltaTime,
+      ship.controls.autopilotEscapeTimeRemaining - decisionDeltaTime,
     );
-    if (!escapingBody) autopilotEscapeTarget = undefined;
+    if (!escapingBody) ship.controls.autopilotEscapeTarget = undefined;
     if (wall !== undefined && !escapingBody) {
       if (wall.brake) {
         // S removes outward velocity without interrupting the firing heading.
         input.add("KeyS");
       } else {
-        autopilotDesiredAngle = wall.desiredAngle;
+        ship.controls.autopilotDesiredAngle = wall.desiredAngle;
         if (
           Math.abs(
-            shortestAngleDifference(autopilotDesiredAngle, playerAngle),
+            shortestAngleDifference(
+              ship.controls.autopilotDesiredAngle,
+              ship.angle,
+            ),
           ) <= AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
         ) {
           input.add("KeyW");
@@ -3500,24 +3815,29 @@ function updateAutopilotInput(deltaTime, width, height) {
       // Turn toward clearance even while braking. Continuing to aim at the
       // combat target until speed falls lets repeated impacts reset the turn.
       if (
-        autopilotEscapeTarget !== threat.asteroid ||
-        autopilotEscapeTimeRemaining === 0 ||
+        ship.controls.autopilotEscapeTarget !== threat.asteroid ||
+        ship.controls.autopilotEscapeTimeRemaining === 0 ||
         // Wall danger interrupts commitment before an escape becomes a crash.
         wall !== undefined
       ) {
-        autopilotEscapeHeading = autopilotEscapeAngle(
+        ship.controls.autopilotEscapeHeading = autopilotEscapeAngle(
+          ship,
           threat.asteroid,
           width,
           height,
         );
-        autopilotEscapeTarget = escapingBody ? threat.asteroid : undefined;
-        autopilotEscapeTimeRemaining = AUTOPILOT_ESCAPE_COMMITMENT_SECONDS;
+        ship.controls.autopilotEscapeTarget = escapingBody
+          ? threat.asteroid
+          : undefined;
+        ship.controls.autopilotEscapeTimeRemaining =
+          AUTOPILOT_ESCAPE_COMMITMENT_SECONDS;
       }
-      autopilotDesiredAngle = autopilotEscapeHeading;
+      ship.controls.autopilotDesiredAngle =
+        ship.controls.autopilotEscapeHeading;
       const towardThreatSpeed =
         threat.distance > COLLISION_EPSILON
-          ? ((threat.asteroid.x - playerX) * playerVelocityX +
-              (threat.asteroid.y - playerY) * playerVelocityY) /
+          ? ((threat.asteroid.x - ship.x) * ship.velocityX +
+              (threat.asteroid.y - ship.y) * ship.velocityY) /
             threat.distance
           : speed;
       if (towardThreatSpeed > AUTOPILOT_MIN_COAST_SPEED || wall?.brake) {
@@ -3526,13 +3846,16 @@ function updateAutopilotInput(deltaTime, width, height) {
         // Incoming asteroid motion cannot be stopped by braking the ship.
         // Keep accelerating away rather than braking that escape next time.
         const escapeSpeed =
-          (playerVelocityX - threat.asteroid.velocityX) *
-            Math.cos(autopilotDesiredAngle) +
-          (playerVelocityY - threat.asteroid.velocityY) *
-            Math.sin(autopilotDesiredAngle);
+          (ship.velocityX - threat.asteroid.velocityX) *
+            Math.cos(ship.controls.autopilotDesiredAngle) +
+          (ship.velocityY - threat.asteroid.velocityY) *
+            Math.sin(ship.controls.autopilotDesiredAngle);
         if (
           Math.abs(
-            shortestAngleDifference(autopilotDesiredAngle, playerAngle),
+            shortestAngleDifference(
+              ship.controls.autopilotDesiredAngle,
+              ship.angle,
+            ),
           ) <= AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE &&
           escapeSpeed < AUTOPILOT_CRUISE_SPEED
         ) {
@@ -3544,26 +3867,30 @@ function updateAutopilotInput(deltaTime, width, height) {
       // Forward motion continues through the hit; the solver decides whether
       // its real contact impulse cuts the rock, with no autopilot damage bonus.
       const courseAngle = autopilotAimAngle(
+        ship,
         target,
         AUTOPILOT_RAM_SPEED,
-        PLAYER_RADIUS + target.radius * 0.5,
+        STARSHIP_RADIUS + target.radius * 0.5,
       );
       const correctionX =
-        Math.cos(courseAngle) * AUTOPILOT_RAM_SPEED - playerVelocityX;
+        Math.cos(courseAngle) * AUTOPILOT_RAM_SPEED - ship.velocityX;
       const correctionY =
-        Math.sin(courseAngle) * AUTOPILOT_RAM_SPEED - playerVelocityY;
+        Math.sin(courseAngle) * AUTOPILOT_RAM_SPEED - ship.velocityY;
       const correctionSpeed = Math.hypot(correctionX, correctionY);
       const forwardSpeed =
-        playerVelocityX * Math.cos(courseAngle) +
-        playerVelocityY * Math.sin(courseAngle);
+        ship.velocityX * Math.cos(courseAngle) +
+        ship.velocityY * Math.sin(courseAngle);
       // Thrust toward the velocity correction, not simply the target bearing.
       // This removes sideways drift during a pass instead of orbiting the rock.
-      autopilotDesiredAngle =
+      ship.controls.autopilotDesiredAngle =
         correctionSpeed > AUTOPILOT_VELOCITY_CORRECTION_TOLERANCE
           ? Math.atan2(correctionY, correctionX)
-          : autopilotAimAngle(target);
+          : autopilotAimAngle(ship, target);
       const angleError = Math.abs(
-        shortestAngleDifference(autopilotDesiredAngle, playerAngle),
+        shortestAngleDifference(
+          ship.controls.autopilotDesiredAngle,
+          ship.angle,
+        ),
       );
       if (
         forwardSpeed < -AUTOPILOT_MIN_COAST_SPEED ||
@@ -3577,15 +3904,16 @@ function updateAutopilotInput(deltaTime, width, height) {
         input.add("KeyW");
       }
     } else if (target !== undefined) {
-      const closePass = !(target instanceof BorgCube) && autopilotCanApproach();
+      const closePass =
+        !(target instanceof BorgCube) && autopilotCanApproach(ship);
       const cruiseSpeed = closePass
         ? AUTOPILOT_CLOSE_SPEED
         : AUTOPILOT_CRUISE_SPEED;
-      const x = target.x - playerX;
-      const y = target.y - playerY;
+      const x = target.x - ship.x;
+      const y = target.y - ship.y;
       const distance = Math.hypot(x, y);
       const range =
-        PLAYER_RADIUS +
+        STARSHIP_RADIUS +
         target.radius +
         Math.min(
           closePass ? AUTOPILOT_CLOSE_RANGE : AUTOPILOT_ENGAGEMENT_RANGE,
@@ -3593,18 +3921,21 @@ function updateAutopilotInput(deltaTime, width, height) {
         );
       const closingSpeed =
         distance > COLLISION_EPSILON
-          ? (x * (playerVelocityX - target.velocityX) +
-              y * (playerVelocityY - target.velocityY)) /
+          ? (x * (ship.velocityX - target.velocityX) +
+              y * (ship.velocityY - target.velocityY)) /
             distance
           : 0;
       const stoppingDistance =
         Math.max(0, closingSpeed) ** 2 / (2 * MOVEMENT_RESPONSIVENESS);
       const aimError = Math.abs(
-        shortestAngleDifference(autopilotDesiredAngle, playerAngle),
+        shortestAngleDifference(
+          ship.controls.autopilotDesiredAngle,
+          ship.angle,
+        ),
       );
       const noseSpeed =
-        playerVelocityX * Math.cos(autopilotDesiredAngle) +
-        playerVelocityY * Math.sin(autopilotDesiredAngle);
+        ship.velocityX * Math.cos(ship.controls.autopilotDesiredAngle) +
+        ship.velocityY * Math.sin(ship.controls.autopilotDesiredAngle);
       if (
         speed > cruiseSpeed ||
         (speed > AUTOPILOT_MIN_COAST_SPEED &&
@@ -3622,72 +3953,71 @@ function updateAutopilotInput(deltaTime, width, height) {
       }
     }
   }
-  applyAutopilotTurnInput(input, deltaTime);
-  setAutopilotInput(input);
+  applyAutopilotTurnInput(ship, input, deltaTime);
+  setAutopilotInput(ship, input);
 }
 
 /**
  * Recheck firing after this frame's rotation and movement, immediately before
  * the normal weapon cooldown consumes Space. A lost solution stops firing;
  * a newly aligned rock can be engaged on the very same simulation step.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @returns {void}
  */
-function updateAutoGunnerFiring() {
-  if (!autoGunnerEnabled || gamePaused || shipFailureActive || gameWon) {
-    autoGunnerPressedKeys.clear();
-    syncPressedKeys();
+function updateAutoGunnerFiring(ship) {
+  if (
+    !ship.controls.autoGunnerEnabled ||
+    gamePaused ||
+    shipFailureActive ||
+    gameWon
+  ) {
+    ship.controls.autoGunnerPressedKeys.clear();
+    syncPressedKeys(ship);
     return;
   }
   // Finishing a burst is useful; dribbling hot shots forever is inefficient.
   // Cool while navigating to the next attack, then spend that heat on a burst.
-  if (phaserHeat >= PHASER_OVERHEAT_THRESHOLD) {
-    autoGunnerBurstActive = false;
+  if (ship.phaserHeat >= PHASER_OVERHEAT_THRESHOLD) {
+    ship.controls.autoGunnerBurstActive = false;
   }
-  const hasShot = autoGunnerHasShot();
+  const hasShot = autoGunnerHasShot(ship);
   if (
     hasShot &&
-    phaserHeat <= PHASER_OVERHEAT_THRESHOLD * AUTO_GUNNER_BURST_START_HEAT_RATIO
+    ship.phaserHeat <=
+      PHASER_OVERHEAT_THRESHOLD * AUTO_GUNNER_BURST_START_HEAT_RATIO
   ) {
-    autoGunnerBurstActive = true;
+    ship.controls.autoGunnerBurstActive = true;
   }
-  if (hasShot && autoGunnerBurstActive) {
-    autoGunnerPressedKeys.add(FIRE_KEY);
+  if (hasShot && ship.controls.autoGunnerBurstActive) {
+    ship.controls.autoGunnerPressedKeys.add(FIRE_KEY);
   } else {
-    autoGunnerPressedKeys.delete(FIRE_KEY);
+    ship.controls.autoGunnerPressedKeys.delete(FIRE_KEY);
   }
-  syncPressedKeys();
+  syncPressedKeys(ship);
 }
 
 /**
  * Request one pulse through the shared cadence and heat gates. Heat may rise
  * above the limit with a shot, but firing resumes as soon as it drops below
  * that same limit. Taps and auto-gunner use precisely the same thermal rule.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @returns {void}
  */
-function tryFireBullet() {
-  if (
-    gamePaused ||
-    shipFailureActive ||
-    gameWon ||
-    phaserHeat >= PHASER_OVERHEAT_THRESHOLD ||
-    phaserShotCooldown > COLLISION_EPSILON
-  ) {
+function tryFireBullet(ship) {
+  if (gamePaused || shipFailureActive || gameWon) {
     return;
   }
-  emitBullet();
-  phaserShotCooldown = PHASER_FIRE_INTERVAL;
-  phaserHeat +=
-    PHASER_SHOT_HEAT +
-    PHASER_WARM_SHOT_HEAT * (phaserHeat / PHASER_OVERHEAT_THRESHOLD) ** 2;
+  ship.tryFire();
 }
 
 /**
  * Cool throughout active simulation, even when firing is released. Pausing
  * freezes heat with the world; missed time never becomes a catch-up volley.
+ * @param {Starship} ship Hull and independent controller being operated.
  * @param {number} deltaTime Elapsed simulation time in seconds.
  * @returns {void}
  */
-function updateBulletFiring(deltaTime) {
+function updateBulletFiring(ship, deltaTime) {
   if (
     gamePaused ||
     shipFailureActive ||
@@ -3696,12 +4026,8 @@ function updateBulletFiring(deltaTime) {
   ) {
     return;
   }
-  const elapsed = Math.max(0, deltaTime);
-  phaserShotCooldown = Math.max(0, phaserShotCooldown - elapsed);
-  phaserHeat = Math.max(0, phaserHeat - PHASER_COOLING_RATE * elapsed);
-  if (pressedKeys.has(FIRE_KEY)) {
-    tryFireBullet();
-  }
+  ship.coolWeapon(deltaTime);
+  if (ship.controls.pressedKeys.has(FIRE_KEY)) tryFireBullet(ship);
 }
 
 /**
@@ -3740,13 +4066,13 @@ function resizeCanvas() {
   dangerWallGradients = undefined;
   starfieldPaths = createStarfieldPaths(width, gameplayHeight);
 
-  if (playerX === undefined || playerY === undefined) {
-    playerX = width / 2;
-    playerY = gameplayHeight / 2;
-  } else {
-    playerX = constrainPosition(playerX, PLAYER_RADIUS, width);
-    playerY = constrainPosition(playerY, PLAYER_RADIUS, gameplayHeight);
+  if (previousFrameTime === undefined) {
+    for (const ship of starships) {
+      ship.x = width / 2;
+      ship.y = gameplayHeight / 2;
+    }
   }
+  for (const ship of starships) ship.keepInside(width, gameplayHeight);
 
   generateAsteroids(width, gameplayHeight);
   for (const cube of borgCubes) cube.keepInside(width, gameplayHeight);
@@ -3778,82 +4104,14 @@ function constrainPositionToRange(position, minimum, maximum, extent) {
 }
 
 /**
- * Restore a portion of the shield each simulation step. Hull damage is never
- * included here: a damaged ship remains damaged until its life ends.
- * @param {number} deltaTime Elapsed simulation time in seconds.
- * @returns {void}
- */
-function regenerateShield(deltaTime) {
-  if (!Number.isFinite(deltaTime)) {
-    return;
-  }
-
-  shieldState = Math.min(
-    SHIELD_MAX_STATE,
-    shieldState + SHIELD_REGENERATION_RATE * deltaTime,
-  );
-}
-
-/**
- * Refill the collision damage budget while the game is simulating. Pausing
- * therefore freezes both contacts and their protection window together.
- * @param {number} deltaTime Elapsed simulation time in seconds.
- * @returns {void}
- */
-function refillCollisionDamageBudget(deltaTime) {
-  if (!Number.isFinite(deltaTime)) {
-    return;
-  }
-
-  collisionDamageBudget = Math.min(
-    COLLISION_DAMAGE_BUDGET_CAP,
-    collisionDamageBudget +
-      Math.max(0, deltaTime) * COLLISION_DAMAGE_BUDGET_REFILL_RATE,
-  );
-}
-
-/**
- * Convert contact impulse into damage for both layers of the ship. The
- * transmission fraction is sampled before the impact so a 30% shield sends
- * exactly 70% of the original impact damage toward the hull.
- * @param {number} collisionMomentum Magnitude of the contact impulse.
- * @returns {void}
- */
-function applyCollisionDamage(collisionMomentum) {
-  const safeCollisionMomentum = Number.isFinite(collisionMomentum)
-    ? Math.max(0, collisionMomentum)
-    : 0;
-  const rawImpactDamage = safeCollisionMomentum * COLLISION_DAMAGE_SCALE;
-  const impactDamage = Math.min(rawImpactDamage, collisionDamageBudget);
-  const shieldFraction = shieldState / SHIELD_MAX_STATE;
-  const transmittedFraction = 1 - shieldFraction;
-  const shieldDamage = Math.min(
-    shieldState,
-    impactDamage * SHIELD_DAMAGE_COEFFICIENT,
-  );
-  const shipDamage = Math.min(
-    shipState,
-    impactDamage * transmittedFraction * SHIP_DAMAGE_COEFFICIENT,
-  );
-
-  shieldState = Math.max(0, shieldState - shieldDamage);
-  shipState = Math.max(0, shipState - shipDamage);
-  collisionDamageBudget = Math.max(0, collisionDamageBudget - impactDamage);
-
-  if (shipState <= COLLISION_EPSILON) {
-    shipState = 0;
-    restartRequested = true;
-  }
-}
-
-/**
  * Estimate hull loss from a short burst of heavy contacts, using the same
  * pre-impact shield transmission and damage cap as the collision model.
+ * @param {Starship} ship Hull shown by the bridge alert output.
  * @param {number} contactCount Number of consecutive full-budget contacts.
  * @returns {number} Hull points required to survive the burst.
  */
-function alertHullLoss(contactCount) {
-  let charge = shieldState;
+function alertHullLoss(ship, contactCount) {
+  let charge = ship.shieldState;
   let loss = 0;
   for (let contact = 0; contact < contactCount; contact += 1) {
     loss +=
@@ -3873,21 +4131,23 @@ function alertHullLoss(contactCount) {
  * Yellow sounds only when entered; red remains a single cue per ship life.
  * Entry enables appropriate assistance once, so manual overrides continue to
  * work while an alert persists. Recovery leaves the selected modes enabled.
+ * @param {Starship} ship Hull shown by the bridge alert output.
  * @param {number} deltaTime Active simulation seconds since the last update.
  * @returns {void}
  */
-function updateAlert(deltaTime) {
+function updateAlert(ship, deltaTime) {
   const previousLevel = alertLevel;
-  const redLoss = alertHullLoss(ALERT_RED_CONTACT_COUNT);
-  const yellowLoss = alertHullLoss(ALERT_YELLOW_CONTACT_COUNT);
-  const nextLevel = shipState <= redLoss ? 2 : shipState <= yellowLoss ? 1 : 0;
+  const redLoss = alertHullLoss(ship, ALERT_RED_CONTACT_COUNT);
+  const yellowLoss = alertHullLoss(ship, ALERT_YELLOW_CONTACT_COUNT);
+  const nextLevel =
+    ship.hullState <= redLoss ? 2 : ship.hullState <= yellowLoss ? 1 : 0;
   if (nextLevel >= alertLevel) {
     alertLevel = nextLevel;
     alertRecoveryTime = 0;
   } else {
     const recoveryLoss = alertLevel === 2 ? redLoss : yellowLoss;
     alertRecoveryTime =
-      shipState > recoveryLoss + ALERT_CLEAR_RESERVE_MARGIN
+      ship.hullState > recoveryLoss + ALERT_CLEAR_RESERVE_MARGIN
         ? alertRecoveryTime + Math.max(0, deltaTime)
         : 0;
     if (alertRecoveryTime >= ALERT_CLEAR_DELAY_SECONDS) {
@@ -3896,8 +4156,9 @@ function updateAlert(deltaTime) {
     }
   }
   if (alertLevel !== previousLevel && alertLevel > 0) {
-    if (!aimAssist.enabled) aimAssist.toggle();
-    if (alertLevel === 2 && !autopilotEnabled) toggleAutopilot();
+    if (!ship.aimAssist.enabled) ship.aimAssist.toggle();
+    if (alertLevel === 2 && !ship.controls.autopilotEnabled)
+      toggleAutopilot(ship);
   }
   if (alertLevel === 1 && previousLevel !== 1) {
     yellowAlertSound.playRandom();
@@ -3924,41 +4185,20 @@ function restartGame(width, height) {
   sessionPoints = 0;
   fieldAsteroidDamage.ramming = 0;
   fieldAsteroidDamage.blasters = 0;
-  playerX = width / 2;
-  playerY = height / 2;
-  playerAngle = 0;
-  playerVelocityX = 0;
-  playerVelocityY = 0;
-  shieldState = SHIELD_MAX_STATE;
-  shipState = SHIP_MAX_STATE;
-  displayedShieldState = SHIELD_MAX_STATE;
-  displayedShipState = SHIP_MAX_STATE;
+  for (const ship of starships) {
+    ship.reset(width / 2, height / 2);
+    clearPressedKeys(ship);
+  }
   redAlertSoundPlayed = false;
   alertLevel = 0;
   alertRecoveryTime = 0;
-  collisionDamageBudget = COLLISION_DAMAGE_BUDGET_CAP;
-  restartRequested = false;
   shipFailureActive = false;
   shipFailureTimeRemaining = 0;
   gameWon = false;
-  phaserShotCooldown = 0;
-  phaserHeat = 0;
   bullets.length = 0;
   sparks.length = 0;
   // A new sector returns all assistance to manual control, including after
   // destruction or victory. Clear input and locks through the shared reset.
-  aimAssist.enabled = false;
-  autopilotEnabled = false;
-  autoGunnerEnabled = false;
-  clearPressedKeys();
-  autopilotDesiredAngle = playerAngle;
-  autopilotTargetLock = undefined;
-  autopilotEscapeTarget = undefined;
-  autopilotTargetLockTimeRemaining = 0;
-  autopilotAttackTimeRemaining = 0;
-  autopilotAttackRoll = 1;
-  autoGunnerBurstActive = false;
-  autopilotDecisionTime = 0;
   asteroids.length = 0;
   asteroidsGenerated = false;
   borgCubes.length = 0;
@@ -3978,10 +4218,11 @@ function beginShipFailure() {
   shipFailureActive = true;
   sessionAchievements.clear();
   shipFailureTimeRemaining = SHIP_FAILURE_DISPLAY_SECONDS;
-  restartRequested = false;
   defeatSound.playRandom();
-  clearPressedKeys();
-  phaserShotCooldown = 0;
+  for (const ship of starships) {
+    clearPressedKeys(ship);
+    ship.phaserShotCooldown = 0;
+  }
 }
 
 /**
@@ -4013,8 +4254,10 @@ function beginWin() {
     emitSparksAt({ x: bullet.x, y: bullet.y }, bodyKineticEnergy(bullet));
   }
   bullets.length = 0;
-  clearPressedKeys();
-  phaserShotCooldown = 0;
+  for (const ship of starships) {
+    clearPressedKeys(ship);
+    ship.phaserShotCooldown = 0;
+  }
 }
 
 /**
@@ -4138,24 +4381,25 @@ function moveBarValueToward(currentValue, targetValue, maximumChange) {
 }
 
 /**
- * Animate both status bars toward their real gameplay values.
+ * Animate a hull's shield rim and status bars together, including while paused.
+ * @param {Starship} ship Hull whose presentation values are advanced.
  * @param {number} deltaTime Elapsed real time in seconds.
  * @returns {void}
  */
-function updateDisplayedStatusBars(deltaTime) {
+function updateDisplayedStatusBars(deltaTime, ship) {
   if (!Number.isFinite(deltaTime)) {
     return;
   }
 
   const maximumChange = STATUS_BAR_ANIMATION_SPEED * Math.max(0, deltaTime);
-  displayedShieldState = moveBarValueToward(
-    displayedShieldState,
-    shieldState,
+  ship.displayedShieldState = moveBarValueToward(
+    ship.displayedShieldState,
+    ship.shieldState,
     maximumChange,
   );
-  displayedShipState = moveBarValueToward(
-    displayedShipState,
-    shipState,
+  ship.displayedHullState = moveBarValueToward(
+    ship.displayedHullState,
+    ship.hullState,
     maximumChange,
   );
 }
@@ -4190,10 +4434,14 @@ function drawStatusBars(width) {
   );
 
   const bars = [
-    { label: "SHIELD", state: displayedShieldState, color: LCARS_LILAC },
+    {
+      label: "SHIELD",
+      state: playerShip.displayedShieldState,
+      color: LCARS_LILAC,
+    },
     {
       label: "HULL",
-      state: displayedShipState,
+      state: playerShip.displayedHullState,
       // Keep a steady warning visible even when the console has no text gap.
       color:
         alertLevel === 2
@@ -4481,16 +4729,17 @@ function blendShieldColors(fromColor, toColor, fraction) {
  * Render the starship inside its circular collision shield. Cached normalized
  * paths avoid per-frame geometry allocations; the coral bow marker makes
  * heading readable even when the saucer is seen among asteroid fragments.
+ * @param {Starship} ship Friendly hull to render with the shared silhouette.
  * @returns {void}
  */
-function drawStarship() {
+function drawStarship(ship) {
   context.save();
-  context.translate(playerX, playerY);
+  context.translate(ship.x, ship.y);
   // Share the HUD's animated charge so both indicators agree during impacts.
   // The whole rim changes together: missing arcs would imply a physical gap.
   const shieldRatio = Math.max(
     0,
-    Math.min(1, displayedShieldState / SHIELD_MAX_STATE),
+    Math.min(1, ship.displayedShieldState / SHIELD_MAX_STATE),
   );
   const healthy = shieldRatio > SHIELD_WARNING_RATIO;
   const colorFraction = healthy
@@ -4506,7 +4755,7 @@ function drawStarship() {
     colorFraction,
   );
   context.beginPath();
-  context.arc(0, 0, PLAYER_RADIUS, 0, Math.PI * 2);
+  context.arc(0, 0, STARSHIP_RADIUS, 0, Math.PI * 2);
   context.globalAlpha = SHIELD_HALO_OPACITY * shieldRatio;
   context.lineWidth = SHIELD_HALO_WIDTH;
   context.stroke();
@@ -4516,15 +4765,15 @@ function drawStarship() {
   context.stroke();
   context.globalAlpha = 1;
 
-  context.rotate(playerAngle);
-  context.scale(PLAYER_RADIUS, PLAYER_RADIUS);
+  context.rotate(ship.angle);
+  context.scale(STARSHIP_RADIUS, STARSHIP_RADIUS);
   context.fillStyle = LCARS_GOLD;
   context.fill(STARSHIP_SILHOUETTE);
   context.strokeStyle = LCARS_BLACK;
-  context.lineWidth = 1 / PLAYER_RADIUS;
+  context.lineWidth = 1 / STARSHIP_RADIUS;
   context.stroke(STARSHIP_SILHOUETTE);
   context.strokeStyle = LCARS_LILAC;
-  context.lineWidth = 2 / PLAYER_RADIUS;
+  context.lineWidth = 2 / STARSHIP_RADIUS;
   context.stroke(STARSHIP_DETAILS);
   context.fillStyle = LCARS_CORAL;
   context.fill(STARSHIP_HEADING_MARKER);
@@ -4568,7 +4817,7 @@ function drawGame(width, height) {
   }
 
   drawAimAssist(width, playfieldHeight);
-  drawStarship();
+  for (const ship of starships) drawStarship(ship);
 
   drawSparks();
 
@@ -4595,9 +4844,9 @@ function drawGame(width, height) {
  * @returns {void}
  */
 function drawAimAssist(width, height) {
-  const target = aimAssist.target;
+  const target = playerShip.aimAssist.target;
   if (
-    !aimAssist.enabled ||
+    !playerShip.aimAssist.enabled ||
     target === undefined ||
     shipFailureActive ||
     gameWon
@@ -4618,7 +4867,7 @@ function drawAimAssist(width, height) {
     Math.PI * 2,
   );
   context.stroke();
-  const time = linearInterceptTime(target);
+  const time = linearInterceptTime(playerShip, target);
   if (time !== undefined) {
     const x = target.x + target.velocityX * time;
     const y = target.y + target.velocityY * time;
@@ -4745,48 +4994,64 @@ function drawFlightControls(width) {
   const buttonHeight = STATUS_POINTS_HEIGHT;
   let buttonX = LCARS_FRAME_MARGIN;
   const controls = [
-    [AUTOPILOT_TOGGLE_KEY_LABEL, "AUTOPILOT", LCARS_AMBER, autopilotEnabled],
+    [
+      AUTOPILOT_TOGGLE_KEY_LABEL,
+      "AUTOPILOT",
+      LCARS_AMBER,
+      playerShip.controls.autopilotEnabled,
+    ],
     [
       AUTO_GUNNER_TOGGLE_KEY_LABEL,
       "AUTO-GUNNER",
       LCARS_GOLD,
-      autoGunnerEnabled,
+      playerShip.controls.autoGunnerEnabled,
     ],
     [PAUSE_KEY_LABEL, "PAUSE", LCARS_CORAL, gamePaused],
-    [AIM_ASSIST_TOGGLE_KEY_LABEL, "AIM ASSIST", LCARS_GOLD, aimAssist.enabled],
+    [
+      AIM_ASSIST_TOGGLE_KEY_LABEL,
+      "AIM ASSIST",
+      LCARS_GOLD,
+      playerShip.aimAssist.enabled,
+    ],
     [
       "W⏶",
       "THRUST",
       LCARS_LILAC,
-      pressedKeys.has("KeyW") || pressedKeys.has("ArrowUp"),
+      playerShip.controls.pressedKeys.has("KeyW") ||
+        playerShip.controls.pressedKeys.has("ArrowUp"),
     ],
     [
       "S⏷",
       "BRAKE",
       LCARS_LAVENDER,
-      pressedKeys.has("KeyS") || pressedKeys.has("ArrowDown"),
+      playerShip.controls.pressedKeys.has("KeyS") ||
+        playerShip.controls.pressedKeys.has("ArrowDown"),
     ],
     [
       "A⏴",
       "TURN CCW",
       LCARS_LILAC,
-      pressedKeys.has("KeyA") || pressedKeys.has("ArrowLeft"),
+      playerShip.controls.pressedKeys.has("KeyA") ||
+        playerShip.controls.pressedKeys.has("ArrowLeft"),
     ],
     [
       "D⏵",
       "TURN CW",
       LCARS_LAVENDER,
-      pressedKeys.has("KeyD") || pressedKeys.has("ArrowRight"),
+      playerShip.controls.pressedKeys.has("KeyD") ||
+        playerShip.controls.pressedKeys.has("ArrowRight"),
     ],
     [
       FIRE_KEY_LABEL,
-      phaserHeat <= COLLISION_EPSILON
+      playerShip.phaserHeat <= COLLISION_EPSILON
         ? "PHASERS"
-        : phaserHeat >= PHASER_OVERHEAT_THRESHOLD
-          ? `HOT ${Math.max(0, (phaserHeat - PHASER_OVERHEAT_THRESHOLD) / PHASER_COOLING_RATE).toFixed(1)}s`
-          : `HEAT ${Math.round((phaserHeat / PHASER_OVERHEAT_THRESHOLD) * 100)}%`,
-      phaserHeat >= PHASER_OVERHEAT_THRESHOLD ? LCARS_CORAL : LCARS_AMBER,
-      pressedKeys.has(FIRE_KEY),
+        : playerShip.phaserHeat >= PHASER_OVERHEAT_THRESHOLD
+          ? `HOT ${Math.max(0, (playerShip.phaserHeat - PHASER_OVERHEAT_THRESHOLD) / PHASER_COOLING_RATE).toFixed(1)}s`
+          : `HEAT ${Math.round((playerShip.phaserHeat / PHASER_OVERHEAT_THRESHOLD) * 100)}%`,
+      playerShip.phaserHeat >= PHASER_OVERHEAT_THRESHOLD
+        ? LCARS_CORAL
+        : LCARS_AMBER,
+      playerShip.controls.pressedKeys.has(FIRE_KEY),
     ],
   ];
 
@@ -4796,9 +5061,9 @@ function drawFlightControls(width) {
     titleWidth * rowScale,
     buttonHeight,
     "HELM CONTROL",
-    autopilotEnabled ? "AUTOPILOT" : "MANUAL HELM",
-    autopilotEnabled ? LCARS_AMBER : LCARS_LILAC,
-    autopilotEnabled,
+    playerShip.controls.autopilotEnabled ? "AUTOPILOT" : "MANUAL HELM",
+    playerShip.controls.autopilotEnabled ? LCARS_AMBER : LCARS_LILAC,
+    playerShip.controls.autopilotEnabled,
     true,
   );
   buttonX += titleWidth * rowScale + FLIGHT_CONTROL_GAP * rowScale;
@@ -5217,14 +5482,14 @@ function advanceAndReflect(
  * magnitude—and therefore the resulting turn and damage—depends on ship
  * momentum. The static wall has zero velocity and infinite mass, so it adds
  * no momentum of its own.
- * @param {PhysicsBody} ship
+ * @param {Starship} ship Hull receiving wall damage and solver impulses.
  * @param {Vector2} normal Normal pointing from the ship toward the wall.
  * @returns {ContactResponse}
  */
 function resolveShipWallContact(ship, normal) {
   const contactPoint = {
-    x: ship.x + normal.x * PLAYER_RADIUS,
-    y: ship.y + normal.y * PLAYER_RADIUS,
+    x: ship.x + normal.x * STARSHIP_RADIUS,
+    y: ship.y + normal.y * STARSHIP_RADIUS,
   };
   const beforeEnergy = bodyKineticEnergy(ship);
 
@@ -5243,10 +5508,10 @@ function resolveShipWallContact(ship, normal) {
   );
 
   if (response.normalImpulse > COLLISION_EPSILON) {
-    applyCollisionDamage(contactImpulseMagnitude(response));
+    ship.applyCollisionDamage(contactImpulseMagnitude(response));
     empSound.playRandom();
   }
-  applyShipCollisionAngleAdjustment(response);
+  applyShipCollisionAngleAdjustment(response, ship);
   return response;
 }
 
@@ -5255,10 +5520,11 @@ function resolveShipWallContact(ship, normal) {
  * angular momentum. The angular impulse still comes from the same friction
  * calculation, so greater contact momentum or friction produces a larger
  * heading adjustment.
+ * @param {Starship} ship Hull receiving the one-time heading adjustment.
  * @param {ContactResponse} response Contact response involving the ship.
  * @returns {void}
  */
-function applyShipCollisionAngleAdjustment(response) {
+function applyShipCollisionAngleAdjustment(response, ship) {
   const uncappedAngleAdjustment =
     (response.firstAngularImpulse / STARSHIP_COLLISION_TURN_INERTIA) *
     SHIP_COLLISION_TURN_RESPONSE;
@@ -5268,7 +5534,7 @@ function applyShipCollisionAngleAdjustment(response) {
   );
 
   if (Number.isFinite(uncappedAngleAdjustment)) {
-    playerAngle = wrapAngle(playerAngle + angleAdjustment);
+    ship.angle = wrapAngle(ship.angle + angleAdjustment);
   }
 }
 
@@ -5962,7 +6228,8 @@ function fragmentAsteroidAtImpact(
 
   countVanishedAsteroidArea(asteroid, fragments);
   asteroids.splice(asteroidIndex, 1, ...fragments);
-  aimAssist.followFragments(asteroid, fragments);
+  for (const ship of starships)
+    ship.aimAssist.followFragments(asteroid, fragments);
   return fragments;
 }
 
@@ -6306,8 +6573,6 @@ function emitSparksAt(contactPoint, kineticEnergyLoss) {
 }
 
 function resolveBulletCollisions(width, height) {
-  const ship = playerBody();
-
   for (
     let bulletIndex = bullets.length - 1;
     bulletIndex >= 0;
@@ -6317,7 +6582,7 @@ function resolveBulletCollisions(width, height) {
     let segmentStart = { x: bullet.previousX, y: bullet.previousY };
     let segmentEnd = { x: bullet.x, y: bullet.y };
     const ignoredAsteroids = new Set();
-    let shipIgnored = false;
+    const ignoredShips = new Set();
 
     // A single animation step can contain more than one collision after a
     // bounce. Rebuild the remaining swept segment after every interaction so
@@ -6358,9 +6623,23 @@ function resolveBulletCollisions(width, height) {
       }
 
       const wallHit = boundaryHit(segmentStart, segmentEnd, width, height);
-      const shipHitParameter = shipIgnored
-        ? Infinity
-        : segmentCircleIntersectionParameter(segmentStart, segmentEnd, ship);
+      let ship = undefined;
+      let shipHitParameter = undefined;
+      for (const candidate of starships) {
+        if (!candidate.alive || ignoredShips.has(candidate)) continue;
+        const parameter = segmentCircleIntersectionParameter(
+          segmentStart,
+          segmentEnd,
+          candidate,
+        );
+        if (
+          parameter !== undefined &&
+          parameter < (shipHitParameter ?? Infinity)
+        ) {
+          ship = candidate;
+          shipHitParameter = parameter;
+        }
+      }
       const shipIsFirst =
         shipHitParameter !== undefined &&
         shipHitParameter < nearestHitParameter &&
@@ -6505,8 +6784,8 @@ function resolveBulletCollisions(width, height) {
           normal,
           hitPoint,
         );
-        applyShipCollisionAngleAdjustment(bulletImpulse);
-        applyCollisionDamage(contactImpulseMagnitude(bulletImpulse));
+        applyShipCollisionAngleAdjustment(bulletImpulse, ship);
+        ship.applyCollisionDamage(contactImpulseMagnitude(bulletImpulse));
         if (bulletImpulse.normalImpulse > COLLISION_EPSILON) {
           empSound.playRandom();
         }
@@ -6518,7 +6797,7 @@ function resolveBulletCollisions(width, height) {
 
         const afterEnergy = bodyKineticEnergy(ship) + bodyKineticEnergy(bullet);
         interactionAfterEnergy = afterEnergy;
-        shipIgnored = true;
+        ignoredShips.add(ship);
       }
 
       if (!canReflect) {
@@ -6569,8 +6848,6 @@ function resolveBulletCollisions(width, height) {
       bullet.y = segmentEnd.y;
     }
   }
-
-  applyPlayerBody(ship);
 }
 
 function polygonAxes(vertices) {
@@ -6950,7 +7227,27 @@ function collisionManifold(firstBody, secondBody) {
     return manifold === undefined ? undefined : invertedManifold(manifold);
   }
 
-  return undefined;
+  // Two shield circles use their center axis. Coincident centers fall back
+  // to relative motion, then +x, avoiding division by zero deterministically.
+  const x = secondBody.x - firstBody.x;
+  const y = secondBody.y - firstBody.y;
+  const distance = Math.hypot(x, y);
+  const penetration = firstBody.radius + secondBody.radius - distance;
+  if (penetration < -COLLISION_EPSILON) return undefined;
+  const fallback = normalizedVector(
+    firstBody.velocityX - secondBody.velocityX,
+    firstBody.velocityY - secondBody.velocityY,
+  );
+  const normal = normalizedVector(x, y, fallback.x, fallback.y);
+  const firstRim = firstBody.radius - Math.max(0, penetration) / 2;
+  return {
+    normal,
+    penetration: Math.max(0, penetration),
+    contactPoint: {
+      x: firstBody.x + normal.x * firstRim,
+      y: firstBody.y + normal.y * firstRim,
+    },
+  };
 }
 
 /**
@@ -7073,24 +7370,6 @@ function resolveAsteroidPairCollision(
   }
 }
 
-function playerBody() {
-  return {
-    x: playerX,
-    y: playerY,
-    radius: PLAYER_RADIUS,
-    mass: STARSHIP_MASS,
-    velocityX: playerVelocityX,
-    velocityY: playerVelocityY,
-  };
-}
-
-function applyPlayerBody(body) {
-  playerX = body.x;
-  playerY = body.y;
-  playerVelocityX = body.velocityX;
-  playerVelocityY = body.velocityY;
-}
-
 /**
  * Resolve a stable list of parents so replacing either member of a pair never
  * skips unrelated rocks or recursively shatters fresh fragments. Pieces made
@@ -7098,7 +7377,6 @@ function applyPlayerBody(body) {
  * @returns {void}
  */
 function resolveAsteroidCollisions() {
-  const ship = playerBody();
   const contactAsteroids = asteroids.slice();
   const fragmentedAsteroids = new Set();
 
@@ -7134,55 +7412,59 @@ function resolveAsteroidCollisions() {
     }
   }
 
-  for (
-    let asteroidIndex = contactAsteroids.length - 1;
-    asteroidIndex >= 0;
-    asteroidIndex -= 1
-  ) {
-    const asteroid = contactAsteroids[asteroidIndex];
-    if (
-      fragmentedAsteroids.has(asteroid) ||
-      !bodiesMayOverlap(ship, asteroid)
+  for (const ship of starships) {
+    if (!ship.alive) continue;
+    for (
+      let asteroidIndex = contactAsteroids.length - 1;
+      asteroidIndex >= 0;
+      asteroidIndex -= 1
     ) {
-      continue;
-    }
-
-    const manifold = collisionManifold(ship, asteroid);
-
-    if (manifold === undefined) {
-      continue;
-    }
-
-    const beforeEnergy = bodyKineticEnergy(ship) + bodyKineticEnergy(asteroid);
-    const response = resolveCollision(ship, asteroid, manifold);
-
-    if (response !== undefined) {
-      applyCollisionDamage(contactImpulseMagnitude(response));
-      if (response.normalImpulse > COLLISION_EPSILON) {
-        recordAsteroidDamage(response, "ramming");
-        empSound.playRandom();
+      const asteroid = contactAsteroids[asteroidIndex];
+      if (
+        !asteroids.includes(asteroid) ||
+        fragmentedAsteroids.has(asteroid) ||
+        !bodiesMayOverlap(ship, asteroid)
+      ) {
+        continue;
       }
-      const fragments = fragmentAsteroidAtImpact(
-        asteroid,
-        manifold.contactPoint,
-        manifold.normal,
-        response,
-        "body",
-      );
-      const afterEnergy = fragments.reduce(
-        (energy, fragment) => energy + bodyKineticEnergy(fragment),
-        bodyKineticEnergy(ship),
-      );
-      // Removed material joins the sparks for every impact source.
-      emitSparksAt(
-        manifold.contactPoint,
-        interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
-      );
-      applyShipCollisionAngleAdjustment(response);
+
+      const manifold = collisionManifold(ship, asteroid);
+
+      if (manifold === undefined) {
+        continue;
+      }
+
+      const beforeEnergy =
+        bodyKineticEnergy(ship) + bodyKineticEnergy(asteroid);
+      const response = resolveCollision(ship, asteroid, manifold);
+
+      if (response !== undefined) {
+        ship.applyCollisionDamage(contactImpulseMagnitude(response));
+        if (response.normalImpulse > COLLISION_EPSILON) {
+          recordAsteroidDamage(response, "ramming");
+          empSound.playRandom();
+        }
+        const fragments = fragmentAsteroidAtImpact(
+          asteroid,
+          manifold.contactPoint,
+          manifold.normal,
+          response,
+          "body",
+        );
+        const afterEnergy = fragments.reduce(
+          (energy, fragment) => energy + bodyKineticEnergy(fragment),
+          bodyKineticEnergy(ship),
+        );
+        // Removed material joins the sparks for every impact source.
+        emitSparksAt(
+          manifold.contactPoint,
+          interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
+        );
+        applyShipCollisionAngleAdjustment(response, ship);
+      }
     }
   }
 
-  applyPlayerBody(ship);
   // Both rock and cube contacts consume one parent snapshot. Children created
   // by either kind of physical contact join the next frame's body pass.
   resolveBorgCollisions(
@@ -7211,18 +7493,19 @@ function resolveBorgCollisions(contactAsteroids = asteroids.slice()) {
     }
   }
   for (const cube of borgCubes) {
-    const ship = playerBody();
-    const shipManifold = bodiesMayOverlap(ship, cube)
-      ? collisionManifold(ship, cube)
-      : undefined;
-    if (shipManifold !== undefined) {
-      const response = resolveCollision(ship, cube, shipManifold);
-      if (response !== undefined) {
-        const impulse = contactImpulseMagnitude(response);
-        applyCollisionDamage(impulse);
-        applyShipCollisionAngleAdjustment(response);
-        cube.hitBody(impulse, shipManifold.contactPoint);
-        applyPlayerBody(ship);
+    for (const ship of starships) {
+      if (!ship.alive) continue;
+      const shipManifold = bodiesMayOverlap(ship, cube)
+        ? collisionManifold(ship, cube)
+        : undefined;
+      if (shipManifold !== undefined) {
+        const response = resolveCollision(ship, cube, shipManifold);
+        if (response !== undefined) {
+          const impulse = contactImpulseMagnitude(response);
+          ship.applyCollisionDamage(impulse);
+          applyShipCollisionAngleAdjustment(response, ship);
+          cube.hitBody(impulse, shipManifold.contactPoint);
+        }
       }
     }
     for (const rock of contactAsteroids) {
@@ -7247,6 +7530,37 @@ function resolveBorgCollisions(contactAsteroids = asteroids.slice()) {
       emitSparksAt(
         manifold.contactPoint,
         interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
+      );
+    }
+  }
+}
+
+/**
+ * Friendly hulls remain physical. Apply the same impulse and damage model to
+ * both ships without treating their contact as asteroid score or fragmentation.
+ * @returns {void}
+ */
+function resolveStarshipCollisions() {
+  for (let first = 0; first < starships.length; first += 1) {
+    const ship = starships[first];
+    if (!ship.alive) continue;
+    for (let second = first + 1; second < starships.length; second += 1) {
+      const other = starships[second];
+      if (!other.alive || !bodiesMayOverlap(ship, other)) continue;
+      const manifold = collisionManifold(ship, other);
+      if (manifold === undefined) continue;
+      const response = resolveCollision(ship, other, manifold);
+      if (response === undefined) continue;
+      const impulse = contactImpulseMagnitude(response);
+      ship.applyCollisionDamage(impulse);
+      other.applyCollisionDamage(impulse);
+      applyShipCollisionAngleAdjustment(response, ship);
+      applyShipCollisionAngleAdjustment(
+        {
+          ...response,
+          firstAngularImpulse: response.secondAngularImpulse,
+        },
+        other,
       );
     }
   }
@@ -7284,49 +7598,28 @@ function turnDirectionForKeys(keys) {
  * @returns {void}
  */
 function updateGame(deltaTime, width, height) {
-  refillCollisionDamageBudget(deltaTime);
-  regenerateShield(deltaTime);
-  updateAutopilotInput(deltaTime, width, height);
+  for (const ship of starships) {
+    if (!ship.alive) continue;
+    ship.refillCollisionDamageBudget(deltaTime);
+    ship.regenerateShield(deltaTime);
+    updateAutopilotInput(ship, deltaTime, width, height);
 
-  playerAngle = wrapAngle(
-    playerAngle +
-      manualTurnControl.advance(performance.now()) +
-      turnDirectionForKeys(autopilotPressedKeys) *
-        Math.min(
-          ROTATION_SPEED * deltaTime,
-          Math.abs(shortestAngleDifference(autopilotDesiredAngle, playerAngle)),
-        ),
-  );
+    ship.angle = wrapAngle(
+      ship.angle +
+        ship.controls.manualTurnControl.advance(performance.now()) +
+        turnDirectionForKeys(ship.controls.autopilotPressedKeys) *
+          Math.min(
+            ROTATION_SPEED * deltaTime,
+            Math.abs(
+              shortestAngleDifference(
+                ship.controls.autopilotDesiredAngle,
+                ship.angle,
+              ),
+            ),
+          ),
+    );
 
-  const accelerates = pressedKeys.has("ArrowUp") || pressedKeys.has("KeyW");
-  const decelerates = pressedKeys.has("ArrowDown") || pressedKeys.has("KeyS");
-
-  if (accelerates !== decelerates) {
-    if (accelerates) {
-      const acceleration = MOVEMENT_RESPONSIVENESS * deltaTime;
-      playerVelocityX += Math.cos(playerAngle) * acceleration;
-      playerVelocityY += Math.sin(playerAngle) * acceleration;
-
-      const acceleratedSpeed = Math.hypot(playerVelocityX, playerVelocityY);
-
-      if (acceleratedSpeed > MAX_SPEED) {
-        const speedRatio = MAX_SPEED / acceleratedSpeed;
-        playerVelocityX *= speedRatio;
-        playerVelocityY *= speedRatio;
-      }
-    } else {
-      const currentSpeed = Math.hypot(playerVelocityX, playerVelocityY);
-
-      if (currentSpeed > COLLISION_EPSILON) {
-        const deceleration = Math.min(
-          currentSpeed,
-          MOVEMENT_RESPONSIVENESS * deltaTime,
-        );
-        const speedRatio = (currentSpeed - deceleration) / currentSpeed;
-        playerVelocityX *= speedRatio;
-        playerVelocityY *= speedRatio;
-      }
-    }
+    ship.applyThrottle(ship.controls.pressedKeys, deltaTime);
   }
 
   for (const asteroid of asteroids) {
@@ -7335,46 +7628,60 @@ function updateGame(deltaTime, width, height) {
 
   for (const cube of borgCubes) cube.update(width, height, deltaTime);
 
-  // The ship is a dynamic rigid body just like an asteroid. The wall callback
-  // sends each shield contact through the shared normal/friction solver so a
-  // tangential impact changes the ship's angular velocity instead of only
-  // reflecting its center-of-mass velocity.
-  const ship = playerBody();
-  advanceAndReflect(
-    ship,
-    "x",
-    "velocityX",
-    ship.velocityX * deltaTime,
-    PLAYER_RADIUS,
-    width - PLAYER_RADIUS,
-    BOUNCINESS,
-    (normal) => resolveShipWallContact(ship, normal),
-  );
-  advanceAndReflect(
-    ship,
-    "y",
-    "velocityY",
-    ship.velocityY * deltaTime,
-    PLAYER_RADIUS,
-    height - PLAYER_RADIUS,
-    BOUNCINESS,
-    (normal) => resolveShipWallContact(ship, normal),
-  );
-  applyPlayerBody(ship);
+  for (const ship of starships) {
+    if (!ship.alive) continue;
+    // The ship is a dynamic rigid body just like an asteroid. The wall callback
+    // sends each shield contact through the shared normal/friction solver so a
+    // tangential impact changes the ship's heading instead of only
+    // reflecting its center-of-mass velocity.
+    advanceAndReflect(
+      ship,
+      "x",
+      "velocityX",
+      ship.velocityX * deltaTime,
+      STARSHIP_RADIUS,
+      width - STARSHIP_RADIUS,
+      BOUNCINESS,
+      (normal) => resolveShipWallContact(ship, normal),
+    );
+    advanceAndReflect(
+      ship,
+      "y",
+      "velocityY",
+      ship.velocityY * deltaTime,
+      STARSHIP_RADIUS,
+      height - STARSHIP_RADIUS,
+      BOUNCINESS,
+      (normal) => resolveShipWallContact(ship, normal),
+    );
 
-  updateAutoGunnerFiring();
-  updateBulletFiring(deltaTime);
+    updateAutoGunnerFiring(ship);
+    updateBulletFiring(ship, deltaTime);
+  }
   updateBullets(deltaTime);
   resolveBulletCollisions(width, height);
   resolveAsteroidCollisions();
-  aimAssist.update(deltaTime);
-  updateAlert(deltaTime);
-
-  if (restartRequested) {
-    beginShipFailure();
-  } else if (asteroids.length === 0 && !borgCubes.some((cube) => cube.alive)) {
+  resolveStarshipCollisions();
+  for (const ship of starships)
+    if (ship.alive) ship.aimAssist.update(deltaTime);
+  if (
+    starships.some((ship) => ship.alive) &&
+    asteroids.length === 0 &&
+    !borgCubes.some((cube) => cube.alive)
+  ) {
     beginWin();
   }
+}
+
+/**
+ * Publish alarms and the human hull's destruction screen through the bridge.
+ * Fleet simulation does not choose which hull a human observes or controls.
+ * @param {number} deltaTime Active simulation seconds since the last step.
+ * @returns {void}
+ */
+function updateBridgeStatus(deltaTime) {
+  updateAlert(playerShip, deltaTime);
+  if (!playerShip.alive) beginShipFailure();
 }
 
 /**
@@ -7414,9 +7721,10 @@ function animate(frameTime) {
     updateShipFailure(deltaTime, width, gameplayHeight);
   } else if (!gamePaused) {
     updateGame(deltaTime, width, gameplayHeight);
+    updateBridgeStatus(deltaTime);
   }
   updateSparks(deltaTime);
-  updateDisplayedStatusBars(deltaTime);
+  for (const ship of starships) updateDisplayedStatusBars(deltaTime, ship);
   drawGame(width, height);
   window.requestAnimationFrame(animate);
 }
@@ -7441,14 +7749,14 @@ function controlKeyForEvent(event) {
 
 document.addEventListener("keydown", (event) => {
   if (event.code === AIM_ASSIST_TOGGLE_KEY) {
-    if (!event.repeat) aimAssist.toggle();
+    if (!event.repeat) playerShip.aimAssist.toggle();
     event.preventDefault();
     return;
   }
 
   if (event.code === AUTOPILOT_TOGGLE_KEY && !event.repeat) {
     unlockSound();
-    toggleAutopilot();
+    toggleAutopilot(playerShip);
     event.preventDefault();
     return;
   }
@@ -7456,7 +7764,7 @@ document.addEventListener("keydown", (event) => {
   if (event.code === AUTO_GUNNER_TOGGLE_KEY) {
     if (!event.repeat) {
       unlockSound();
-      toggleAutoGunner();
+      toggleAutoGunner(playerShip);
     }
     event.preventDefault();
     return;
@@ -7473,7 +7781,7 @@ document.addEventListener("keydown", (event) => {
         // A pause freezes gameplay input as well as simulation time. Requiring
         // a fresh Space press after resuming avoids a held key firing
         // unexpectedly.
-        clearPressedKeys();
+        for (const ship of starships) clearPressedKeys(ship);
       }
     }
 
@@ -7492,17 +7800,17 @@ document.addEventListener("keydown", (event) => {
     unlockSound();
     event.preventDefault();
 
-    disableAutomationForManualInput(controlKey);
+    disableAutomationForManualInput(playerShip, controlKey);
 
     if (gamePaused) {
       return;
     }
 
     if (controlKey === FIRE_KEY && !event.repeat) {
-      tryFireBullet();
+      tryFireBullet(playerShip);
     }
-    manualPressedKeys.add(controlKey);
-    syncPressedKeys();
+    playerShip.controls.manualPressedKeys.add(controlKey);
+    syncPressedKeys(playerShip);
   }
 });
 
@@ -7510,12 +7818,14 @@ document.addEventListener("keyup", (event) => {
   const controlKey = controlKeyForEvent(event);
 
   if (controlKey !== undefined) {
-    manualPressedKeys.delete(controlKey);
-    syncPressedKeys();
+    playerShip.controls.manualPressedKeys.delete(controlKey);
+    syncPressedKeys(playerShip);
   }
 });
 
-window.addEventListener("blur", clearPressedKeys);
+window.addEventListener("blur", () => {
+  for (const ship of starships) clearPressedKeys(ship);
+});
 
 /**
  * Start with the styled canvas dimensions, then follow element layout changes.
