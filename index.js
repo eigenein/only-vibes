@@ -91,6 +91,8 @@ const LCARS_GOLD = "#ffcc66";
 const LCARS_CORAL = "#ff8866";
 const LCARS_RED = "#cc6666";
 const LCARS_ALERT_RED = "#ff3333";
+// Green marks engaged automatic helm as a positive operational state.
+const LCARS_AUTOPILOT_GREEN = "#66ff99";
 const LCARS_LILAC = "#9999ff";
 const LCARS_LAVENDER = "#cc99cc";
 const LCARS_TEXT = "#fff4dd";
@@ -153,11 +155,11 @@ const STATUS_BAR_MARGIN = LCARS_FRAME_MARGIN;
 // at a readable speed. Keeping this separate from damage simulation makes a
 // large impact legible without changing when a collision actually resolves.
 const STATUS_BAR_ANIMATION_SPEED = 190;
-const STATUS_POINTS_WIDTH = 92;
-const STATUS_POINTS_GAP = 6;
-const STATUS_POINTS_HEIGHT = STATUS_BAR_HEIGHT * 2 + STATUS_BAR_GAP;
-// The alert lives only in the deliberate gap between the fire key and score;
-// compact consoles keep their layout; the hull bar also carries alert color.
+// Shared two-row height keeps controls and alert lanes aligned with health bars.
+const STATUS_BARS_HEIGHT = STATUS_BAR_HEIGHT * 2 + STATUS_BAR_GAP;
+// The alert lives only in the deliberate gap between the fire key and health bars;
+// Two stacked lanes separate danger from engaged automatic helm. Compact
+// consoles retain their mode key and colored hull bar when text cannot fit.
 // Alert thresholds measure reserve against consecutive full-budget contacts.
 // Ignore regeneration during that short burst: yellow asks for recovery room;
 // red means two heavy contacts could destroy the remaining hull. A ten-point
@@ -168,6 +170,12 @@ const ALERT_CLEAR_RESERVE_MARGIN = 10;
 const ALERT_CLEAR_DELAY_SECONDS = 2;
 const RED_ALERT_BLINK_INTERVAL_MILLISECONDS = 450;
 const ALERT_EDGE_GAP = 12;
+// Unlit LCD legends remain barely visible; active text is painted over them.
+const ALERT_LCD_SILHOUETTE_OPACITY = 0.08;
+// Three active-play seconds protect the human hull at every field start.
+// Contacts retain their physical response; shields, hull and damage budget
+// remain untouched. Pausing never consumes this spawn grace period.
+const PLAYER_SPAWN_IMMUNITY_SECONDS = 3;
 // Sound effects retain a small number of independent voices so a rapid burst
 // of shots or impacts does not cut off the sound that preceded it.
 const SOUND_EFFECT_VOICE_COUNT = 3;
@@ -220,7 +228,7 @@ const WIN_SOUND_SOURCE = "sounds/Alarm_02.wav";
 const DEFEAT_SOUND_SOURCE = "sounds/Shutdown.wav";
 // The command-console band encloses its two-row controls with matching
 // 10-pixel margins above and below.
-const LCARS_CONSOLE_HEIGHT = LCARS_CONSOLE_TOP * 2 + STATUS_POINTS_HEIGHT;
+const LCARS_CONSOLE_HEIGHT = LCARS_CONSOLE_TOP * 2 + STATUS_BARS_HEIGHT;
 // Hold the failure message long enough for a new player to connect the empty
 // hull bar with the collision that ended the current life.
 const SHIP_FAILURE_DISPLAY_SECONDS = 2.4;
@@ -229,11 +237,11 @@ const SHIP_FAILURE_PANEL_HEIGHT = 286;
 const SHIP_FAILURE_BACKDROP_ALPHA = 0.68;
 const SHIP_FAILURE_REASON = "Hull depleted by a collision.";
 // The win state is intentionally frozen so the player can read the result and
-// see the final score before choosing to start another field.
+// review achievements before choosing to start another field.
 const WIN_SCREEN_PANEL_WIDTH = 560;
 // Four badges per row keep the collection compact. Grow the panel by complete
 // rows; viewport scaling keeps every unlocked icon and its caption visible.
-const WIN_SCREEN_PANEL_HEIGHT = 344;
+const WIN_SCREEN_PANEL_HEIGHT = 274;
 const WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT = 120;
 const ACHIEVEMENT_COLUMNS = 4;
 const ACHIEVEMENT_BADGE_WIDTH = 104;
@@ -304,7 +312,7 @@ const BULLET_HALF_LENGTH = 10;
 const BULLET_LINE_WIDTH = 3;
 // Ricochets are deliberately finite: an active bullet can make a short chain
 // of useful asteroid cuts without becoming an unbounded simulation object.
-const MAX_BULLET_REFLECTIONS = 3;
+const MAX_BULLET_REFLECTIONS = 1;
 const BULLET_COLLISION_OFFSET = 0.01;
 
 // One cube joins each field. Its machinery is cached at a fixed texture size;
@@ -426,9 +434,6 @@ const BORG_HULL_FRACTURES = Object.freeze([
         {x: 0.7, y: -1},
     ]),
 ]);
-// Defeat awards points once; the intact hull remains a drifting physical
-// obstacle until the field restarts, with no remaining hostile systems.
-const BORG_DEFEAT_SCORE = 8000;
 // Collective tactical coordination allows multiple cubes (2+) to focus fire
 // on priority starships, forming coordinated focus groups across the fleet.
 // Target evaluation rechecks frequently, balances multi-group formation against
@@ -773,7 +778,9 @@ class ManualTurnControl {
             MANUAL_TURN_RAMP_DURATION,
             this.#heldTime + deltaTime,
         );
-        return this.#direction * ROTATION_SPEED * (rampArea + deltaTime - rampTime);
+        return (
+            this.#direction * ROTATION_SPEED * (rampArea + deltaTime - rampTime)
+        );
     }
 
     /**
@@ -1130,11 +1137,15 @@ class Starship {
      * @returns {void}
      */
     applyCollisionDamage(collisionMomentum) {
+        if (this === playerShip && playerSpawnImmunityRemaining > 0) return;
         const safeCollisionMomentum = Number.isFinite(collisionMomentum)
             ? Math.max(0, collisionMomentum)
             : 0;
         const rawImpactDamage = safeCollisionMomentum * COLLISION_DAMAGE_SCALE;
-        const impactDamage = Math.min(rawImpactDamage, this.collisionDamageBudget);
+        const impactDamage = Math.min(
+            rawImpactDamage,
+            this.collisionDamageBudget,
+        );
         const shieldFraction = this.shieldState / SHIELD_MAX_STATE;
         const transmittedFraction = 1 - shieldFraction;
         const shieldDamage = Math.min(
@@ -1177,7 +1188,10 @@ class Starship {
                 this.velocityX += Math.cos(this.angle) * acceleration;
                 this.velocityY += Math.sin(this.angle) * acceleration;
 
-                const acceleratedSpeed = Math.hypot(this.velocityX, this.velocityY);
+                const acceleratedSpeed = Math.hypot(
+                    this.velocityX,
+                    this.velocityY,
+                );
 
                 if (acceleratedSpeed > MAX_SPEED) {
                     const speedRatio = MAX_SPEED / acceleratedSpeed;
@@ -1207,7 +1221,10 @@ class Starship {
     coolWeapon(deltaTime) {
         if (!Number.isFinite(deltaTime)) return;
         const elapsed = Math.max(0, deltaTime);
-        this.phaserShotCooldown = Math.max(0, this.phaserShotCooldown - elapsed);
+        this.phaserShotCooldown = Math.max(
+            0,
+            this.phaserShotCooldown - elapsed,
+        );
         this.phaserHeat = Math.max(
             0,
             this.phaserHeat - PHASER_COOLING_RATE * elapsed,
@@ -1240,6 +1257,7 @@ const playerShip = starships[0];
 
 // The alarm is a transition cue, not a loop: one red alert per ship life.
 let redAlertSoundPlayed = false;
+let playerSpawnImmunityRemaining = PLAYER_SPAWN_IMMUNITY_SECONDS;
 let alertLevel = 0;
 let alertRecoveryTime = 0;
 let shipFailureActive = false;
@@ -1251,11 +1269,6 @@ let asteroidsGenerated = false;
 // player can inspect a frozen collision result and resume without a time jump.
 // Starting paused gives the player the controls before any movement begins.
 let gamePaused = true;
-// Points reset with each field; session achievements independently survive wins.
-// Points measure material that really leaves the playfield. A successful cut
-// preserves area across its retained fragments, while fragments below the
-// minimum area (and terminal asteroids) contribute the area that disappears.
-let sessionPoints = 0;
 let viewportWidth = 0;
 let viewportHeight = 0;
 const phraseMetricsCache = new Map();
@@ -1282,10 +1295,14 @@ class SoundEffect {
             const variant = {buffer: null, voices: []};
             // Data URLs and decompression work asynchronously on file:// as well as
             // HTTPS. Each variant is decoded only once while the opening help shows.
-            void fetch(`data:application/gzip;base64,${SOUND_EFFECT_SAMPLES[source]}`)
+            void fetch(
+                `data:application/gzip;base64,${SOUND_EFFECT_SAMPLES[source]}`,
+            )
                 .then((response) =>
                     new Response(
-                        response.body.pipeThrough(new DecompressionStream("gzip")),
+                        response.body.pipeThrough(
+                            new DecompressionStream("gzip"),
+                        ),
                     ).arrayBuffer(),
                 )
                 .then((bytes) => soundContext.decodeAudioData(bytes))
@@ -1690,7 +1707,9 @@ class Asteroid {
         // The cached local axes are rotated into world space whenever the body
         // geometry is refreshed.
         this.localCollisionAxes = polygonAxes(this.localVertices);
-        this.collisionAxes = this.localCollisionAxes.map((axis) => ({...axis}));
+        this.collisionAxes = this.localCollisionAxes.map((axis) => ({
+            ...axis,
+        }));
         this.worldBounds = polygonBounds(this.worldVertices);
         this.geometryX = undefined;
         this.geometryY = undefined;
@@ -1716,7 +1735,9 @@ class Asteroid {
      * shoulder can reach a wall even when the center of mass is stationary.
      */
     update(width, height, deltaTime) {
-        this.rotation = wrapAngle(this.rotation + this.angularVelocity * deltaTime);
+        this.rotation = wrapAngle(
+            this.rotation + this.angularVelocity * deltaTime,
+        );
         this.x += this.velocityX * deltaTime;
         this.y += this.velocityY * deltaTime;
         resolveAsteroidWallCollisions(this, width, height);
@@ -1959,7 +1980,10 @@ class BorgCube extends Asteroid {
     keepInside(width, height) {
         const half = Math.max(
             0.1,
-            Math.min(BORG_HALF_SIZE, Math.min(width, height) * BORG_ARENA_SIZE_RATIO),
+            Math.min(
+                BORG_HALF_SIZE,
+                Math.min(width, height) * BORG_ARENA_SIZE_RATIO,
+            ),
         );
         if (half !== this.half) {
             const ratio = half / this.half;
@@ -2081,7 +2105,10 @@ class BorgCube extends Asteroid {
         face.impact = BORG_IMPACT_SECONDS;
         face.quiet = 0;
         face.burst = Math.min(1, face.burst + BORG_BURST_PER_HIT);
-        face.adaptation = Math.min(1, face.adaptation + BORG_ADAPTATION_PER_HIT);
+        face.adaptation = Math.min(
+            1,
+            face.adaptation + BORG_ADAPTATION_PER_HIT,
+        );
         const otherAllocation = this.faces.reduce(
             (sum, other) => sum + (other === face ? 0 : other.adaptation),
             0,
@@ -2136,7 +2163,6 @@ class BorgCube extends Asteroid {
         if (!this.alive) {
             // Defeat is a single transition. Keep the body's pose and momentum;
             // only powered systems stop. The wreck is never fragmented or removed.
-            sessionPoints += BORG_DEFEAT_SCORE;
             this.wreckTexture = this.createTexture(false);
             this.fireCharge = 0;
             this.fireCooldown = 0;
@@ -2184,7 +2210,10 @@ class BorgCube extends Asteroid {
             face.impact = Math.max(0, face.impact - deltaTime);
             face.warning = Math.max(0, face.warning - deltaTime * 2);
             if (face.quiet > BORG_BURST_QUIET_SECONDS)
-                face.burst = Math.max(0, face.burst - BORG_BURST_DECAY * deltaTime);
+                face.burst = Math.max(
+                    0,
+                    face.burst - BORG_BURST_DECAY * deltaTime,
+                );
             if (face.quiet > BORG_ADAPTATION_QUIET_SECONDS)
                 face.adaptation = Math.max(
                     0,
@@ -2223,7 +2252,10 @@ class BorgCube extends Asteroid {
         const localAngle = angle - rotation;
         const surfaceDistance =
             this.half /
-            Math.max(Math.abs(Math.cos(localAngle)), Math.abs(Math.sin(localAngle)));
+            Math.max(
+                Math.abs(Math.cos(localAngle)),
+                Math.abs(Math.sin(localAngle)),
+            );
         return surfaceDistance + BULLET_HALF_LENGTH + BULLET_COLLISION_OFFSET;
     }
 
@@ -2297,7 +2329,10 @@ class BorgCube extends Asteroid {
             if (this.fireCharge > BORG_AIM_LOCK_SECONDS) {
                 this.fireAngle = this.aimAtTarget(remainingCharge);
                 if (remainingCharge <= BORG_AIM_LOCK_SECONDS) {
-                    this.fireAngle += randomBetween(-BORG_AIM_SPREAD, BORG_AIM_SPREAD);
+                    this.fireAngle += randomBetween(
+                        -BORG_AIM_SPREAD,
+                        BORG_AIM_SPREAD,
+                    );
                 }
             }
             this.fireCharge = remainingCharge;
@@ -2433,7 +2468,10 @@ class BorgCube extends Asteroid {
             {distance: height - this.y - this.radius, x: 0, y: -1},
         ];
         for (const edge of edges) {
-            const urgency = Math.max(0, 1 - edge.distance / Math.max(1, margin));
+            const urgency = Math.max(
+                0,
+                1 - edge.distance / Math.max(1, margin),
+            );
             steerX += edge.x * urgency * 3;
             steerY += edge.y * urgency * 3;
         }
@@ -2447,7 +2485,10 @@ class BorgCube extends Asteroid {
         const speed = Math.hypot(this.velocityX, this.velocityY);
         if (speed > BORG_MAX_SPEED) {
             const ratio =
-                Math.max(BORG_MAX_SPEED, speed - BORG_ACCELERATION * deltaTime) / speed;
+                Math.max(
+                    BORG_MAX_SPEED,
+                    speed - BORG_ACCELERATION * deltaTime,
+                ) / speed;
             this.velocityX *= ratio;
             this.velocityY *= ratio;
         }
@@ -2563,7 +2604,12 @@ class BorgCube extends Asteroid {
             }
             context.globalAlpha = face.burst * 0.6;
             for (let band = 0; band < Math.ceil(face.burst * 4); band += 1) {
-                context.strokeRect(-half + 9, -half + 8 + band * 4, half * 2 - 18, 2);
+                context.strokeRect(
+                    -half + 9,
+                    -half + 8 + band * 4,
+                    half * 2 - 18,
+                    2,
+                );
             }
             if (face.warning > 0) {
                 context.globalAlpha =
@@ -2966,7 +3012,7 @@ class Bullet {
      * @param {number} [options.mass] Positive physical mass retained through ricochets.
      * @param {number} [options.lineWidth] Painted pulse thickness in CSS pixels.
      * @param {"starship"|"borg"} [options.source] Origin for damage attribution and Borg fleet immunity.
-     * @param {string} [options.materialColor] Initial pulse color before rock ricochets.
+     * @param {string} [options.materialColor] Launch color retained for the projectile lifetime.
      */
     constructor({
                     x,
@@ -2994,17 +3040,11 @@ class Bullet {
     }
 
     /**
-     * Count a bounce and retain the latest asteroid's material color. Walls and
-     * the ship preserve that color; a fresh pulse keeps its launch gradient.
-     * @param {string} [materialColor] Color of the asteroid causing this bounce.
+     * Count a bounce without changing the pulse's launch color or cached paint.
      * @returns {void}
      */
-    recordReflection(materialColor = this.materialColor) {
+    recordReflection() {
         this.reflectionCount += 1;
-        if (materialColor !== this.materialColor) {
-            this.gradient = undefined;
-        }
-        this.materialColor = materialColor;
     }
 
     update(deltaTime) {
@@ -3037,8 +3077,8 @@ class Bullet {
     /**
      * Store paint in pulse-local coordinates. Canvas transforms gradients when
      * painting, so motion, rotation and viewport density need no new stops.
-     * The cache belongs to the pulse and is released with it; arbitrary asteroid
-     * colors cannot accumulate in a permanent global paint cache.
+     * The cache belongs to the pulse and is released with it. Launch colors
+     * remain stable after all contacts so friendly and enemy fire stay distinct.
      * @returns {CanvasGradient} Soft-ended paint for the current material color.
      */
     createGradient() {
@@ -3049,8 +3089,8 @@ class Bullet {
             0,
         );
 
-        // Transparent ends keep the phaser silhouette soft. After an asteroid
-        // ricochet, the whole pulse uses that rock's hue so its origin is readable.
+        // Transparent ends soften the phaser silhouette; its origin retains
+        // the same color even after a ricochet.
         gradient.addColorStop(0, "rgba(0, 0, 0, 0)");
         gradient.addColorStop(0.3, this.materialColor ?? LCARS_AMBER);
         gradient.addColorStop(0.5, this.materialColor ?? LCARS_GOLD);
@@ -3092,7 +3132,10 @@ class Spark {
         this.velocityY = Math.sin(direction) * speed;
         this.lifetime = randomBetween(SPARK_MIN_LIFETIME, SPARK_MAX_LIFETIME);
         this.lifeRemaining = this.lifetime;
-        this.intensity = randomBetween(SPARK_MIN_INTENSITY, SPARK_MAX_INTENSITY);
+        this.intensity = randomBetween(
+            SPARK_MIN_INTENSITY,
+            SPARK_MAX_INTENSITY,
+        );
     }
 
     /**
@@ -3282,7 +3325,10 @@ function phraseFontSizeForViewport(width, height) {
             PHRASE_BASE_FONT_SIZE,
             (PHRASE_BASE_FONT_SIZE * availableWidth) / baseMetrics.widestLine,
             (PHRASE_BASE_FONT_SIZE *
-                Math.max(0, availableHeight - PHRASE_LINE_GAP * (lineCount - 1))) /
+                Math.max(
+                    0,
+                    availableHeight - PHRASE_LINE_GAP * (lineCount - 1),
+                )) /
             baseMetrics.lineHeight,
         ),
     );
@@ -3347,6 +3393,7 @@ function configureHelpingFleet(width, height) {
     );
 
     playerShip.reset(centerX, centerY);
+    playerSpawnImmunityRemaining = PLAYER_SPAWN_IMMUNITY_SECONDS;
     clearPressedKeys(playerShip);
 
     for (let helperIndex = 0; helperIndex < helperCount; helperIndex += 1) {
@@ -3354,8 +3401,16 @@ function configureHelpingFleet(width, height) {
         const angle =
             -Math.PI / 2 + (helperIndex * Math.PI * 2) / Math.max(1, helperCount);
         helper.reset(
-            constrainPosition(centerX + Math.cos(angle) * safeDistance, helper.radius, width),
-            constrainPosition(centerY + Math.sin(angle) * safeDistance, helper.radius, height),
+            constrainPosition(
+                centerX + Math.cos(angle) * safeDistance,
+                helper.radius,
+                width,
+            ),
+            constrainPosition(
+                centerY + Math.sin(angle) * safeDistance,
+                helper.radius,
+                height,
+            ),
             wrapAngle(angle + Math.PI),
         );
         helper.controls.autopilotEnabled = true;
@@ -4477,7 +4532,7 @@ function updateAlert(ship, deltaTime) {
 /**
  * Begin a fresh field after destruction or a completed field. Achievements
  * persist across wins and are cleared only when ship failure begins.
- * Reset the field score together with the world. Rebuilding the asteroid field
+ * Rebuilding the asteroid field with the world
  * makes the restart a real game restart instead of leaving the player inside
  * the collision that ended the previous life.
  * @param {number} width Viewport width in CSS pixels.
@@ -4487,7 +4542,6 @@ function updateAlert(ship, deltaTime) {
 function restartGame(width, height) {
     // Victory advances the same session; destruction starts again at one cube.
     sessionField = gameWon ? sessionField + 1 : 1;
-    sessionPoints = 0;
     fieldAsteroidDamage.ramming = 0;
     fieldAsteroidDamage.blasters = 0;
     configureHelpingFleet(width, height);
@@ -4529,7 +4583,7 @@ function beginShipFailure() {
 }
 
 /**
- * Unlock the ramming challenge before displaying achievements and final score.
+ * Unlock the ramming challenge before displaying achievements.
  * Rammer requires strictly more ramming damage in the completed field; ties
  * (including an empty comparison) never qualify. Earned badges survive wins.
  * Keep the result visible until the player starts another field, separately
@@ -4586,24 +4640,6 @@ function updateShipFailure(deltaTime, width, height) {
 }
 
 /**
- * Add the area removed when a cut replaces one asteroid with its retained
- * fragments. Keeping this calculation at the replacement boundary makes the
- * score follow both the minimum-fragment rule and the terminal-asteroid rule.
- * @param {Asteroid} asteroid Asteroid removed by the cut.
- * @param {Asteroid[]} fragments Fragments that remain after the area cutoff.
- * @returns {void}
- */
-function countVanishedAsteroidArea(asteroid, fragments) {
-    const retainedArea = fragments.reduce(
-        (area, fragment) => area + fragment.surfaceArea,
-        0,
-    );
-    const vanishedArea = Math.max(0, asteroid.surfaceArea - retainedArea);
-
-    sessionPoints += vanishedArea;
-}
-
-/**
  * Credit direct asteroid hits using the ship damage system's impulse scale.
  * Use the uncapped impact value: shield absorption and the ship's protective
  * contact budget describe damage received, not damage inflicted on a rock.
@@ -4624,43 +4660,6 @@ function recordAsteroidDamage(response, source) {
         Number.MAX_VALUE,
         fieldAsteroidDamage[source] + damage,
     );
-}
-
-/**
- * Render the score beside the health bars, with a stacked fallback for narrow
- * viewports where a horizontal score block would overlap the canvas edge.
- * @param {number} rightX Right edge of the score block in CSS pixels.
- * @param {number} topY Top of the score block in CSS pixels.
- * @returns {number} Left edge of the score block in CSS pixels.
- */
-function drawPoints(rightX, topY) {
-    const blockLeft = rightX - STATUS_POINTS_WIDTH;
-
-    context.save();
-    context.beginPath();
-    context.roundRect(
-        blockLeft,
-        topY,
-        STATUS_POINTS_WIDTH,
-        STATUS_POINTS_HEIGHT,
-        [STATUS_POINTS_HEIGHT / 2, 3, 3, STATUS_POINTS_HEIGHT / 2],
-    );
-    context.fillStyle = LCARS_AMBER;
-    context.fill();
-    context.textAlign = "right";
-    context.textBaseline = "middle";
-    context.fillStyle = LCARS_BLACK;
-    context.font = `700 11px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText("SCORE", rightX - 10, topY + 13);
-    context.font = `700 22px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText(
-        Math.round(sessionPoints).toString(),
-        rightX - 10,
-        topY + 39,
-    );
-    context.restore();
-
-    return blockLeft;
 }
 
 /**
@@ -4711,7 +4710,7 @@ function updateDisplayedStatusBars(deltaTime, ship) {
  * These are game UI, not debug output, so they remain visible when debugging
  * is disabled and while the paused help screen is open.
  * @param {number} width Viewport width in CSS pixels.
- * @returns {number|undefined} Left edge of the score block when it is drawn.
+ * @returns {number|undefined} Left edge of the health bars when drawn.
  */
 function drawStatusBars(width) {
     const barWidth = Math.min(
@@ -4724,16 +4723,7 @@ function drawStatusBars(width) {
     }
 
     const barX = width - barWidth - STATUS_BAR_MARGIN;
-    const pointsFitsBesideBars =
-        barX - STATUS_BAR_MARGIN >= STATUS_POINTS_WIDTH + STATUS_POINTS_GAP;
-    const barTop = pointsFitsBesideBars
-        ? LCARS_CONSOLE_TOP
-        : LCARS_CONSOLE_TOP + STATUS_POINTS_HEIGHT + STATUS_BAR_GAP;
-
-    const scoreBlockLeft = drawPoints(
-        pointsFitsBesideBars ? barX - STATUS_POINTS_GAP : width - STATUS_BAR_MARGIN,
-        pointsFitsBesideBars ? LCARS_CONSOLE_TOP : LCARS_CONSOLE_TOP / 2,
-    );
+    const barTop = LCARS_CONSOLE_TOP;
 
     const bars = [
         {
@@ -4791,52 +4781,79 @@ function drawStatusBars(width) {
 
     context.restore();
 
-    return scoreBlockLeft;
+    return barX;
 }
 
 /**
- * Draw a steady yellow recovery warning or a blinking red survival warning
- * in the spare console space. Healthy flight leaves the gap empty.
+ * Split spare console space into danger and positive automatic-helm lanes.
+ * Dim blinking text stays readable between pulses, including while paused.
  * @param {number|undefined} controlRightX Right edge of the fire control.
- * @param {number|undefined} scoreBlockLeft Left edge of the score block.
+ * @param {number|undefined} statusBarsLeft Left edge of the health bars.
  * @returns {void}
  */
-function drawAlert(controlRightX, scoreBlockLeft) {
-    if (!Number.isFinite(controlRightX) || !Number.isFinite(scoreBlockLeft)) {
+function drawAlert(controlRightX, statusBarsLeft) {
+    if (!Number.isFinite(controlRightX) || !Number.isFinite(statusBarsLeft)) {
         return;
     }
 
-    if (alertLevel === 0) return;
-
-    const alertText = alertLevel === 2 ? "RED ALERT" : "YELLOW ALERT";
     const alertLeft = controlRightX + ALERT_EDGE_GAP;
-    const alertRight = scoreBlockLeft - ALERT_EDGE_GAP;
+    const alertRight = statusBarsLeft - ALERT_EDGE_GAP;
     const availableWidth = alertRight - alertLeft;
-
-    context.save();
-    context.font = `700 21px ${LCARS_FONT_FAMILY}`;
-    const requiredWidth = context.measureText(alertText).width;
-
-    if (availableWidth >= requiredWidth) {
-        const hullIsCritical = alertLevel === 2;
         const blinkIsBright =
             Math.floor(
                 window.performance.now() / RED_ALERT_BLINK_INTERVAL_MILLISECONDS,
             ) %
             2 ===
             0;
+    const lanes = [
+        {
+            text: alertLevel === 2 ? "RED ALERT" : "YELLOW ALERT",
+            visible: alertLevel > 0,
+            color: alertLevel === 2 ? LCARS_ALERT_RED : LCARS_GOLD,
+            blinking: alertLevel === 2,
+        },
+        {
+            text: "AUTOPILOT",
+            visible: playerShip.controls.autopilotEnabled,
+            color: LCARS_AUTOPILOT_GREEN,
+            blinking: true,
+        },
+    ];
 
-        context.textAlign = "center";
+    context.save();
+    context.font = `700 21px ${LCARS_FONT_FAMILY}`;
+    context.textAlign = "right";
         context.textBaseline = "middle";
-        context.fillStyle = hullIsCritical ? LCARS_ALERT_RED : LCARS_GOLD;
-        context.globalAlpha = hullIsCritical ? (blinkIsBright ? 1 : 0.18) : 1;
-        context.fillText(
-            alertText,
-            (alertLeft + alertRight) / 2,
-            LCARS_CONSOLE_TOP + STATUS_POINTS_HEIGHT / 2,
-        );
+    // Ghost legends share the danger row like overlapping old LCD segments.
+    // Paint all ghosts first so an inactive legend cannot dim an active one.
+    // Both LCD lanes share the right edge beside the health bars.
+    /**
+     * @param {number} index Zero-based console lane.
+     * @returns {number} Lane center y in CSS pixels.
+     */
+    const laneY = (index) =>
+        LCARS_CONSOLE_TOP + (STATUS_BARS_HEIGHT * (index + 0.5)) / lanes.length;
+    const legends = [
+        { text: "RED ALERT", color: LCARS_ALERT_RED, index: 0 },
+        { text: "YELLOW ALERT", color: LCARS_GOLD, index: 0 },
+        { text: "AUTOPILOT", color: LCARS_AUTOPILOT_GREEN, index: 1 },
+    ];
+    for (const legend of legends) {
+        if (context.measureText(legend.text).width > availableWidth) continue;
+        context.fillStyle = legend.color;
+        context.globalAlpha = ALERT_LCD_SILHOUETTE_OPACITY;
+        context.fillText(legend.text, alertRight, laneY(legend.index));
     }
-
+    for (const [index, lane] of lanes.entries()) {
+        if (
+            !lane.visible ||
+            context.measureText(lane.text).width > availableWidth
+        )
+            continue;
+        context.fillStyle = lane.color;
+        context.globalAlpha = lane.blinking && !blinkIsBright ? 0.18 : 1;
+        context.fillText(lane.text, alertRight, laneY(index));
+    }
     context.restore();
 }
 
@@ -4897,7 +4914,12 @@ function createDangerWallGradients(width, height, thickness) {
     top.addColorStop(0, WALL_GLOW_COLOR);
     top.addColorStop(1, WALL_GLOW_FADE_COLOR);
 
-    const bottom = context.createLinearGradient(0, height, 0, height - thickness);
+    const bottom = context.createLinearGradient(
+        0,
+        height,
+        0,
+        height - thickness,
+    );
     bottom.addColorStop(0, WALL_GLOW_COLOR);
     bottom.addColorStop(1, WALL_GLOW_FADE_COLOR);
 
@@ -5069,7 +5091,8 @@ function drawStarship(ship) {
 
     context.rotate(ship.angle);
     context.scale(STARSHIP_RADIUS, STARSHIP_RADIUS);
-    context.fillStyle = LCARS_GOLD;
+    // Hull identity remains visible regardless of helm mode or shield charge.
+    context.fillStyle = ship === playerShip ? LCARS_GOLD : LCARS_LAVENDER;
     context.fill(STARSHIP_SILHOUETTE);
     context.strokeStyle = LCARS_BLACK;
     context.lineWidth = 1 / STARSHIP_RADIUS;
@@ -5136,8 +5159,8 @@ function drawGame(width, height) {
 
     drawLCARSCommandConsole(width);
     const controlRightX = drawFlightControls(width);
-    const scoreBlockLeft = drawStatusBars(width);
-    drawAlert(controlRightX, scoreBlockLeft);
+    const statusBarsLeft = drawStatusBars(width);
+    drawAlert(controlRightX, statusBarsLeft);
 }
 
 /**
@@ -5298,7 +5321,13 @@ function drawBorgFocusLock(width, height) {
         context.strokeStyle = BORG_FOCUS_LOCK_COLOR;
         context.lineWidth = 1;
         context.beginPath();
-        context.roundRect(badgeX, badgeY, badgeWidth, badgeHeight, [2, 6, 6, 2]);
+        context.roundRect(
+            badgeX,
+            badgeY,
+            badgeWidth,
+            badgeHeight,
+            [2, 6, 6, 2],
+        );
         context.fill();
         context.stroke();
 
@@ -5407,7 +5436,7 @@ function drawFlightControls(width) {
         Math.max(0, width - LCARS_FRAME_MARGIN * 2),
     );
     const statusWidth = Math.min(
-        STATUS_POINTS_WIDTH + STATUS_POINTS_GAP + STATUS_BAR_WIDTH,
+        STATUS_BAR_WIDTH,
         Math.max(0, width - LCARS_FRAME_MARGIN * 2 - titleWidth - 12),
     );
     const rowWidth = Math.max(
@@ -5423,7 +5452,7 @@ function drawFlightControls(width) {
             desiredKeyWidth * keyButtonCount +
             FLIGHT_CONTROL_GAP * keyButtonCount),
     );
-    const buttonHeight = STATUS_POINTS_HEIGHT;
+    const buttonHeight = STATUS_BARS_HEIGHT;
     let buttonX = LCARS_FRAME_MARGIN;
     const controls = [
         [
@@ -5701,18 +5730,9 @@ function drawWinScreen(width, height) {
     context.fillStyle = LCARS_TEXT;
     context.font = `500 22px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(WIN_SCREEN_REASON, WIN_SCREEN_PANEL_WIDTH / 2, 144);
-    context.fillStyle = LCARS_AMBER;
-    context.font = `500 15px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText("FINAL SCORE", WIN_SCREEN_PANEL_WIDTH / 2, 182);
-    context.font = `700 30px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText(
-        Math.round(sessionPoints).toString(),
-        WIN_SCREEN_PANEL_WIDTH / 2,
-        212,
-    );
     context.fillStyle = LCARS_LILAC;
     context.font = `600 18px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText("SESSION ACHIEVEMENTS", WIN_SCREEN_PANEL_WIDTH / 2, 254);
+    context.fillText("SESSION ACHIEVEMENTS", WIN_SCREEN_PANEL_WIDTH / 2, 184);
     for (const [index, achievement] of unlockedAchievements.entries()) {
         const row = Math.floor(index / ACHIEVEMENT_COLUMNS);
         const column = index % ACHIEVEMENT_COLUMNS;
@@ -5728,7 +5748,7 @@ function drawWinScreen(width, height) {
         const badgeX =
             (WIN_SCREEN_PANEL_WIDTH - rowWidth) / 2 +
             column * (ACHIEVEMENT_BADGE_WIDTH + ACHIEVEMENT_BADGE_GAP);
-        const badgeY = 280 + row * WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT;
+        const badgeY = 210 + row * WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT;
 
         drawAchievementBadge(achievement, badgeX, badgeY);
     }
@@ -5815,12 +5835,12 @@ function drawPauseHelp(width, height) {
     context.fillStyle = LCARS_MUTED_TEXT;
     context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
-        "Phasers cut rocks. Strong body hits split; light hits bounce.",
+        "Gold = you; lavender = ally. One ricochet; 3s spawn immunity.",
         HELP_PANEL_WIDTH / 2,
         518,
     );
     context.fillText(
-        "Alerts: yellow enables aim assist; red also enables autopilot.",
+        "Alerts: yellow = aim assist; red = autopilot; green = engaged.",
         HELP_PANEL_WIDTH / 2,
         548,
     );
@@ -5900,7 +5920,9 @@ function advanceAndReflect(
             if (onCollision === undefined) {
                 body[velocityProperty] *= bounceCoefficient;
             } else {
-                onCollision(positionProperty === "x" ? {x: 1, y: 0} : {x: 0, y: 1});
+                onCollision(
+                    positionProperty === "x" ? { x: 1, y: 0 } : { x: 0, y: 1 },
+                );
             }
         }
     }
@@ -6317,8 +6339,10 @@ function cleanPolygon(vertices) {
 
         if (
             previousVertex === undefined ||
-            Math.hypot(vertex.x - previousVertex.x, vertex.y - previousVertex.y) >
-            COLLISION_EPSILON
+            Math.hypot(
+                vertex.x - previousVertex.x,
+                vertex.y - previousVertex.y,
+            ) > COLLISION_EPSILON
         ) {
             cleanedVertices.push(vertex);
         }
@@ -6329,8 +6353,10 @@ function cleanPolygon(vertices) {
         const lastVertex = cleanedVertices.at(-1);
 
         if (
-            Math.hypot(lastVertex.x - firstVertex.x, lastVertex.y - firstVertex.y) <=
-            COLLISION_EPSILON
+            Math.hypot(
+                lastVertex.x - firstVertex.x,
+                lastVertex.y - firstVertex.y,
+            ) <= COLLISION_EPSILON
         ) {
             cleanedVertices.pop();
         }
@@ -6442,7 +6468,12 @@ function segmentPolygonIntersectionParameter(start, end, vertices) {
         const edgeY = secondVertex.y - firstVertex.y;
         const startSide =
             orientation *
-            cross2D(edgeX, edgeY, start.x - firstVertex.x, start.y - firstVertex.y);
+            cross2D(
+                edgeX,
+                edgeY,
+                start.x - firstVertex.x,
+                start.y - firstVertex.y,
+            );
         const sideRate =
             orientation * cross2D(edgeX, edgeY, direction.x, direction.y);
 
@@ -6662,7 +6693,6 @@ function fragmentAsteroidAtImpact(
     }
     const fragments = splitAsteroid(asteroid, hitPoint, cutDirection);
 
-    countVanishedAsteroidArea(asteroid, fragments);
     asteroids.splice(asteroidIndex, 1, ...fragments);
     for (const ship of starships)
         ship.aimAssist.followFragments(asteroid, fragments);
@@ -6906,8 +6936,18 @@ function applyContactImpulse(
     const tangentImpulseX = tangentImpulseMagnitude * tangent.x;
     const tangentImpulseY = tangentImpulseMagnitude * tangent.y;
 
-    applyBodyImpulse(firstBody, -tangentImpulseX, -tangentImpulseY, contactPoint);
-    applyBodyImpulse(secondBody, tangentImpulseX, tangentImpulseY, contactPoint);
+    applyBodyImpulse(
+        firstBody,
+        -tangentImpulseX,
+        -tangentImpulseY,
+        contactPoint,
+    );
+    applyBodyImpulse(
+        secondBody,
+        tangentImpulseX,
+        tangentImpulseY,
+        contactPoint,
+    );
 
     const impulseX = normalImpulseX + tangentImpulseX;
     const impulseY = normalImpulseY + tangentImpulseY;
@@ -6990,7 +7030,7 @@ function sparkCountForEnergyLoss(kineticEnergyLoss) {
 /**
  * Emit a random-direction burst at a contact point. The particles are
  * presentation-only, so this function intentionally does not touch bodies,
- * scores, damage, or any other gameplay state.
+ * damage or any other gameplay state.
  * @param {Vector2} contactPoint Position of the interaction.
  * @param {number} kineticEnergyLoss Energy available for the burst.
  * @returns {void}
@@ -7058,7 +7098,12 @@ function resolveBulletCollisions(width, height) {
                 }
             }
 
-            const wallHit = boundaryHit(segmentStart, segmentEnd, width, height);
+            const wallHit = boundaryHit(
+                segmentStart,
+                segmentEnd,
+                width,
+                height,
+            );
             let ship = undefined;
             let shipHitParameter = undefined;
             for (const candidate of starships) {
@@ -7167,11 +7212,7 @@ function resolveBulletCollisions(width, height) {
                     recordAsteroidDamage(response, "blasters");
                 bullet.syncAngle();
                 if (canReflect) {
-                    bullet.recordReflection(
-                        asteroid instanceof BorgCube
-                            ? bullet.materialColor
-                            : asteroid.materialColor,
-                    );
+                    bullet.recordReflection();
                 }
                 // A wreck is a solid reflector, never a cuttable asteroid. Enemy
                 // and player pulses otherwise share the complete ricochet path.
@@ -7218,7 +7259,9 @@ function resolveBulletCollisions(width, height) {
                     sessionAchievements.add("friendly-fire");
                 }
                 applyShipCollisionAngleAdjustment(bulletImpulse, ship);
-                ship.applyCollisionDamage(contactImpulseMagnitude(bulletImpulse));
+                ship.applyCollisionDamage(
+                    contactImpulseMagnitude(bulletImpulse),
+                );
                 if (bulletImpulse.normalImpulse > COLLISION_EPSILON) {
                     empSound.playRandom();
                 }
@@ -7259,7 +7302,10 @@ function resolveBulletCollisions(width, height) {
                     removedEnergy,
                 ),
             );
-            const direction = normalizedVector(bullet.velocityX, bullet.velocityY);
+            const direction = normalizedVector(
+                bullet.velocityX,
+                bullet.velocityY,
+            );
             const travelDistance = Math.max(
                 0,
                 remainingDistance - BULLET_COLLISION_OFFSET,
@@ -7541,7 +7587,11 @@ function closestPointOnPolygon(point, vertices) {
     for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
         const firstVertex = vertices[vertexIndex];
         const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
-        const candidate = closestPointOnSegment(point, firstVertex, secondVertex);
+        const candidate = closestPointOnSegment(
+            point,
+            firstVertex,
+            secondVertex,
+        );
         const distanceX = candidate.x - point.x;
         const distanceY = candidate.y - point.y;
         const distanceSquared = distanceX ** 2 + distanceY ** 2;
@@ -7577,8 +7627,10 @@ function circlePolygonManifold(circleBody, polygonBody, polygonVertices) {
     const axisCount =
         axes.length +
         Number(
-            Math.hypot(closestPoint.x - circleBody.x, closestPoint.y - circleBody.y) >
-            COLLISION_EPSILON,
+            Math.hypot(
+                closestPoint.x - circleBody.x,
+                closestPoint.y - circleBody.y,
+            ) > COLLISION_EPSILON,
         );
 
     let minimumPenetration = Infinity;
@@ -7948,7 +8000,10 @@ function resolveBorgCollisions(contactAsteroids = asteroids.slice()) {
             const beforeEnergy = bodyKineticEnergy(cube) + bodyKineticEnergy(rock);
             const response = resolveCollision(cube, rock, manifold);
             if (response === undefined) continue;
-            cube.hitBody(contactImpulseMagnitude(response), manifold.contactPoint);
+            cube.hitBody(
+                contactImpulseMagnitude(response),
+                manifold.contactPoint,
+            );
             const fragments = fragmentAsteroidAtImpact(
                 rock,
                 manifold.contactPoint,
@@ -7970,7 +8025,7 @@ function resolveBorgCollisions(contactAsteroids = asteroids.slice()) {
 
 /**
  * Friendly hulls remain physical. Apply the same impulse and damage model to
- * both ships without treating their contact as asteroid score or fragmentation.
+ * both ships without treating their contact as asteroid fragmentation.
  * @returns {void}
  */
 function resolveStarshipCollisions() {
@@ -8129,7 +8184,7 @@ function updateBridgeStatus(deltaTime) {
  * mutable objects with this direct-file page without copying the complete
  * world each frame (SharedArrayBuffer is unavailable without cross-origin
  * isolation). Copying adds work and asynchronous messages require a new
- * snapshot protocol to preserve ordered collision/health/score rules. Workers
+ * snapshot protocol to preserve ordered collision/health rules. Workers
  * remain an option if browser profiling justifies that architectural change;
  * first remove repeated geometry and paint setup from this frame transaction.
  * @param {number} frameTime Animation-frame timestamp in milliseconds.
@@ -8145,7 +8200,10 @@ function animate(frameTime) {
     const deltaTime =
         previousFrameTime === undefined
             ? 0
-            : Math.min((frameTime - previousFrameTime) / 1000, MAX_SIMULATION_STEP);
+            : Math.min(
+                  (frameTime - previousFrameTime) / 1000,
+                  MAX_SIMULATION_STEP,
+              );
     previousFrameTime = frameTime;
 
     const width = viewportWidth;
@@ -8156,6 +8214,10 @@ function animate(frameTime) {
         updateShipFailure(deltaTime, width, gameplayHeight);
     } else if (!gamePaused) {
         updateGame(deltaTime, width, gameplayHeight);
+        playerSpawnImmunityRemaining = Math.max(
+            0,
+            playerSpawnImmunityRemaining - deltaTime,
+        );
         updateBridgeStatus(deltaTime);
     }
     updateSparks(deltaTime);
@@ -8208,7 +8270,10 @@ document.addEventListener("keydown", (event) => {
     if (event.code === PAUSE_KEY && !event.repeat) {
         unlockSound();
         if (gameWon) {
-            restartGame(viewportWidth, gameplayHeightForViewport(viewportHeight));
+            restartGame(
+                viewportWidth,
+                gameplayHeightForViewport(viewportHeight),
+            );
             gamePaused = false;
         } else if (!shipFailureActive) {
             gamePaused = !gamePaused;
