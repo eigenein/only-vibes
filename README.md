@@ -48,12 +48,12 @@ offset, and ignores future collisions. Unreachable targets have no crosshair;
 predictions outside the arena are clipped. Pausing or losing focus clears the
 lock. Every new sector starts with Aim Assist, autopilot, and auto-gunner disabled.
 
-The first field contains only asteroids and no friendly helpers. Each completed
-field adds one fresh friendly helper for the next field. Surviving helpers are
-fully repaired; destroyed helpers are lost when advancing. Defeat retries the
-current field with its original helper fleet and fresh asteroids and Borg cubes.
-From field 2 onward, the Borg count increases by one each field independently
-of friendly losses. Helpers are equipped with autopilot and auto-gunner.
+The first field contains only asteroids and the player's ship. After victory,
+the next field starts with the number of currently live friendly ships plus one
+(including the player), and the total number of cubes plus one (including wrecks).
+Developer-spawned vehicles count toward these victory totals. Surviving friendlies
+are fully repaired; helpers are equipped with autopilot and auto-gunner. Defeat
+replays the round with its original starting fleet counts and fresh bodies.
 
 Autopilot (`T`) pilots close-range attack passes, interception, and ramming.
 Every 1.2 seconds it rolls for an attack pass: healthy shields favor closing
@@ -71,8 +71,8 @@ Auto-gunner (`G`) independently fires when a shot will hit, saving heat between
 bursts. Manual firing cancels auto-gunner. Enable both modes for automatic
 flight and firing.
 
-Phasers fire at eight pulses per second, with about eight shots in a cold
-burst lasting one second. Each shot adds slightly more heat the warmer the
+Phasers fire at eight pulses per second, with about nine shots in a cold
+burst lasting roughly 1.1 seconds. Each shot adds slightly more heat the warmer the
 phasers already are, so spacing bursts gives more firepower than holding
 Space continuously. Heat cools throughout play; release for roughly 2–3
 seconds to cool fully after overheating. You can fire again as soon as heat
@@ -169,8 +169,8 @@ and exposes increasing patches of burned-out machinery. These structural
 failures remain visible when shields recover.
 A face with all 100% routed to it is immune to phasers, leaving the other three
 faces without routed resistance. Burst adaptation reduces remaining damage but
-cannot grant immunity by itself. Quiet reinforcement relaxes toward equal routing,
-returning energy to the other faces while keeping the total at 100%.
+cannot grant immunity by itself. Routed adaptation persists until subsequent hits redistribute
+energy between faces, keeping the total at 100%.
 
 The cube slowly closes on the ship but steers away from asteroid fields.
 Threatened edges flash and maneuvering machinery lights up. Its engines have
@@ -198,6 +198,13 @@ bullets, and still damages the ship on impact. It never splits or disappears
 and no longer counts as a combat target. Defeat awards points once; clearing
 the remaining asteroids completes the field. A new field replaces the wreck.
 All adaptation, firing, avoidance, and damage cues appear on the cube itself.
+
+## Developer tools / cheats
+
+Press **B** to spawn one Borg cube or **F** to spawn one friendly Starfleet
+vehicle with autopilot and auto-gunner enabled. These shortcuts also work while
+paused, ignore held-key repeats, and are disabled during results or ship
+destruction. They are intentionally omitted from the paused help screen.
 
 ## Built with
 

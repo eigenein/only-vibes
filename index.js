@@ -335,7 +335,7 @@ const ROUND_ACHIEVEMENTS = Object.freeze([
     }),
 ]);
 
-// Rapid pulses allow about eight shots in a cold one-second burst. Heat
+// Rapid pulses allow about nine shots in a cold 1.125-second burst. Heat
 // dissipates continuously during play, cooling fully in roughly 2–3 seconds.
 // Firing is allowed whenever heat is
 // below the overheat limit; there is no lower recovery threshold or latch.
@@ -346,7 +346,8 @@ const PHASER_FIRE_INTERVAL = 1 / 8;
 const PHASER_SHOT_HEAT = 0.14;
 const PHASER_WARM_SHOT_HEAT = 0.1;
 const PHASER_COOLING_RATE = 0.4;
-const PHASER_OVERHEAT_THRESHOLD = 0.9;
+// Ten percent more heat capacity extends cold bursts by one whole pulse.
+const PHASER_OVERHEAT_THRESHOLD = 0.99;
 // Match the HUD heat scale: warn strictly above 80% of the firing limit.
 const PHASER_WARNING_HEAT_RATIO = 0.8;
 const BULLET_SPEED = 720;
@@ -397,7 +398,11 @@ const BORG_FACE_BASE_ALLOCATION = 0.25;
 // A bright, centered edge segment shows routed energy by length: one quarter
 // at spawn and the full edge at immunity. Keep it independent of buffer charge
 // because phaser resistance remains powered after that buffer is depleted.
-const BORG_ROUTING_LINE_WIDTH = 3;
+// A broad translucent rim and rounded bright core make small allocations
+// readable without changing the proportional length or showing power at zero.
+const BORG_ROUTING_LINE_WIDTH = 4;
+const BORG_ROUTING_HALO_WIDTH = 10;
+const BORG_ROUTING_HALO_OPACITY = 0.3;
 const BORG_ROUTING_OPACITY = 0.9;
 const BORG_ROUTING_TRACK_COLOR = "#1b3022";
 // Burst memory blocks a fraction of damage remaining after routed resistance;
@@ -409,11 +414,6 @@ const BORG_ADAPTATION_PER_HIT = 0.08;
 const BORG_BURST_PER_HIT = 0.22;
 const BORG_BURST_QUIET_SECONDS = 0.7;
 const BORG_BURST_DECAY = 0.5;
-const BORG_ADAPTATION_QUIET_SECONDS = 3;
-// Quiet faces return seven percentage points of excess routing per second.
-// A fully reinforced face takes about 10.7 seconds to reach 25% after the quiet
-// delay, giving the player time to relocate while routing favors the former side.
-const BORG_ADAPTATION_DECAY = 0.07;
 // Reinforcement and burst resistance spend the same unit power budget that
 // supplies repair. Only quiet shield faces regenerate; hull can be redistributed.
 const BORG_REPAIR_DELAY = 1.6;
@@ -516,6 +516,11 @@ const BORG_FOCUS_LOCK_BEAM = "rgba(119, 255, 136, 0.35)";
 // Each victory adds one helper to the repaired survivors. Keep their fresh
 // formation separated from the player's spawn point.
 const HELPER_SPAWN_DISTANCE = STARSHIP_RADIUS * 4;
+// Developer cheats are intentionally omitted from the bridge and paused help.
+const DEVELOPER_BORG_SPAWN_KEY = "KeyB";
+const DEVELOPER_FRIENDLY_SPAWN_KEY = "KeyF";
+// Sample a ring around the player to keep injected helpers clear of live bodies.
+const DEVELOPER_SPAWN_CANDIDATES = 16;
 
 // Aim assist advises the player without steering or changing phaser behavior.
 const AIM_ASSIST_TOGGLE_KEY = "KeyM";
@@ -885,10 +890,12 @@ const bullets = [];
 const sparks = [];
 /** @type {BorgCube[]} Live cubes and drifting wrecks in the current field. */
 const borgCubes = [];
-/** @type {number} One-based field number; victory advances it, defeat retries it. */
-let sessionField = 1;
-/** @type {number} Starting helper count restored on every retry of this field. */
-let fieldStartingHelperCount = 0;
+/**
+ * Starting fleet counts for this round, restored unchanged after defeat.
+ * The initial round teaches asteroid combat with only the player's ship.
+ * @type {{friendlies: number, cubes: number}}
+ */
+const roundStartingFleet = {friendlies: 1, cubes: 0};
 
 /** @returns {Generator<Asteroid>} Solid bodies, including the drifting wreck. */
 function* physicalTargets() {
@@ -1992,7 +1999,7 @@ class BorgCube extends Asteroid {
         ];
         // Add perimeter candidates as the fleet grows; include earlier cubes in
         // clearance so reinforcements spread around the arena instead of stacking.
-        const divisions = Math.max(2, Math.ceil(sessionField / 4));
+        const divisions = Math.max(2, Math.ceil((borgCubes.length + 1) / 4));
         for (let step = 1; step < divisions; step += 1) {
             const fraction = step / divisions;
             const x = inset + (width - inset * 2) * fraction;
@@ -2220,37 +2227,26 @@ class BorgCube extends Asteroid {
     }
 
     /**
-     * Conserve the full routing budget during reinforcement and quiet recovery.
-     * If one face owned all power, share its released power equally; otherwise
-     * preserve the other faces' relative allocations. Quiet recovery instead
-     * replenishes faces below 25%, including faces left at zero by full routing.
+     * Conserve the full routing budget during reinforcement. Allocations persist
+     * until another hit redistributes power. If one face owned all power, share
+     * its released power equally; otherwise preserve relative allocations.
      * Assign the last remainder directly to prevent accumulated rounding drift.
      * @param {BorgCube["faces"][number]} face Face whose allocation changes.
      * @param {number} allocation New allocation in the inclusive range [0, 1].
-     * @param {boolean} [equalize] Return released reinforcement toward equal routing.
      * @returns {void}
      */
-    routeFacePower(face, allocation, equalize = false) {
-        const otherAllocation = this.faces.reduce((sum, other) => {
-            if (other === face) return sum;
-            return (
-                sum +
-                (equalize
-                    ? Math.max(0, BORG_FACE_BASE_ALLOCATION - other.adaptation)
-                    : other.adaptation)
-            );
-        }, 0);
-        const available = equalize
-            ? face.adaptation - allocation
-            : 1 - allocation;
+    routeFacePower(face, allocation) {
+        const otherAllocation = this.faces.reduce(
+            (sum, other) => sum + (other === face ? 0 : other.adaptation),
+            0,
+        );
+        const available = 1 - allocation;
         face.adaptation = allocation;
         let remaining = available;
         let otherCount = this.faces.length - 1;
         for (const other of this.faces) {
             if (other === face) continue;
-            const weight = equalize
-                ? Math.max(0, BORG_FACE_BASE_ALLOCATION - other.adaptation)
-                : other.adaptation;
+            const weight = other.adaptation;
             const share =
                 otherCount === 1
                     ? remaining
@@ -2260,7 +2256,7 @@ class BorgCube extends Asteroid {
                               ? available * (weight / otherAllocation)
                               : available / (this.faces.length - 1),
                       );
-            other.adaptation = (equalize ? other.adaptation : 0) + share;
+            other.adaptation = share;
             remaining -= share;
             otherCount -= 1;
         }
@@ -2358,20 +2354,7 @@ class BorgCube extends Asteroid {
                     0,
                     face.burst - BORG_BURST_DECAY * deltaTime,
                 );
-            // Quiet reinforcement relaxes toward equal routing, returning all
-            // released energy to the other faces instead of deleting it.
-            if (
-                face.quiet > BORG_ADAPTATION_QUIET_SECONDS &&
-                face.adaptation > BORG_FACE_BASE_ALLOCATION
-            )
-                this.routeFacePower(
-                    face,
-                    Math.max(
-                        BORG_FACE_BASE_ALLOCATION,
-                        face.adaptation - BORG_ADAPTATION_DECAY * deltaTime,
-                    ),
-                    true,
-                );
+
         }
         const powerUsed =
             this.faces.reduce(
@@ -2748,11 +2731,17 @@ class BorgCube extends Asteroid {
             context.stroke();
             if (face.adaptation > 0) {
                 context.strokeStyle = BORG_GREEN;
-                context.globalAlpha = BORG_ROUTING_OPACITY;
+                context.lineCap = "round";
+                context.globalAlpha = BORG_ROUTING_HALO_OPACITY;
+                context.lineWidth = BORG_ROUTING_HALO_WIDTH;
                 context.beginPath();
                 context.moveTo(-edgeHalfLength * face.adaptation, -half + 4);
                 context.lineTo(edgeHalfLength * face.adaptation, -half + 4);
                 context.stroke();
+                context.globalAlpha = BORG_ROUTING_OPACITY;
+                context.lineWidth = BORG_ROUTING_LINE_WIDTH;
+                context.stroke();
+                context.lineCap = "butt";
             }
             // Adapted hull machinery remains visible after shield charge is spent;
             // its resistance still affects incoming fire on this face.
@@ -3574,7 +3563,8 @@ function generateAsteroids(width, height) {
 
     const asteroidCount = Math.max(
         1,
-        ASTEROID_BASE_COUNT - sessionField * ASTEROID_COUNT_PER_BORG,
+        ASTEROID_BASE_COUNT -
+            (roundStartingFleet.cubes + 1) * ASTEROID_COUNT_PER_BORG,
     );
     asteroids.push(
         ...Array.from({length: asteroidCount}, () =>
@@ -3583,25 +3573,12 @@ function generateAsteroids(width, height) {
     );
     for (
         let index = 0;
-        index < reinforcementCountForField(sessionField);
+        index < roundStartingFleet.cubes;
         index += 1
     ) {
         borgCubes.push(new BorgCube(width, height));
     }
     asteroidsGenerated = true;
-}
-
-/**
- * Return the Borg cube count for a field. The first round teaches asteroid
- * combat alone; later rounds add one cube regardless of friendly losses.
- * @param {number} field One-based session field number.
- * @returns {number} Number of cubes.
- */
-function reinforcementCountForField(field) {
-    if (!Number.isFinite(field) || field < 1) {
-        return 0;
-    }
-    return Math.max(0, field - 1);
 }
 
 /**
@@ -3616,10 +3593,7 @@ function reinforcementCountForField(field) {
  * @returns {void}
  */
 function configureHelpingFleet(width, height) {
-    const helperCount = gameWon
-        ? starships.filter((ship) => ship !== playerShip && ship.alive).length + 1
-        : fieldStartingHelperCount;
-    fieldStartingHelperCount = helperCount;
+    const helperCount = roundStartingFleet.friendlies - 1;
     starships.length = 1;
 
     for (let helperIndex = 0; helperIndex < helperCount; helperIndex += 1) {
@@ -4853,9 +4827,15 @@ function updateAlert(ship, deltaTime) {
  * @returns {void}
  */
 function restartGame(width, height) {
-    // Only victory advances progress; destruction retries the current field.
+    // Only victory changes the next fleet. Count before clearing any bodies:
+    // friendlies include the live player; cubes include defeated drifting wrecks.
+    // Developer-spawned bodies count on victory, but never change retry numbers.
+    if (gameWon) {
+        roundStartingFleet.friendlies =
+            starships.filter((ship) => ship.alive).length + 1;
+        roundStartingFleet.cubes = borgCubes.length + 1;
+    }
     roundAchievements.clear();
-    if (gameWon) sessionField += 1;
     fieldAsteroidDamage.ramming = 0;
     fieldAsteroidDamage.blasters = 0;
     configureHelpingFleet(width, height);
@@ -8780,6 +8760,49 @@ function animate(frameTime) {
     window.requestAnimationFrame(animate);
 }
 
+/**
+ * Developer cheat: add an autonomous friendly hull without resetting the fleet.
+ * Normal spawn protection gives it time to leave any unavoidable crowding.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {void}
+ */
+function spawnDeveloperFriendly(width, height) {
+    const helper = new Starship(0, 0);
+    const bodies = [...starships, ...borgCubes, ...asteroids];
+    let bestClearance = -Infinity;
+    for (let index = 0; index < DEVELOPER_SPAWN_CANDIDATES; index += 1) {
+        const angle = (index * Math.PI * 2) / DEVELOPER_SPAWN_CANDIDATES;
+        const x = constrainPosition(
+            playerShip.x + Math.cos(angle) * HELPER_SPAWN_DISTANCE,
+            helper.radius,
+            width,
+        );
+        const y = constrainPosition(
+            playerShip.y + Math.sin(angle) * HELPER_SPAWN_DISTANCE,
+            helper.radius,
+            height,
+        );
+        const clearance = bodies.reduce(
+            (nearest, body) =>
+                Math.min(
+                    nearest,
+                    Math.hypot(x - body.x, y - body.y) -
+                        body.radius - helper.radius,
+                ),
+            Infinity,
+        );
+        if (clearance > bestClearance) {
+            bestClearance = clearance;
+            helper.reset(x, y, wrapAngle(angle + Math.PI));
+        }
+    }
+    helper.controls.autopilotEnabled = true;
+    helper.controls.autoGunnerEnabled = true;
+    syncPressedKeys(helper);
+    starships.push(helper);
+}
+
 function controlKeyForEvent(event) {
     if (event.code === FIRE_KEY) {
         return FIRE_KEY;
@@ -8799,6 +8822,23 @@ function controlKeyForEvent(event) {
 }
 
 document.addEventListener("keydown", (event) => {
+    // Developer tools work while paused for inspection, but never during results
+    // or destruction. Ignore key repeat so each deliberate press adds one body.
+    if (
+        event.code === DEVELOPER_BORG_SPAWN_KEY ||
+        event.code === DEVELOPER_FRIENDLY_SPAWN_KEY
+    ) {
+        event.preventDefault();
+        if (event.repeat || gameWon || shipFailureActive) return;
+        const height = gameplayHeightForViewport(viewportHeight);
+        if (event.code === DEVELOPER_BORG_SPAWN_KEY) {
+            borgCubes.push(new BorgCube(viewportWidth, height));
+        } else {
+            spawnDeveloperFriendly(viewportWidth, height);
+        }
+        return;
+    }
+
     if (event.code === AIM_ASSIST_TOGGLE_KEY) {
         if (!event.repeat) playerShip.aimAssist.toggle();
         event.preventDefault();
