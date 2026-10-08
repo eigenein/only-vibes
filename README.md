@@ -92,7 +92,9 @@ with a single attacker. Helpers target live
 Borg cubes first, then coordinate asteroid clearing once all cubes are defeated. Helpers share the Borg
 fleet’s gradual focus assignment policy. Starship
 phasers can ricochet once; Borg pulses disappear on their first contact.
-Your ship has three seconds of protection from collision damage after spawning.
+Every friendly ship has three seconds of protection from collision and weapon
+damage after spawning, shown by a cyan shield. Borg targeting excludes protected
+ships. Pausing preserves the remaining protection.
 Yellow alert automatically enables aim assist; red alert also enables autopilot.
 The green AUTOPILOT indicator shows that automatic helm is engaged.
 

@@ -152,6 +152,8 @@ const SHIELD_REGENERATION_RATE = 7.5;
 // amber at half charge to red at one quarter; a depleted rim remains visible.
 const SHIELD_WARNING_RATIO = 0.5;
 const SHIELD_CRITICAL_RATIO = 0.25;
+// Cyan distinguishes temporary spawn immunity from ordinary charge colors.
+const SHIELD_SPAWN_IMMUNITY_COLOR = "#66ddff";
 const SHIELD_RIM_WIDTH = 3;
 const SHIELD_DEPLETED_OPACITY = 0.28;
 // A broad, faint stroke suggests a force field without expensive shadow blur
@@ -201,11 +203,11 @@ const RED_ALERT_BLINK_INTERVAL_MILLISECONDS = 450;
 const ALERT_EDGE_GAP = 12;
 // Unlit LCD legends remain barely visible; active text is painted over them.
 const ALERT_LCD_SILHOUETTE_OPACITY = 0.08;
-// Three active-play seconds protect the human hull at every field start.
+// Three active-play seconds protect every friendly hull at every field start.
 // Contacts retain their physical response; shields, hull and damage budget
-// remain untouched. Borg focus assignments also exclude the player during
+// remain untouched. Borg focus assignments also exclude protected ships during
 // this grace period. Pausing never consumes it.
-const PLAYER_SPAWN_IMMUNITY_SECONDS = 3;
+const SHIP_SPAWN_IMMUNITY_SECONDS = 3;
 // Sound effects retain a small number of independent voices so a rapid burst
 // of shots or impacts does not cut off the sound that preceded it.
 const SOUND_EFFECT_VOICE_COUNT = 3;
@@ -657,6 +659,10 @@ const FIRE_KEY_LABEL = "SPACE";
 // command strip uses shorter LCARS action names suited to its button geometry.
 const PLAY_HELP = Object.freeze([
     Object.freeze({
+        label: "CYAN SHIELD",
+        description: "fleet spawn immunity: 3 seconds",
+    }),
+    Object.freeze({
         label: FIRE_KEY_LABEL,
         description: "fire phasers",
     }),
@@ -687,7 +693,7 @@ const PLAY_HELP = Object.freeze([
 ]);
 const HELP_PANEL_WIDTH = 540;
 // Leave breathing room below the final control row.
-const HELP_PANEL_HEIGHT = 516;
+const HELP_PANEL_HEIGHT = 558;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -1101,6 +1107,7 @@ class Starship {
     hullState = SHIP_MAX_STATE;
     displayedShieldState = SHIELD_MAX_STATE;
     displayedHullState = SHIP_MAX_STATE;
+    spawnImmunityRemaining = SHIP_SPAWN_IMMUNITY_SECONDS;
     collisionDamageBudget = COLLISION_DAMAGE_BUDGET_CAP;
     phaserShotCooldown = 0;
     phaserHeat = 0;
@@ -1233,7 +1240,7 @@ class Starship {
      * @returns {void}
      */
     applyImpactDamage(collisionMomentum, weapon) {
-        if (this === playerShip && playerSpawnImmunityRemaining > 0) return;
+        if (this.spawnImmunityRemaining > 0) return;
         const safeCollisionMomentum = Number.isFinite(collisionMomentum)
             ? Math.max(0, collisionMomentum)
             : 0;
@@ -1357,7 +1364,6 @@ const playerShip = starships[0];
 
 // The alarm is a transition cue, not a loop: one red alert per ship life.
 let redAlertSoundPlayed = false;
-let playerSpawnImmunityRemaining = PLAYER_SPAWN_IMMUNITY_SECONDS;
 let alertLevel = 0;
 let alertRecoveryTime = 0;
 // Bridge-local history observes only the player's hull and resets each field.
@@ -3078,9 +3084,7 @@ function updateBorgFleetTactics(width, height) {
     updateFleetTactics(
         borgCubes.filter((cube) => cube.alive),
         starships.filter(
-            (ship) =>
-                ship.alive &&
-                (ship !== playerShip || playerSpawnImmunityRemaining <= 0),
+            (ship) => ship.alive && ship.spawnImmunityRemaining <= 0,
         ),
         state,
         (cube) => cube.targetStarship,
@@ -3629,7 +3633,6 @@ function configureHelpingFleet(width, height) {
     );
 
     playerShip.reset(centerX, centerY);
-    playerSpawnImmunityRemaining = PLAYER_SPAWN_IMMUNITY_SECONDS;
     clearPressedKeys(playerShip);
 
     for (let helperIndex = 0; helperIndex < helperCount; helperIndex += 1) {
@@ -5449,15 +5452,19 @@ function drawStarship(ship) {
     const colorFraction = healthy
         ? (shieldRatio - SHIELD_WARNING_RATIO) / (1 - SHIELD_WARNING_RATIO)
         : Math.max(
-            0,
-            (shieldRatio - SHIELD_CRITICAL_RATIO) /
-            (SHIELD_WARNING_RATIO - SHIELD_CRITICAL_RATIO),
-        );
-    context.strokeStyle = blendShieldColors(
-        healthy ? LCARS_AMBER : LCARS_ALERT_RED,
-        healthy ? LCARS_LILAC : LCARS_AMBER,
-        colorFraction,
-    );
+              0,
+              (shieldRatio - SHIELD_CRITICAL_RATIO) /
+                  (SHIELD_WARNING_RATIO - SHIELD_CRITICAL_RATIO),
+          );
+    // Immunity uses the same rim and halo on every friendly hull.
+    context.strokeStyle =
+        ship.spawnImmunityRemaining > 0
+            ? SHIELD_SPAWN_IMMUNITY_COLOR
+            : blendShieldColors(
+                  healthy ? LCARS_AMBER : LCARS_ALERT_RED,
+                  healthy ? LCARS_LILAC : LCARS_AMBER,
+                  colorFraction,
+              );
     context.beginPath();
     context.arc(0, 0, STARSHIP_RADIUS, 0, Math.PI * 2);
     context.globalAlpha = opacity * SHIELD_HALO_OPACITY * shieldRatio;
@@ -5684,11 +5691,7 @@ function drawBorgFocusLock(width, height) {
     context.clip();
 
     for (const ship of starships) {
-        if (
-            !ship.alive ||
-            (ship === playerShip && playerSpawnImmunityRemaining > 0)
-        )
-            continue;
+        if (!ship.alive || ship.spawnImmunityRemaining > 0) continue;
 
         const focusingCubes = liveCubes.filter(
             (cube) => cube.targetStarship === ship,
@@ -8761,10 +8764,13 @@ function animate(frameTime) {
         updateShipFailure(deltaTime, width, gameplayHeight);
     } else if (!gamePaused) {
         updateGame(deltaTime, width, gameplayHeight);
-        playerSpawnImmunityRemaining = Math.max(
-            0,
-            playerSpawnImmunityRemaining - deltaTime,
-        );
+        // Advance protection only after active simulation, including contacts.
+        for (const ship of starships) {
+            ship.spawnImmunityRemaining = Math.max(
+                0,
+                ship.spawnImmunityRemaining - deltaTime,
+            );
+        }
         updateBridgeStatus(deltaTime);
     }
     updateSparks(deltaTime);
