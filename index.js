@@ -48,13 +48,28 @@ const WORLD_BODY_SCALE = 0.72;
 // collision radii are reduced by WORLD_BODY_SCALE, densities are increased by
 // its inverse square so newly generated asteroids retain their original mass.
 const WORLD_MASS_COMPENSATION = 1 / WORLD_BODY_SCALE ** 2;
+// Mass tuning lives here: Borg pulse mass sets the shared scale, and this
+// ratio sets starship pulse mass relative to it. Changing either propagates
+// through ship mass, asteroid/cube density, inertia and spark energy budgets.
+// The reference phaser mass anchors the original world mass calibration.
+const REFERENCE_BULLET_MASS = 10;
+// With the derived body masses, a stationary head-on hit spends about 25%
+// of a full ship shield. Relative motion and impact angle still affect damage.
+const BORG_BULLET_MASS = 135;
+const BORG_TO_STARSHIP_BULLET_MASS_RATIO = 8.1;
+// Projectile mass is independent of its visual length; the contact solver
+// uses it for momentum and kinetic energy.
+const BULLET_MASS = BORG_BULLET_MASS / BORG_TO_STARSHIP_BULLET_MASS_RATIO;
+const BODY_MASS_COMPENSATION = BULLET_MASS / REFERENCE_BULLET_MASS;
+// Fix relative cube density at the current balance. Deriving this from the
+// tunable pulse mass as well would scale cube mass twice when pulses change.
+const BORG_MASS_MULTIPLIER = 33.2;
 // The shield circle is the collision boundary. The saucer and nacelles stay
 // inside it at every heading, so the new silhouette preserves familiar handling.
 const STARSHIP_RADIUS = 28 * WORLD_BODY_SCALE;
-// Collision bodies use a mass rather than a gameplay health value. The ship is
-// intentionally heavier than a small asteroid, while still being light enough
-// for a large asteroid to noticeably change its trajectory.
-const STARSHIP_MASS = 1000;
+// Scale ship mass with its phasers to preserve launch recoil. Asteroids and
+// cubes share this compensation to retain relative body masses.
+const STARSHIP_MASS = 1000 * BODY_MASS_COMPENSATION;
 // This inertia is only the scale used to convert a collision's angular impulse
 // into one immediate heading adjustment; the ship does not retain angular
 // velocity or intrinsic angular momentum after the contact.
@@ -332,10 +347,6 @@ const PHASER_SHOT_HEAT = 0.14;
 const PHASER_WARM_SHOT_HEAT = 0.1;
 const PHASER_COOLING_RATE = 0.4;
 const PHASER_OVERHEAT_THRESHOLD = 0.9;
-// A bullet's mass is deliberately independent of its visual length. The
-// collision response uses this value for both bullet momentum and bullet
-// kinetic energy while the projectile remains an independent body.
-const BULLET_MASS = 10;
 const BULLET_SPEED = 720;
 const BULLET_HALF_LENGTH = 10;
 const BULLET_LINE_WIDTH = 3;
@@ -406,11 +417,6 @@ const BORG_AVOIDANCE_LOOKAHEAD = 2;
 const BORG_AVOIDANCE_MARGIN = 95;
 const BORG_PURSUIT_WEIGHT = 0.22;
 const BORG_WALL_MARGIN = 85;
-// An 81-unit pulse removes about 15% of a stationary ship's full shield on a
-// head-on hit. Scale cube density by the same mass ratio to preserve launch
-// recoil velocity; heavier cubes resist impacts while engines retain acceleration.
-const BORG_BULLET_MASS = 81;
-const BORG_MASS_MULTIPLIER = BORG_BULLET_MASS / BULLET_MASS;
 // Green pulses share starship projectile speed and physical impact rules.
 // They disappear after their first contact, preventing return ricochets. Early charging tracks exact ballistic lead; the final aim
 // lock gives a visible reaction window without adding any random spread.
@@ -610,7 +616,9 @@ const AUTO_GUNNER_FIRE_RADIUS_RATIO = 0.9;
 // Sparks turn dissipated kinetic energy into a readable, non-gameplay visual.
 // One spark represents a fixed slice of energy so larger impacts create denser
 // bursts while the cap keeps a single destruction event inexpensive to draw.
-const SPARK_ENERGY_PER_PARTICLE = 150000;
+// Normalize that slice by the shared mass increase so equivalent collisions
+// retain their original visual density despite carrying more kinetic energy.
+const SPARK_ENERGY_PER_PARTICLE = 150000 * BODY_MASS_COMPENSATION;
 const MAX_SPARKS_PER_INTERACTION = 64;
 // Keep the visual queue bounded when several bodies collide in one frame.
 // This cap affects only presentation; collision response and energy state
@@ -744,10 +752,14 @@ const ASTEROID_SPLIT_IMPULSE_THRESHOLD = 10000;
 // polygon. The current density is the average material density; each new
 // asteroid samples a bounded variation around it so no two materials need to
 // be equally massive. The encompassing radius remains useful for safe
-// field-boundary placement.
-const ASTEROID_DENSITY = 1.0 * WORLD_MASS_COMPENSATION;
-const ASTEROID_MIN_DENSITY = 0.65 * WORLD_MASS_COMPENSATION;
-const ASTEROID_MAX_DENSITY = 1.35 * WORLD_MASS_COMPENSATION;
+// field-boundary placement. The shared mass compensation increases intact
+// rocks, their fragments and Borg cubes without changing sizes or density colors.
+const ASTEROID_DENSITY =
+    1.0 * WORLD_MASS_COMPENSATION * BODY_MASS_COMPENSATION;
+const ASTEROID_MIN_DENSITY =
+    0.65 * WORLD_MASS_COMPENSATION * BODY_MASS_COMPENSATION;
+const ASTEROID_MAX_DENSITY =
+    1.35 * WORLD_MASS_COMPENSATION * BODY_MASS_COMPENSATION;
 // Density is encoded from cool blue-gray to warm red. Both endpoints are
 // bright enough against black space, while hue—not brightness—does the main
 // communication so denser asteroids remain easy to see.
