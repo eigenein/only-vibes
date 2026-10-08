@@ -65,7 +65,7 @@ const BODY_MASS_COMPENSATION = BULLET_MASS / REFERENCE_BULLET_MASS;
 // tunable pulse mass as well would scale cube mass twice when pulses change.
 const BORG_MASS_MULTIPLIER = 33.2;
 // The shield circle is the collision boundary. The saucer and nacelles stay
-// inside it at every heading, so the new silhouette preserves familiar handling.
+// inside it at every heading, preserving a circular collision boundary.
 const STARSHIP_RADIUS = 28 * WORLD_BODY_SCALE;
 // Support hulls stay readable while giving the player's gold ship priority.
 const FRIENDLY_STARSHIP_OPACITY = 0.72;
@@ -119,7 +119,6 @@ const LCARS_AUTOPILOT_GREEN = "#66ff99";
 const LCARS_LILAC = "#9999ff";
 const LCARS_LAVENDER = "#cc99cc";
 const LCARS_TEXT = "#fff4dd";
-const LCARS_MUTED_TEXT = "#d6c5dc";
 const LCARS_PANEL = "rgba(12, 8, 18, 0.92)";
 // Antonio keeps the tall, narrow geometry associated with LCARS while offering
 // enough weight variation for readable data and instructions. The local
@@ -346,7 +345,7 @@ const PHASER_FIRE_INTERVAL = 1 / 8;
 const PHASER_SHOT_HEAT = 0.14;
 const PHASER_WARM_SHOT_HEAT = 0.1;
 const PHASER_COOLING_RATE = 0.4;
-// Ten percent more heat capacity extends cold bursts by one whole pulse.
+// A single firing threshold permits the next pulse as soon as heat falls below it.
 const PHASER_OVERHEAT_THRESHOLD = 0.99;
 // Match the HUD heat scale: warn strictly above 80% of the firing limit.
 const PHASER_WARNING_HEAT_RATIO = 0.8;
@@ -358,15 +357,14 @@ const BULLET_LINE_WIDTH = 3;
 const MAX_BULLET_REFLECTIONS = 1;
 const BULLET_COLLISION_OFFSET = 0.01;
 
-// One cube joins each field. Its machinery is cached at a fixed texture size;
+// Fleet counts determine cube spawns. Machinery is cached at a fixed texture size;
 // the physical square scales down on small arenas and shares the rock solver.
 const BORG_HALF_SIZE = 76 * WORLD_BODY_SCALE;
 const BORG_ARENA_SIZE_RATIO = 0.16;
 const BORG_TEXTURE_SIZE = 320;
 const BORG_GREEN = "#77ff88";
 // Full-face immunity already rewards changing attack angles. Modest hull and
-// buffer reserves keep that tactical loop from becoming an endurance fight:
-// about one sixth less durability, without weakening routing or adaptation.
+// buffer reserves keep fights brisk without weakening routing or adaptation.
 const BORG_HULL = 200;
 const BORG_FACE_SHIELD = 18;
 // Shields cannot erase hull damage. Collective transfers conserve total hull;
@@ -385,10 +383,8 @@ const BORG_TRANSFER_BEAM_WIDTH = 5;
 const BORG_TRANSFER_PACKET_COUNT = 3;
 const BORG_TRANSFER_PACKET_RADIUS = 4;
 // Soften every beam layer and traveling packet together, retaining the richer
-// exchange animation at a brightness between the original tether and full glow.
+// exchange animation without overpowering the hull silhouettes.
 const BORG_TRANSFER_BRIGHTNESS = 0.75;
-// Allied bolts dissipate harmlessly with a faint, short inward ripple.
-const BORG_ABSORPTION_PULSE_SECONDS = 0.3;
 // Let 55% of post-resistance phaser damage reach hull while buffers are charged,
 // so a successful attack window makes progress before directional immunity.
 const BORG_SHIELD_ABSORPTION = 0.45;
@@ -408,8 +404,8 @@ const BORG_ROUTING_TRACK_COLOR = "#1b3022";
 // Burst memory blocks a fraction of damage remaining after routed resistance;
 // it cannot grant full immunity to a face with less than 100% allocation.
 const BORG_BURST_RESISTANCE = 0.3;
-// Ten hits route a face from 25% to full immunity, keeping a cold eight-shot
-// burst productive while repeated attacks still reward switching sides.
+// Ten consecutive hits route a face from 25% to full immunity.
+// Repeated attacks reward switching sides before routing saturates.
 const BORG_ADAPTATION_PER_HIT = 0.08;
 const BORG_BURST_PER_HIT = 0.22;
 const BORG_BURST_QUIET_SECONDS = 0.7;
@@ -1093,8 +1089,8 @@ class ShipControls {
  * Identical ships share geometry and tuning, but own their motion, defenses,
  * damage protection and weapon state. Each controller owns independent
  * tactical state; helper controllers can supply input without sharing a hull or
- * weapon cooldown. Destruction is reported to the session by the controller,
- * never by the reusable ship itself.
+ * weapon cooldown. World contacts award helper-loss achievements; the bridge
+ * observes the player hull to trigger its destruction screen.
  * @implements {PhysicsBody}
  */
 class Starship {
@@ -1745,18 +1741,18 @@ function asteroidColorForDensity(density) {
  */
 class Asteroid {
     /**
-     * @param {Object} options
-     * @param {number} options.radius
-     * @param {number[]} [options.angles]
-     * @param {Vector2[]} [options.localVertices]
-     * @param {number} options.x
-     * @param {number} options.y
-     * @param {number} options.velocityX
-     * @param {number} options.velocityY
-     * @param {number} options.density
-     * @param {number} [options.rotation]
-     * @param {number} [options.angularVelocity]
-     * @param {number} [options.additionalMass]
+     * @param {Object} options Convex body geometry and initial motion.
+     * @param {number} options.radius Perimeter radius used when generating vertices.
+     * @param {readonly number[]} [options.angles] Ordered perimeter angles in radians.
+     * @param {readonly Vector2[]} [options.localVertices] Explicit polygon instead of perimeter angles.
+     * @param {number} options.x Initial center x in CSS pixels.
+     * @param {number} options.y Initial center y in CSS pixels.
+     * @param {number} options.velocityX Initial x velocity in CSS pixels per second.
+     * @param {number} options.velocityY Initial y velocity in CSS pixels per second.
+     * @param {number} [options.density] Material mass per unit polygon area.
+     * @param {number} [options.rotation] Initial polygon rotation in radians.
+     * @param {number} [options.angularVelocity] Initial spin in radians per second.
+     * @param {number} [options.additionalMass] Absorbed mass spread uniformly through the polygon.
      */
     constructor({
                     radius,
@@ -1848,6 +1844,10 @@ class Asteroid {
      * Asteroids move freely until they meet a field boundary or another
      * collision body. Rotation is integrated before the wall check so a spinning
      * shoulder can reach a wall even when the center of mass is stationary.
+     * @param {number} width Arena width in CSS pixels.
+     * @param {number} height Arena height in CSS pixels.
+     * @param {number} deltaTime Active simulation seconds.
+     * @returns {void}
      */
     update(width, height, deltaTime) {
         this.rotation = wrapAngle(
@@ -1956,11 +1956,6 @@ class Asteroid {
 }
 
 /**
- * An armored machine using the existing convex-body geometry and impulses.
- * The four perimeter faces have shields and recent-fire memory, but share one
- * reinforcement allocation. Presentation belongs to the body, never the HUD.
- */
-/**
  * @param {PhysicsBody} origin Body seeking the closest live friendly hull.
  * @returns {Starship | undefined} Opponent, or none when the fleet is destroyed.
  */
@@ -1978,6 +1973,11 @@ function nearestStarship(origin) {
     return nearest;
 }
 
+/**
+ * An armored machine using the existing convex-body geometry and impulses.
+ * The four perimeter faces have shields and recent-fire memory, but share one
+ * reinforcement allocation. Presentation belongs to the body, never the HUD.
+ */
 class BorgCube extends Asteroid {
     /**
      * @param {number} width Arena width in CSS pixels.
@@ -2062,7 +2062,6 @@ class BorgCube extends Asteroid {
         this.scars = [];
         this.time = 0;
         this.recovery = 0;
-        this.absorptionPulse = 0;
         this.transferCooldown = 0;
         this.transferPulse = 0;
         /** @type {BorgCube | undefined} Recipient of the visible radiation tether. */
@@ -2333,7 +2332,6 @@ class BorgCube extends Asteroid {
      */
     update(width, height, deltaTime) {
         this.time += deltaTime;
-        this.absorptionPulse = Math.max(0, this.absorptionPulse - deltaTime);
         if (!this.alive) {
             // A wreck has no navigation, braking, repair or weapons. Contact and
             // wall impulses are the only things that can change its free motion.
@@ -2627,20 +2625,6 @@ class BorgCube extends Asteroid {
         );
     }
 
-    /** @returns {void} Show harmless dissipation without a healing symbol. */
-    drawAbsorptionPulse() {
-        if (this.absorptionPulse <= 0) return;
-        const progress =
-            1 - this.absorptionPulse / BORG_ABSORPTION_PULSE_SECONDS;
-        const half = this.half * (0.95 - progress * 0.25);
-        context.save();
-        context.strokeStyle = BORG_GREEN;
-        context.globalAlpha = (1 - progress) * 0.25;
-        context.lineWidth = 1;
-        context.strokeRect(-half, -half, half * 2, half * 2);
-        context.restore();
-    }
-
     /** @returns {void} Draw a fading radiation tether in world coordinates. */
     drawTransfer() {
         const target = this.transferTarget;
@@ -2810,7 +2794,6 @@ class BorgCube extends Asteroid {
             context.fillRect(-half + 8, sweep, half * 2 - 16, 2);
             context.restore();
         }
-        this.drawAbsorptionPulse();
         this.drawWeapon();
         // Exhaust is opposite the actual commanded acceleration, so machinery
         // identifies the maneuver that avoids the currently highlighted threat.
@@ -3234,7 +3217,7 @@ class Bullet {
      * @param {number} [options.mass] Positive physical mass retained through ricochets.
      * @param {number} [options.lineWidth] Painted pulse thickness in CSS pixels.
      * @param {"starship"|"borg"} [options.source] Origin for attribution and the Borg zero-ricochet rule.
-     * @param {string} [options.materialColor] Launch color retained for the projectile lifetime.
+     * @param {string | undefined} [options.materialColor] Launch color; undefined uses the Starfleet gradient.
      */
     constructor({
                     x,
@@ -3343,6 +3326,8 @@ class Bullet {
 class Spark {
     /**
      * @param {Vector2} origin Contact position where the spark begins.
+     * @param {number} origin.x Contact x coordinate in CSS pixels.
+     * @param {number} origin.y Contact y coordinate in CSS pixels.
      */
     constructor({x, y}) {
         const direction = randomBetween(0, Math.PI * 2);
@@ -3409,7 +3394,7 @@ class Spark {
 }
 
 /**
- * Create one fully randomized asteroid using the original game composition.
+ * Create one asteroid with randomized geometry, density and initial motion.
  * @param {number} width Viewport width in CSS pixels.
  * @param {number} height Viewport height in CSS pixels.
  * @returns {Asteroid}
@@ -3582,10 +3567,9 @@ function generateAsteroids(width, height) {
 }
 
 /**
- * Rebuild repaired survivors plus one reinforcement after victory; defeat
- * restores the field's starting fleet. Only the survivor count carries over
- * to the next field. Helpers use the
- * same ordinary autopilot and weapon gates as the player, but their input is
+ * Rebuild the friendly fleet from the round's configured starting count.
+ * Victory updates that count to survivors plus one; defeat preserves it.
+ * Helpers use the same ordinary autopilot and weapon gates as the player, but their input is
  * never exposed to DOM controls. Keeping the player at index zero preserves
  * all bridge, alert, and keyboard references across field transitions.
  * @param {number} width Arena width in CSS pixels.
@@ -4979,8 +4963,8 @@ function moveBarValueToward(currentValue, targetValue, maximumChange) {
 
 /**
  * Animate a hull's shield rim and status bars together, including while paused.
- * @param {Starship} ship Hull whose presentation values are advanced.
  * @param {number} deltaTime Elapsed real time in seconds.
+ * @param {Starship} ship Hull whose presentation values are advanced.
  * @returns {void}
  */
 function updateDisplayedStatusBars(deltaTime, ship) {
@@ -5052,8 +5036,7 @@ function drawStatusBars(width) {
         context.beginPath();
         context.roundRect(barX, barY, barWidth, STATUS_BAR_HEIGHT, 11);
         // A quiet tinted track keeps the indicator in the same filled, borderless
-        // LCARS vocabulary as the command strip; the previous outlined lettering
-        // read like a legacy widget beside the solid controls.
+        // LCARS vocabulary as the command strip.
         context.fillStyle = bar.color;
         context.globalAlpha = 0.35;
         context.fill();
@@ -6386,8 +6369,8 @@ function resolveShipWallContact(ship, normal) {
  * angular momentum. The angular impulse still comes from the same friction
  * calculation, so greater contact momentum or friction produces a larger
  * heading adjustment.
- * @param {Starship} ship Hull receiving the one-time heading adjustment.
  * @param {ContactResponse} response Contact response involving the ship.
+ * @param {Starship} ship Hull receiving the one-time heading adjustment.
  * @returns {void}
  */
 function applyShipCollisionAngleAdjustment(response, ship) {
@@ -6487,14 +6470,20 @@ function wrapAngle(angle) {
     return ((angle % fullTurn) + fullTurn) % fullTurn;
 }
 
-/** @param {PhysicsBody} body @returns {number} */
+/**
+ * @param {PhysicsBody} body Body whose translational response is needed.
+ * @returns {number} Inverse mass, or zero for immovable or invalid mass.
+ */
 function bodyInverseMass(body) {
     return Number.isFinite(body.mass) && body.mass > COLLISION_EPSILON
         ? 1 / body.mass
         : 0;
 }
 
-/** @param {PhysicsBody} body @returns {number} */
+/**
+ * @param {PhysicsBody} body Body whose rotational response is needed.
+ * @returns {number} Inverse inertia, or zero when spin cannot respond.
+ */
 function bodyInverseMomentOfInertia(body) {
     return Number.isFinite(body.momentOfInertia) &&
     body.momentOfInertia > COLLISION_EPSILON
@@ -6502,7 +6491,10 @@ function bodyInverseMomentOfInertia(body) {
         : 0;
 }
 
-/** @param {PhysicsBody} body @returns {number} */
+/**
+ * @param {PhysicsBody} body Body whose spin is being sampled.
+ * @returns {number} Angular velocity in radians per second; nonspinning bodies use zero.
+ */
 function bodyAngularVelocity(body) {
     return body.angularVelocity ?? 0;
 }
@@ -6529,7 +6521,10 @@ function bodyAngularMomentum(body, originX = 0, originY = 0) {
     return orbitalMomentum + spinMomentum;
 }
 
-/** @param {PhysicsBody} body @returns {number} */
+/**
+ * @param {PhysicsBody} body Body whose motion supplies the energy budget.
+ * @returns {number} Combined translational and rotational kinetic energy.
+ */
 function bodyKineticEnergy(body) {
     const linearEnergy =
         0.5 * body.mass * (body.velocityX ** 2 + body.velocityY ** 2);
@@ -6540,7 +6535,11 @@ function bodyKineticEnergy(body) {
     return linearEnergy + rotationalEnergy;
 }
 
-/** @param {PhysicsBody} body @param {Vector2} point @returns {Vector2} */
+/**
+ * @param {PhysicsBody} body Moving rigid body.
+ * @param {Vector2} point World position at which to sample its motion.
+ * @returns {Vector2} Local velocity including rotation, in CSS pixels per second.
+ */
 function velocityAtPoint(body, point) {
     const offsetX = point.x - body.x;
     const offsetY = point.y - body.y;
@@ -6637,8 +6636,9 @@ function polygonArea(vertices) {
  * Return the unit-density polar second moment of a polygon about the origin.
  * Asteroid vertices are centered before this is called, so the result is the
  * rigid body's mass moment of inertia about its center of mass.
+ * @param {Vector2[]} vertices Polygon vertices relative to its mass center.
+ * @returns {number} Polar second moment at unit density.
  */
-/** @param {Vector2[]} vertices @returns {number} */
 function polygonMassMomentOfInertia(vertices) {
     let signedMoment = 0;
 
@@ -7583,8 +7583,8 @@ function resolveBulletCollisions(width, height) {
                     hitPoint,
                 );
                 hitTarget.hitPhaser(hitPoint);
-                // Borg shields absorb the pulse. Existing rock, ship and wall
-                // ricochets retain their normal finite reflection behavior.
+                // Live cube shields consume either faction's pulse after damage.
+                // Starfleet pulses can still ricochet from rocks, ships and walls.
                 bullets.splice(bulletIndex, 1);
                 break;
             } else if (asteroidIsFirst) {
@@ -7617,8 +7617,8 @@ function resolveBulletCollisions(width, height) {
                 if (canReflect) {
                     bullet.recordReflection();
                 }
-                // A wreck is a solid reflector, never a cuttable asteroid. Enemy
-                // and player pulses otherwise share the complete ricochet path.
+                // Wrecks remain solid; rocks fragment on contact. Only Starfleet
+                // pulses can continue along the reflected path.
                 const fragments =
                     asteroid instanceof BorgCube
                         ? [asteroid]
@@ -7658,8 +7658,8 @@ function resolveBulletCollisions(width, height) {
                 );
                 applyShipCollisionAngleAdjustment(bulletImpulse, ship);
                 ship.applyWeaponDamage(contactImpulseMagnitude(bulletImpulse));
-                // Only the lethal weapon hit earns a combat badge. Helpers
-                // lost to other causes and damage to the player do not qualify.
+                // Attribute lethal helper weapon hits to the firing faction.
+                // Cube-contact losses are handled by the body collision pass.
                 if (ship !== playerShip && !ship.alive) {
                     roundAchievements.add(
                         bullet.source === "borg" ? "wolf-359" : "friendly-fire",
@@ -7775,7 +7775,11 @@ function projectCircle(body, axis) {
     };
 }
 
-/** @param {Vector2[]} vertices @param {Vector2} direction @returns {Vector2} */
+/**
+ * @param {Vector2[]} vertices World polygon vertices.
+ * @param {Vector2} direction Direction toward the supporting boundary.
+ * @returns {Vector2} Mean of the extreme vertices along the direction.
+ */
 function supportPoint(vertices, direction) {
     const supportTolerance = COLLISION_EPSILON * 100;
     let greatestProjection = -Infinity;
@@ -7878,7 +7882,7 @@ function orientCollisionAxis(firstBody, secondBody, axis) {
     if (Math.abs(centerDirection) <= COLLISION_EPSILON) {
         // When the selected edge normal is perpendicular to the center offset,
         // relative motion provides a stable sign. Coincident centers use the same
-        // deterministic first-minus-second fallback as the original solver.
+        // deterministic first-minus-second fallback.
         const relativeDirection = normalizedVector(
             firstBody.velocityX - secondBody.velocityX,
             firstBody.velocityY - secondBody.velocityY,
@@ -8143,8 +8147,6 @@ function collisionManifold(firstBody, secondBody) {
  * and opposite impulses at that point preserve total angular momentum for an
  * isolated asteroid pair, while the restitution and friction coefficients
  * account for the energy dissipated by a non-ideal collision.
- */
-/**
  * @param {PhysicsBody} firstBody
  * @param {PhysicsBody} secondBody
  * @param {CollisionManifold} [existingManifold] Precomputed contact geometry.
@@ -8708,16 +8710,8 @@ function updateBridgeStatus(deltaTime) {
 /**
  * Advance one coherent world snapshot, then render that same snapshot.
  *
- * `async` functions do not execute JavaScript concurrently: awaiting here
- * would only split this main-thread transaction and could make a renderer see
- * a half-resolved collision or an autopilot decision based on stale bodies.
- * A Web Worker would provide real parallelism, but it cannot share these
- * mutable objects with this direct-file page without copying the complete
- * world each frame (SharedArrayBuffer is unavailable without cross-origin
- * isolation). Copying adds work and asynchronous messages require a new
- * snapshot protocol to preserve ordered collision/health rules. Workers
- * remain an option if browser profiling justifies that architectural change;
- * first remove repeated geometry and paint setup from this frame transaction.
+ * Keep simulation, contacts, health transitions and rendering synchronous so
+ * every subsystem observes the same completed world step.
  * @param {number} frameTime Animation-frame timestamp in milliseconds.
  * @returns {void}
  */
