@@ -50,7 +50,8 @@ lock. Every new sector starts with Aim Assist, autopilot, and auto-gunner disabl
 
 The first field contains only asteroids and no friendly helpers. Each completed
 field adds one fresh friendly helper for the next field. Surviving helpers are
-fully repaired; destroyed helpers are lost. Defeat resets the fleet to zero.
+fully repaired; destroyed helpers are lost when advancing. Defeat retries the
+current field with its original helper fleet and fresh asteroids and Borg cubes.
 From field 2 onward, the Borg count increases by one each field independently
 of friendly losses. Helpers are equipped with autopilot and auto-gunner.
 
@@ -132,7 +133,7 @@ The green AUTOPILOT indicator shows that automatic helm is engaged.
   autopilot. You can override these modes normally while the alert persists.
   Recovery leaves them enabled.
 - When the hull reaches zero, the game briefly shows the failure state before
-  starting a fresh life.
+  restarting the current round with full shield and hull.
 
 Redder asteroids are heavier and hit harder. Fire at will. Keep the hull operational.
 

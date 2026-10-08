@@ -654,14 +654,11 @@ const PAUSE_KEY_LABEL = "P";
 const FIRE_KEY = "Space";
 const FIRE_KEY_LABEL = "SPACE";
 
-// The paused help screen displays only controls, not gameplay mechanics.
+// The pause screen must contain controls only. Never add gameplay mechanics,
+// status explanations, combat cues, or any other non-control content here.
 // Keep those controls in one compact table. The persistent
 // command strip uses shorter LCARS action names suited to its button geometry.
 const PLAY_HELP = Object.freeze([
-    Object.freeze({
-        label: "CYAN SHIELD",
-        description: "fleet spawn immunity: 3 seconds",
-    }),
     Object.freeze({
         label: FIRE_KEY_LABEL,
         description: "fire phasers",
@@ -693,7 +690,7 @@ const PLAY_HELP = Object.freeze([
 ]);
 const HELP_PANEL_WIDTH = 540;
 // Leave breathing room below the final control row.
-const HELP_PANEL_HEIGHT = 558;
+const HELP_PANEL_HEIGHT = 516;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -888,8 +885,10 @@ const bullets = [];
 const sparks = [];
 /** @type {BorgCube[]} Live cubes and drifting wrecks in the current field. */
 const borgCubes = [];
-/** @type {number} Each completed field adds one cube until ship destruction. */
+/** @type {number} One-based field number; victory advances it, defeat retries it. */
 let sessionField = 1;
+/** @type {number} Starting helper count restored on every retry of this field. */
+let fieldStartingHelperCount = 0;
 
 /** @returns {Generator<Asteroid>} Solid bodies, including the drifting wreck. */
 function* physicalTargets() {
@@ -3607,7 +3606,8 @@ function reinforcementCountForField(field) {
 
 /**
  * Rebuild repaired survivors plus one reinforcement after victory; defeat
- * starts without helpers. Only the survivor count carries over. Helpers use the
+ * restores the field's starting fleet. Only the survivor count carries over
+ * to the next field. Helpers use the
  * same ordinary autopilot and weapon gates as the player, but their input is
  * never exposed to DOM controls. Keeping the player at index zero preserves
  * all bridge, alert, and keyboard references across field transitions.
@@ -3618,7 +3618,8 @@ function reinforcementCountForField(field) {
 function configureHelpingFleet(width, height) {
     const helperCount = gameWon
         ? starships.filter((ship) => ship !== playerShip && ship.alive).length + 1
-        : 0;
+        : fieldStartingHelperCount;
+    fieldStartingHelperCount = helperCount;
     starships.length = 1;
 
     for (let helperIndex = 0; helperIndex < helperCount; helperIndex += 1) {
@@ -4845,17 +4846,16 @@ function updateAlert(ship, deltaTime) {
 /**
  * Begin a fresh field after destruction or a completed field. Achievements
  * reset only after the previous round's result screen has been shown.
- * Rebuilding the asteroid field with the world
- * makes the restart a real game restart instead of leaving the player inside
- * the collision that ended the previous life.
+ * Rebuilding the world retries the lost field from scratch, including its
+ * starting fleet, instead of leaving the player inside the fatal collision.
  * @param {number} width Viewport width in CSS pixels.
  * @param {number} height Viewport height in CSS pixels.
  * @returns {void}
  */
 function restartGame(width, height) {
-    // Victory advances the same session; destruction returns to asteroids only.
+    // Only victory advances progress; destruction retries the current field.
     roundAchievements.clear();
-    sessionField = gameWon ? sessionField + 1 : 1;
+    if (gameWon) sessionField += 1;
     fieldAsteroidDamage.ramming = 0;
     fieldAsteroidDamage.blasters = 0;
     configureHelpingFleet(width, height);
@@ -6025,7 +6025,7 @@ function drawLCARSOverlayFrame(panelWidth, panelHeight, accent) {
 }
 
 /**
- * Explain why the current life ended while the next field is delayed. The
+ * Explain why the current life ended while the field retry is delayed. The
  * status bars are drawn afterward so their animated drainage remains visible
  * above the failure treatment.
  * @param {number} width Viewport width in CSS pixels.
@@ -6074,7 +6074,7 @@ function drawShipFailure(width, height) {
     context.fillStyle = LCARS_AMBER;
     context.font = `600 23px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
-        `NEW FIELD IN ${Math.max(1, Math.ceil(shipFailureTimeRemaining))}`,
+        `RETRY ROUND IN ${Math.max(1, Math.ceil(shipFailureTimeRemaining))}`,
         SHIP_FAILURE_PANEL_WIDTH / 2,
         panelHeight - 56,
     );
@@ -6225,7 +6225,8 @@ function drawWinScreen(width, height) {
 
 /**
  * Draw a responsive pause screen over the frozen game and list every key
- * needed to play. The render loop keeps calling this while paused, so the
+ * needed to play. Never add anything except controls to this pause screen.
+ * The render loop keeps calling this while paused, so the
  * help remains visible after resize and for every later pause.
  * @param {number} width The viewport width in CSS pixels.
  * @param {number} height The viewport height in CSS pixels.
