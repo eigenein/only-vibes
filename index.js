@@ -261,12 +261,12 @@ const DEFEAT_SOUND_SOURCE = "sounds/Shutdown.wav";
 // 10-pixel margins above and below.
 const LCARS_CONSOLE_HEIGHT = LCARS_CONSOLE_TOP * 2 + STATUS_BARS_HEIGHT;
 // Hold the failure message long enough for a new player to connect the empty
-// hull bar with the collision that ended the current life.
+// hull bar with the structural failure that ended the current life.
 const SHIP_FAILURE_DISPLAY_SECONDS = 2.4;
 const SHIP_FAILURE_PANEL_WIDTH = 560;
 const SHIP_FAILURE_PANEL_HEIGHT = 286;
 const SHIP_FAILURE_BACKDROP_ALPHA = 0.68;
-const SHIP_FAILURE_REASON = "Hull depleted by a collision.";
+const SHIP_FAILURE_REASON = "Structural failure.";
 // The win state is intentionally frozen so the player can read the result and
 // review achievements before choosing to start another field.
 const WIN_SCREEN_PANEL_WIDTH = 560;
@@ -304,7 +304,6 @@ const RAMMER_ACHIEVEMENT_GLYPH = new Path2D(
 );
 const WIN_SCREEN_BACKDROP_ALPHA = 0.58;
 const WIN_SCREEN_TITLE = "SECTOR CLEAR";
-const WIN_SCREEN_REASON = "Asteroids cleared.";
 // Stable IDs make unlocks idempotent. Catalog order is also display order,
 // so future achievements join the same list without separate rendering code.
 /**
@@ -703,9 +702,12 @@ const PHRASE_OPACITY = 0.09;
 // blur, random sampling, or particle updates in the animation loop.
 const STARFIELD_COUNT = 96;
 const STARFIELD_OPACITY = 0.3;
-// Irrational spacing ratios distribute repeatable positions across the arena.
-const STARFIELD_X_STEP = 0.618033988749895;
-const STARFIELD_Y_STEP = 0.754877666246693;
+// Independent normalized coordinates avoid patterned rows and stay fixed on
+// resize. Sample once at startup, keeping randomness out of the render loop.
+const STARFIELD_POSITIONS = Array.from({length: STARFIELD_COUNT}, () => ({
+    x: Math.random(),
+    y: Math.random(),
+}));
 // Alternate tiny CSS-pixel sizes to distinguish stars from phaser pulses.
 const STARFIELD_SMALL_SIZE = 1;
 const STARFIELD_LARGE_SIZE = 1.5;
@@ -5353,7 +5355,7 @@ function drawLCARSCommandConsole(width) {
 
 /**
  * Build the two star-size paths only when the viewport changes. Positions are
- * deterministic and cosmetic; resizing never consumes the physics RNG.
+ * random and cosmetic, sampled once at startup; resizing consumes no randomness.
  * @param {number} width Arena width in CSS pixels.
  * @param {number} height Arena height in CSS pixels.
  * @returns {Path2D[]} Small and large star paths.
@@ -5363,8 +5365,8 @@ function createStarfieldPaths(width, height) {
     for (let index = 0; index < STARFIELD_COUNT; index += 1) {
         const large = index % 4 === 0;
         const size = large ? STARFIELD_LARGE_SIZE : STARFIELD_SMALL_SIZE;
-        const x = ((index * STARFIELD_X_STEP + 0.5) % 1) * width;
-        const y = ((index * STARFIELD_Y_STEP + 0.5) % 1) * height;
+        const x = STARFIELD_POSITIONS[index].x * Math.max(0, width - size);
+        const y = STARFIELD_POSITIONS[index].y * Math.max(0, height - size);
         paths[large ? 1 : 0].rect(x, y, size, size);
     }
     return paths;
@@ -5637,7 +5639,8 @@ function drawStarfleetFocus(width, height) {
 
 /**
  * Render the poisonous Borg green locked-on target markers and cybernetic focus
- * effects for any starship currently targeted by a focus group of 2 or more Borg cubes.
+ * effects for any starship targeted by at least one Borg cube. A lone attacker
+ * deserves the same visible warning as a coordinated group.
  * @param {number} width Arena width in CSS pixels.
  * @param {number} height Arena height in CSS pixels.
  * @returns {void}
@@ -5671,7 +5674,7 @@ function drawBorgFocusLock(width, height) {
             (cube) => cube.targetStarship === ship,
         );
         const focusCount = focusingCubes.length;
-        if (focusCount < BORG_FOCUS_GROUP_MIN_SIZE) {
+        if (focusCount === 0) {
             continue;
         }
 
@@ -6117,7 +6120,7 @@ function drawSessionAchievements(panelWidth, y) {
     );
     context.fillStyle = LCARS_LILAC;
     context.font = `600 18px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText("SESSION ACHIEVEMENTS", panelWidth / 2, y);
+    context.fillText("ACHIEVEMENTS", panelWidth / 2, y);
     for (const [index, achievement] of unlockedAchievements.entries()) {
         const row = Math.floor(index / ACHIEVEMENT_COLUMNS);
         const column = index % ACHIEVEMENT_COLUMNS;
@@ -6186,15 +6189,12 @@ function drawWinScreen(width, height) {
     context.fillText(WIN_SCREEN_TITLE, WIN_SCREEN_PANEL_WIDTH / 2, 86);
     context.fillStyle = LCARS_TEXT;
     context.font = `500 22px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText(WIN_SCREEN_REASON, WIN_SCREEN_PANEL_WIDTH / 2, 144);
-    drawSessionAchievements(WIN_SCREEN_PANEL_WIDTH, 184);
-    context.fillStyle = LCARS_MUTED_TEXT;
-    context.font = `500 20px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
         `PRESS ${PAUSE_KEY_LABEL} FOR NEXT ROUND`,
         WIN_SCREEN_PANEL_WIDTH / 2,
-        panelHeight - 46,
+        144,
     );
+    drawSessionAchievements(WIN_SCREEN_PANEL_WIDTH, 184);
     context.restore();
 }
 

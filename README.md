@@ -84,7 +84,9 @@ Gold identifies your ship and faint lavender identifies friendly support.
 Destroyed helpers appear as dark fractured hulls without shields or bow lights.
 The coral OVERHEATING indicator above COLLISION COURSE lights above 80% phaser heat. Lavender
 brackets marked STARFLEET show helper targets and the number of assigned helpers;
-attack these targets to support their coordinated fire. Helpers target live
+attack these targets to support their coordinated fire. Green BORG FOCUS markers
+show targeted ships and the number of assigned cubes. Both cues appear even
+with a single attacker. Helpers target live
 Borg cubes first, then coordinate asteroid clearing once all cubes are defeated. Helpers share the Borg
 fleet’s gradual focus assignment policy. Starship
 phasers can ricochet once; Borg pulses disappear on their first contact.
