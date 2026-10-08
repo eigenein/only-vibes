@@ -53,9 +53,9 @@ const WORLD_MASS_COMPENSATION = 1 / WORLD_BODY_SCALE ** 2;
 // through ship mass, asteroid/cube density, inertia and spark energy budgets.
 // The reference phaser mass anchors the original world mass calibration.
 const REFERENCE_BULLET_MASS = 10;
-// With the derived body masses, a stationary head-on hit spends about 25%
+// With the derived body masses, a stationary head-on hit spends about 20%
 // of a full ship shield. Relative motion and impact angle still affect damage.
-const BORG_BULLET_MASS = 135;
+const BORG_BULLET_MASS = 108;
 const BORG_TO_STARSHIP_BULLET_MASS_RATIO = 8.1;
 // Projectile mass is independent of its visual length; the contact solver
 // uses it for momentum and kinetic energy.
