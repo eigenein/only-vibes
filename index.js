@@ -258,6 +258,14 @@ const WIN_SCREEN_PANEL_WIDTH = 560;
 // rows; viewport scaling keeps every unlocked icon and its caption visible.
 const WIN_SCREEN_PANEL_HEIGHT = 274;
 const WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT = 120;
+// Wolf 359 recognizes destruction in a field that began with a fleet of five.
+const WOLF_359_MINIMUM_CUBES = 5;
+// A looming cube above a broken Starfleet hull uses the shared vector style.
+const WOLF_359_ACHIEVEMENT_GLYPH = new Path2D(
+    "M 20 6 L 44 6 L 54 16 L 54 34 L 30 34 L 20 24 Z " +
+        "M 24 10 H 41 L 48 17 H 31 Z M 8 44 H 25 L 31 51 L 23 58 H 8 Z " +
+        "M 36 43 L 55 49 L 51 57 L 33 51 Z",
+);
 const ACHIEVEMENT_COLUMNS = 4;
 const ACHIEVEMENT_BADGE_WIDTH = 104;
 const ACHIEVEMENT_BADGE_GAP = 16;
@@ -297,6 +305,12 @@ const SESSION_ACHIEVEMENTS = Object.freeze([
         title: "FRIENDLY FIRE",
         glyph: FRIENDLY_FIRE_ACHIEVEMENT_GLYPH,
         color: LCARS_ALERT_RED,
+    }),
+    Object.freeze({
+        id: "wolf-359",
+        title: "WOLF 359",
+        glyph: WOLF_359_ACHIEVEMENT_GLYPH,
+        color: LCARS_AMBER,
     }),
     Object.freeze({
         id: "rammer",
@@ -481,8 +495,8 @@ const BORG_FOCUS_LOCK_COLOR = "#77ff88";
 const BORG_FOCUS_LOCK_ACCENT = "#b4ffbe";
 const BORG_FOCUS_LOCK_BEAM = "rgba(119, 255, 136, 0.35)";
 
-// Friendly support arrives from field two onward, providing one friendly
-// helper per additional Borg cube (Borg count minus one).
+// Friendly support arrives with the Borg from field two onward, one helper
+// per cube. Keep reinforcements separated from the player's spawn point.
 const HELPER_SPAWN_DISTANCE = STARSHIP_RADIUS * 4;
 
 // Aim assist advises the player without steering or changing phaser behavior.
@@ -862,8 +876,8 @@ function isLiveTarget(target) {
     );
 }
 
-// Achievements survive completed fields and pauses, but never ship destruction
-// or a page reload. A Set prevents repeated events from duplicating an unlock.
+// Achievements survive completed fields, pauses, and ship destruction until
+// a page reload. A Set prevents repeated events from duplicating an unlock.
 /** @type {Set<string>} */
 const sessionAchievements = new Set();
 // Asteroids have no health pool: compare the impulse-based impact damage
@@ -1035,7 +1049,7 @@ class ShipControls {
  * @implements {PhysicsBody}
  */
 class Starship {
-    /** @type {BorgCube | undefined} Shared fleet assignment for helper navigation. */
+    /** @type {Asteroid | undefined} Shared fleet assignment for helper navigation. */
     fleetTarget = undefined;
     controls = new ShipControls();
     aimAssist = new AimAssist(this);
@@ -3107,22 +3121,27 @@ function updateFleetTactics(
     setTarget(cube, bestTarget);
 }
 
-// Helpers coordinate against live Borg cubes; the player clears asteroids and is
-// free to support the fleet without inflating its automatic group counts.
+// Helpers prioritize live Borg cubes, then coordinate asteroid clearing once
+// every cube is defeated. The player never inflates automatic group counts.
 /** @type {{index: number}} Independent round-robin cursor for helper assignments. */
 const starfleetTacticsState = {index: 0};
 
 /**
  * Apply the same distance and vulnerability weights to enemy reserves.
  * @param {Starship} ship Attacking helper.
- * @param {BorgCube} target Live enemy cube.
+ * @param {Asteroid} target Live cube or asteroid after the Borg fleet is defeated.
  * @param {number} diagonal Positive arena diagonal.
  * @returns {number} Local opportunity value.
  */
 function scoreStarfleetTarget(ship, target, diagonal) {
+    // Rocks have no rechargeable reserves; distance and group scoring decide
+    // their assignments without inventing a hull-based vulnerability advantage.
     const healthRatio =
-        (target.hull + target.faces.reduce((sum, face) => sum + face.shield, 0)) /
-        (BORG_HULL + 4 * BORG_FACE_SHIELD);
+        target instanceof BorgCube
+            ? (target.hull +
+                  target.faces.reduce((sum, face) => sum + face.shield, 0)) /
+              (BORG_HULL + 4 * BORG_FACE_SHIELD)
+            : 1;
     return (
         -(Math.hypot(ship.x - target.x, ship.y - target.y) / diagonal) *
             BORG_FOCUS_DISTANCE_WEIGHT +
@@ -3138,9 +3157,10 @@ function scoreStarfleetTarget(ship, target, diagonal) {
  * @returns {void}
  */
 function updateStarfleetTactics(width, height) {
+    const liveCubes = borgCubes.filter((cube) => cube.alive);
     updateFleetTactics(
         starships.filter((ship) => ship !== playerShip && ship.alive),
-        borgCubes.filter((cube) => cube.alive),
+        liveCubes.length > 0 ? liveCubes : asteroids,
         starfleetTacticsState,
         (ship) => ship.fleetTarget,
         (ship, target) => {
@@ -3498,20 +3518,24 @@ function generateAsteroids(width, height) {
             createAsteroid(width, height),
         ),
     );
-    for (let index = 0; index < sessionField; index += 1) {
+    for (
+        let index = 0;
+        index < reinforcementCountForField(sessionField);
+        index += 1
+    ) {
         borgCubes.push(new BorgCube(width, height));
     }
     asteroidsGenerated = true;
 }
 
 /**
- * Return the number of autonomous hulls supporting the player in a field.
- * Each round adds one Borg cube. Friendly support arrives from the second round
- * onward, scaling with one helper per additional Borg cube (Borg count minus one).
+ * Return the shared Borg cube and friendly helper count for a field.
+ * The first round teaches asteroid combat alone; later rounds add one cube
+ * and one helper together so both fleets always have equal starting counts.
  * @param {number} field One-based session field number.
- * @returns {number} Number of helper ships.
+ * @returns {number} Number of cubes and number of helper ships.
  */
-function helperCountForField(field) {
+function reinforcementCountForField(field) {
     if (!Number.isFinite(field) || field < 1) {
         return 0;
     }
@@ -3528,7 +3552,7 @@ function helperCountForField(field) {
  * @returns {void}
  */
 function configureHelpingFleet(width, height) {
-    const helperCount = helperCountForField(sessionField);
+    const helperCount = reinforcementCountForField(sessionField);
     starships.length = 1;
 
     for (let helperIndex = 0; helperIndex < helperCount; helperIndex += 1) {
@@ -3925,9 +3949,11 @@ function autopilotTargetScore(ship, asteroid) {
  * @returns {Asteroid | undefined} Selected aiming and positioning target.
  */
 function autopilotTarget(ship, deltaTime) {
-    // Helpers never fall back to asteroid engagements after the Borg are defeated.
+    // Fleet assignments enforce Borg priority and replace destroyed rocks.
     if (ship !== playerShip) {
-        return ship.fleetTarget?.alive ? ship.fleetTarget : undefined;
+        return ship.fleetTarget && isLiveTarget(ship.fleetTarget)
+            ? ship.fleetTarget
+            : undefined;
     }
     ship.controls.autopilotTargetLockTimeRemaining = Math.max(
         0,
@@ -3978,9 +4004,11 @@ function autoGunnerHasShot(ship) {
     const directionX = Math.cos(ship.angle);
     const directionY = Math.sin(ship.angle);
     const muzzle = STARSHIP_RADIUS + BULLET_HALF_LENGTH;
+    const helperMustFightBorg =
+        ship !== playerShip && borgCubes.some((cube) => cube.alive);
     for (const asteroid of combatTargets()) {
-        // Helper gunnery leaves asteroid clearing to the player.
-        if (ship !== playerShip && !(asteroid instanceof BorgCube)) continue;
+        // Asteroid shots become eligible only after the last live cube falls.
+        if (helperMustFightBorg && !(asteroid instanceof BorgCube)) continue;
         const x = asteroid.x - ship.x - directionX * muzzle;
         const y = asteroid.y - ship.y - directionY * muzzle;
         const velocityX = asteroid.velocityX - directionX * BULLET_SPEED;
@@ -4705,7 +4733,7 @@ function updateAlert(ship, deltaTime) {
 
 /**
  * Begin a fresh field after destruction or a completed field. Achievements
- * persist across wins and are cleared only when ship failure begins.
+ * persist across wins and ship destruction until the page is reloaded.
  * Rebuilding the asteroid field with the world
  * makes the restart a real game restart instead of leaving the player inside
  * the collision that ended the previous life.
@@ -4714,7 +4742,7 @@ function updateAlert(ship, deltaTime) {
  * @returns {void}
  */
 function restartGame(width, height) {
-    // Victory advances the same session; destruction starts again at one cube.
+    // Victory advances the same session; destruction returns to asteroids only.
     sessionField = gameWon ? sessionField + 1 : 1;
     fieldAsteroidDamage.ramming = 0;
     fieldAsteroidDamage.blasters = 0;
@@ -4750,7 +4778,10 @@ function beginShipFailure() {
     }
 
     shipFailureActive = true;
-    sessionAchievements.clear();
+    // Count the starting fleet, including defeated cubes still drifting as wrecks.
+    if (borgCubes.length >= WOLF_359_MINIMUM_CUBES) {
+        sessionAchievements.add("wolf-359");
+    }
     shipFailureTimeRemaining = SHIP_FAILURE_DISPLAY_SECONDS;
     defeatSound.playRandom();
     for (const ship of starships) {
@@ -5837,12 +5868,16 @@ function drawLCARSOverlayFrame(panelWidth, panelHeight, accent) {
  * @returns {void}
  */
 function drawShipFailure(width, height) {
+    const panelHeight =
+        SHIP_FAILURE_PANEL_HEIGHT +
+        Math.ceil(sessionAchievements.size / ACHIEVEMENT_COLUMNS) *
+            WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT;
     const failureScale = Math.max(
         0,
         Math.min(
             1,
             (width - 32) / SHIP_FAILURE_PANEL_WIDTH,
-            (height - 32) / SHIP_FAILURE_PANEL_HEIGHT,
+            (height - 32) / panelHeight,
         ),
     );
 
@@ -5856,15 +5891,11 @@ function drawShipFailure(width, height) {
     }
 
     const panelX = (width - SHIP_FAILURE_PANEL_WIDTH * failureScale) / 2;
-    const panelY = (height - SHIP_FAILURE_PANEL_HEIGHT * failureScale) / 2;
+    const panelY = (height - panelHeight * failureScale) / 2;
 
     context.translate(panelX, panelY);
     context.scale(failureScale, failureScale);
-    drawLCARSOverlayFrame(
-        SHIP_FAILURE_PANEL_WIDTH,
-        SHIP_FAILURE_PANEL_HEIGHT,
-        LCARS_RED,
-    );
+    drawLCARSOverlayFrame(SHIP_FAILURE_PANEL_WIDTH, panelHeight, LCARS_RED);
 
     context.textAlign = "center";
     context.textBaseline = "middle";
@@ -5874,19 +5905,13 @@ function drawShipFailure(width, height) {
     context.fillStyle = LCARS_TEXT;
     context.font = `500 22px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(SHIP_FAILURE_REASON, SHIP_FAILURE_PANEL_WIDTH / 2, 142);
-    context.fillStyle = LCARS_MUTED_TEXT;
-    context.font = `400 19px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText(
-        "Keep clear of the asteroids.",
-        SHIP_FAILURE_PANEL_WIDTH / 2,
-        182,
-    );
+    drawSessionAchievements(SHIP_FAILURE_PANEL_WIDTH, 182);
     context.fillStyle = LCARS_AMBER;
     context.font = `600 23px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
         `NEW FIELD IN ${Math.max(1, Math.ceil(shipFailureTimeRemaining))}`,
         SHIP_FAILURE_PANEL_WIDTH / 2,
-        230,
+        panelHeight - 56,
     );
     context.restore();
 }
@@ -5942,6 +5967,40 @@ function drawAchievementBadge(achievement, x, y) {
 }
 
 /**
+ * Draw the same complete collection on victory and destruction screens.
+ * @param {number} panelWidth Result panel width in logical pixels.
+ * @param {number} y Collection heading center in logical pixels.
+ * @returns {void}
+ */
+function drawSessionAchievements(panelWidth, y) {
+    const unlockedAchievements = SESSION_ACHIEVEMENTS.filter((achievement) =>
+        sessionAchievements.has(achievement.id),
+    );
+    context.fillStyle = LCARS_LILAC;
+    context.font = `600 18px ${LCARS_BODY_FONT_FAMILY}`;
+    context.fillText("SESSION ACHIEVEMENTS", panelWidth / 2, y);
+    for (const [index, achievement] of unlockedAchievements.entries()) {
+        const row = Math.floor(index / ACHIEVEMENT_COLUMNS);
+        const column = index % ACHIEVEMENT_COLUMNS;
+        const rowCount = Math.min(
+            ACHIEVEMENT_COLUMNS,
+            unlockedAchievements.length - row * ACHIEVEMENT_COLUMNS,
+        );
+        // Center incomplete rows too, so a single unlock feels deliberate and
+        // future icons never leave an awkward empty side of the collection.
+        const rowWidth =
+            rowCount * ACHIEVEMENT_BADGE_WIDTH +
+            (rowCount - 1) * ACHIEVEMENT_BADGE_GAP;
+        const badgeX =
+            (panelWidth - rowWidth) / 2 +
+            column * (ACHIEVEMENT_BADGE_WIDTH + ACHIEVEMENT_BADGE_GAP);
+        const badgeY = y + 26 + row * WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT;
+
+        drawAchievementBadge(achievement, badgeX, badgeY);
+    }
+}
+
+/**
  * Draw the final result over the empty arena and keep the restart instruction
  * aligned with the pause control used everywhere else in the game.
  * @param {number} width Viewport width in CSS pixels.
@@ -5989,28 +6048,7 @@ function drawWinScreen(width, height) {
     context.fillStyle = LCARS_TEXT;
     context.font = `500 22px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(WIN_SCREEN_REASON, WIN_SCREEN_PANEL_WIDTH / 2, 144);
-    context.fillStyle = LCARS_LILAC;
-    context.font = `600 18px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillText("SESSION ACHIEVEMENTS", WIN_SCREEN_PANEL_WIDTH / 2, 184);
-    for (const [index, achievement] of unlockedAchievements.entries()) {
-        const row = Math.floor(index / ACHIEVEMENT_COLUMNS);
-        const column = index % ACHIEVEMENT_COLUMNS;
-        const rowCount = Math.min(
-            ACHIEVEMENT_COLUMNS,
-            unlockedAchievements.length - row * ACHIEVEMENT_COLUMNS,
-        );
-        // Center incomplete rows too, so a single unlock feels deliberate and
-        // future icons never leave an awkward empty side of the collection.
-        const rowWidth =
-            rowCount * ACHIEVEMENT_BADGE_WIDTH +
-            (rowCount - 1) * ACHIEVEMENT_BADGE_GAP;
-        const badgeX =
-            (WIN_SCREEN_PANEL_WIDTH - rowWidth) / 2 +
-            column * (ACHIEVEMENT_BADGE_WIDTH + ACHIEVEMENT_BADGE_GAP);
-        const badgeY = 210 + row * WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT;
-
-        drawAchievementBadge(achievement, badgeX, badgeY);
-    }
+    drawSessionAchievements(WIN_SCREEN_PANEL_WIDTH, 184);
     context.fillStyle = LCARS_MUTED_TEXT;
     context.font = `500 20px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
@@ -6092,9 +6130,15 @@ function drawPauseHelp(width, height) {
     context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillStyle = LCARS_LAVENDER;
     context.fillText(
-        "Lavender brackets: help Starfleet attack Borg cubes",
+        "Round 1: asteroids; then one helper per Borg cube",
         70,
-        474,
+        452,
+    );
+    context.fillText("Starfleet brackets: Borg first, then asteroids", 70, 474);
+    context.fillText(
+        "Achievements survive destruction until you reload the page",
+        70,
+        496,
     );
     context.restore();
 }

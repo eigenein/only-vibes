@@ -48,9 +48,9 @@ offset, and ignores future collisions. Unreachable targets have no crosshair;
 predictions outside the arena are clipped. Pausing or losing focus clears the
 lock. Every new sector starts with Aim Assist, autopilot, and auto-gunner disabled.
 
-Each field adds one Borg cube. Friendly support arrives from field 2 onward,
-providing one friendly helper per additional Borg cube (Borg count minus one),
-equipped with autopilot and auto-gunner.
+The first field contains only asteroids. From field 2 onward, each field adds
+one Borg cube and one friendly helper, keeping their starting counts equal.
+Helpers are equipped with autopilot and auto-gunner.
 
 Autopilot (`T`) pilots close-range attack passes, interception, and ramming.
 Every 1.2 seconds it rolls for an attack pass: healthy shields favor closing
@@ -82,8 +82,8 @@ brief wait until firing becomes available.
 
 Gold identifies your ship and lavender identifies friendly support. Lavender
 brackets marked STARFLEET show helper targets and the number of assigned helpers;
-attack these cubes to support their coordinated fire. Helpers target only live
-Borg cubes, leaving asteroid clearing to the player. Helpers share the Borg
+attack these targets to support their coordinated fire. Helpers target live
+Borg cubes first, then coordinate asteroid clearing once all cubes are defeated. Helpers share the Borg
 fleet’s gradual focus assignment policy. Starship
 phasers can ricochet once; Borg pulses disappear on their first contact.
 Your ship has three seconds of protection from collision damage after spawning.
@@ -132,7 +132,7 @@ area removed, plus 8,000 for defeating the cube.
 
 ### Borg cube
 
-One cube enters each field, with 200 hull and an 18-point shield buffer per face.
+Each cube has 200 hull and an 18-point shield buffer per face.
 These reserves keep fights brisk while preserving adaptive protection.
 Each cube routes a fixed 100% energy budget between four faces, starting
 at 25% each. Repeated hits reinforce the attacked face, taking
