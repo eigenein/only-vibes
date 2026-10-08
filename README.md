@@ -48,9 +48,11 @@ offset, and ignores future collisions. Unreachable targets have no crosshair;
 predictions outside the arena are clipped. Pausing or losing focus clears the
 lock. Every new sector starts with Aim Assist, autopilot, and auto-gunner disabled.
 
-The first field contains only asteroids. From field 2 onward, each field adds
-one Borg cube and one friendly helper, keeping their starting counts equal.
-Helpers are equipped with autopilot and auto-gunner.
+The first field contains only asteroids and no friendly helpers. Each completed
+field adds one fresh friendly helper for the next field. Surviving helpers are
+fully repaired; destroyed helpers are lost. Defeat resets the fleet to zero.
+From field 2 onward, the Borg count increases by one each field independently
+of friendly losses. Helpers are equipped with autopilot and auto-gunner.
 
 Autopilot (`T`) pilots close-range attack passes, interception, and ramming.
 Every 1.2 seconds it rolls for an attack pass: healthy shields favor closing

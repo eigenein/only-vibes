@@ -511,8 +511,8 @@ const BORG_FOCUS_LOCK_COLOR = "#77ff88";
 const BORG_FOCUS_LOCK_ACCENT = "#b4ffbe";
 const BORG_FOCUS_LOCK_BEAM = "rgba(119, 255, 136, 0.35)";
 
-// Friendly support arrives with the Borg from field two onward, one helper
-// per cube. Keep reinforcements separated from the player's spawn point.
+// Each victory adds one helper to the repaired survivors. Keep their fresh
+// formation separated from the player's spawn point.
 const HELPER_SPAWN_DISTANCE = STARSHIP_RADIUS * 4;
 
 // Aim assist advises the player without steering or changing phaser behavior.
@@ -652,13 +652,10 @@ const PAUSE_KEY_LABEL = "P";
 const FIRE_KEY = "Space";
 const FIRE_KEY_LABEL = "SPACE";
 
-// Keep the detailed paused-help controls in one compact table. The persistent
+// The paused help screen displays only controls, not gameplay mechanics.
+// Keep those controls in one compact table. The persistent
 // command strip uses shorter LCARS action names suited to its button geometry.
 const PLAY_HELP = Object.freeze([
-    Object.freeze({
-        label: "SAFEGUARD",
-        description: "collision-course avoidance",
-    }),
     Object.freeze({
         label: FIRE_KEY_LABEL,
         description: "fire phasers",
@@ -689,9 +686,8 @@ const PLAY_HELP = Object.freeze([
     }),
 ]);
 const HELP_PANEL_WIDTH = 540;
-// Keep pause help focused on controls; README.md holds the mechanics reference.
-// The final control row keeps the same bottom breathing room as the frame.
-const HELP_PANEL_HEIGHT = 558;
+// Leave breathing room below the final control row.
+const HELP_PANEL_HEIGHT = 516;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -3593,11 +3589,10 @@ function generateAsteroids(width, height) {
 }
 
 /**
- * Return the shared Borg cube and friendly helper count for a field.
- * The first round teaches asteroid combat alone; later rounds add one cube
- * and one helper together so both fleets always have equal starting counts.
+ * Return the Borg cube count for a field. The first round teaches asteroid
+ * combat alone; later rounds add one cube regardless of friendly losses.
  * @param {number} field One-based session field number.
- * @returns {number} Number of cubes and number of helper ships.
+ * @returns {number} Number of cubes.
  */
 function reinforcementCountForField(field) {
     if (!Number.isFinite(field) || field < 1) {
@@ -3607,7 +3602,8 @@ function reinforcementCountForField(field) {
 }
 
 /**
- * Resize and initialize the friendly fleet for a fresh field. Helpers use the
+ * Rebuild repaired survivors plus one reinforcement after victory; defeat
+ * starts without helpers. Only the survivor count carries over. Helpers use the
  * same ordinary autopilot and weapon gates as the player, but their input is
  * never exposed to DOM controls. Keeping the player at index zero preserves
  * all bridge, alert, and keyboard references across field transitions.
@@ -3616,7 +3612,9 @@ function reinforcementCountForField(field) {
  * @returns {void}
  */
 function configureHelpingFleet(width, height) {
-    const helperCount = reinforcementCountForField(sessionField);
+    const helperCount = gameWon
+        ? starships.filter((ship) => ship !== playerShip && ship.alive).length + 1
+        : 0;
     starships.length = 1;
 
     for (let helperIndex = 0; helperIndex < helperCount; helperIndex += 1) {
