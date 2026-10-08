@@ -655,7 +655,7 @@ const PLAY_HELP = Object.freeze([
 const HELP_PANEL_WIDTH = 540;
 // Keep pause help focused on controls; README.md holds the mechanics reference.
 // The final control row keeps the same bottom breathing room as the frame.
-const HELP_PANEL_HEIGHT = 474;
+const HELP_PANEL_HEIGHT = 516;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -1035,6 +1035,8 @@ class ShipControls {
  * @implements {PhysicsBody}
  */
 class Starship {
+    /** @type {BorgCube | undefined} Shared fleet assignment for helper navigation. */
+    fleetTarget = undefined;
     controls = new ShipControls();
     aimAssist = new AimAssist(this);
     x = 0;
@@ -2998,44 +3000,83 @@ function scoreBorgFocusGroup(count, shipCount) {
  * @returns {void}
  */
 function updateBorgFleetTactics(width, height) {
-    const liveCubes = borgCubes.filter((cube) => cube.alive);
-    const liveShips = starships.filter(
-        (ship) =>
-            ship.alive &&
-            (ship !== playerShip || playerSpawnImmunityRemaining <= 0),
+    const state = {index: borgTacticsCubeIndex};
+    updateFleetTactics(
+        borgCubes.filter((cube) => cube.alive),
+        starships.filter(
+            (ship) =>
+                ship.alive &&
+                (ship !== playerShip || playerSpawnImmunityRemaining <= 0),
+        ),
+        state,
+        (cube) => cube.targetStarship,
+        (cube, target) => {
+            cube.targetStarship = target;
+        },
+        scoreBorgTarget,
+        width,
+        height,
     );
+    borgTacticsCubeIndex = state.index;
+}
+
+/**
+ * Shared Borg assignment algorithm. Only faction eligibility, target storage,
+ * and reserve scoring are adapters; thresholds and every gain calculation stay identical.
+ * @template A, T
+ * @param {A[]} liveCubes Eligible attackers, in fleet order.
+ * @param {T[]} liveShips Eligible targets, in world order.
+ * @param {{index: number}} state Independent round-robin cursor.
+ * @param {(attacker: A) => T | undefined} getTarget Read an assignment.
+ * @param {(attacker: A, target: T | undefined) => void} setTarget Store an assignment.
+ * @param {(attacker: A, target: T, diagonal: number) => number} scoreTarget Local opportunity score.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {void}
+ */
+function updateFleetTactics(
+    liveCubes,
+    liveShips,
+    state,
+    getTarget,
+    setTarget,
+    scoreTarget,
+    width,
+    height,
+) {
+    /** @type {Map<T, number>} Live assignment counts for each eligible target. */
     const counts = new Map(liveShips.map((ship) => [ship, 0]));
     for (const cube of liveCubes) {
-        if (!cube.targetStarship || !counts.has(cube.targetStarship)) {
+        if (!getTarget(cube) || !counts.has(getTarget(cube))) {
             // Spread emergency replacements across eligible ships. Ordinary
             // adaptation subsequently assembles groups using live opportunities.
-            cube.targetStarship =
+            setTarget(
+                cube,
                 liveShips.length > 0
-                    ? liveShips[borgTacticsCubeIndex % liveShips.length]
-                    : undefined;
-            borgTacticsCubeIndex += 1;
-        }
-        if (cube.targetStarship) {
-            counts.set(
-                cube.targetStarship,
-                (counts.get(cube.targetStarship) ?? 0) + 1,
+                    ? liveShips[state.index % liveShips.length]
+                    : undefined,
             );
+            state.index += 1;
+        }
+        const assignedTarget = getTarget(cube);
+        if (assignedTarget) {
+            counts.set(assignedTarget, (counts.get(assignedTarget) ?? 0) + 1);
         }
     }
     if (liveCubes.length === 0 || liveShips.length === 0) {
-        borgTacticsCubeIndex = 0;
+        state.index = 0;
         return;
     }
-    const cube = liveCubes[borgTacticsCubeIndex % liveCubes.length];
-    borgTacticsCubeIndex = (borgTacticsCubeIndex + 1) % liveCubes.length;
-    const currentTarget = cube.targetStarship;
+    const cube = liveCubes[state.index % liveCubes.length];
+    state.index = (state.index + 1) % liveCubes.length;
+    const currentTarget = getTarget(cube);
     if (!currentTarget) return;
     const currentCount = counts.get(currentTarget) ?? 0;
     const focusGroupCount = [...counts.values()].filter(
         (count) => count >= BORG_FOCUS_GROUP_MIN_SIZE,
     ).length;
     const arenaDiagonal = Math.max(1, Math.hypot(width, height));
-    const currentScore = scoreBorgTarget(cube, currentTarget, arenaDiagonal);
+    const currentScore = scoreTarget(cube, currentTarget, arenaDiagonal);
     let bestGain = BORG_FOCUS_HYSTERESIS_BONUS;
     let bestTarget = currentTarget;
     for (const target of liveShips) {
@@ -3051,7 +3092,7 @@ function updateBorgFleetTactics(width, height) {
                   BORG_FOCUS_MULTI_GROUP_BONUS
                 : 0;
         const gain =
-            scoreBorgTarget(cube, target, arenaDiagonal) -
+            scoreTarget(cube, target, arenaDiagonal) -
             currentScore +
             scoreBorgFocusGroup(currentCount - 1, liveShips.length) -
             scoreBorgFocusGroup(currentCount, liveShips.length) +
@@ -3063,7 +3104,52 @@ function updateBorgFleetTactics(width, height) {
             bestTarget = target;
         }
     }
-    cube.targetStarship = bestTarget;
+    setTarget(cube, bestTarget);
+}
+
+// Helpers coordinate against live Borg cubes; the player clears asteroids and is
+// free to support the fleet without inflating its automatic group counts.
+/** @type {{index: number}} Independent round-robin cursor for helper assignments. */
+const starfleetTacticsState = {index: 0};
+
+/**
+ * Apply the same distance and vulnerability weights to enemy reserves.
+ * @param {Starship} ship Attacking helper.
+ * @param {BorgCube} target Live enemy cube.
+ * @param {number} diagonal Positive arena diagonal.
+ * @returns {number} Local opportunity value.
+ */
+function scoreStarfleetTarget(ship, target, diagonal) {
+    const healthRatio =
+        (target.hull + target.faces.reduce((sum, face) => sum + face.shield, 0)) /
+        (BORG_HULL + 4 * BORG_FACE_SHIELD);
+    return (
+        -(Math.hypot(ship.x - target.x, ship.y - target.y) / diagonal) *
+            BORG_FOCUS_DISTANCE_WEIGHT +
+        (1 - Math.max(0, Math.min(1, healthRatio))) *
+            BORG_FOCUS_VULNERABILITY_WEIGHT
+    );
+}
+
+/**
+ * Coordinate helper targets before navigation reads their assignments.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {void}
+ */
+function updateStarfleetTactics(width, height) {
+    updateFleetTactics(
+        starships.filter((ship) => ship !== playerShip && ship.alive),
+        borgCubes.filter((cube) => cube.alive),
+        starfleetTacticsState,
+        (ship) => ship.fleetTarget,
+        (ship, target) => {
+            ship.fleetTarget = target;
+        },
+        scoreStarfleetTarget,
+        width,
+        height,
+    );
 }
 
 class Bullet {
@@ -3839,6 +3925,10 @@ function autopilotTargetScore(ship, asteroid) {
  * @returns {Asteroid | undefined} Selected aiming and positioning target.
  */
 function autopilotTarget(ship, deltaTime) {
+    // Helpers never fall back to asteroid engagements after the Borg are defeated.
+    if (ship !== playerShip) {
+        return ship.fleetTarget?.alive ? ship.fleetTarget : undefined;
+    }
     ship.controls.autopilotTargetLockTimeRemaining = Math.max(
         0,
         ship.controls.autopilotTargetLockTimeRemaining - deltaTime,
@@ -3889,6 +3979,8 @@ function autoGunnerHasShot(ship) {
     const directionY = Math.sin(ship.angle);
     const muzzle = STARSHIP_RADIUS + BULLET_HALF_LENGTH;
     for (const asteroid of combatTargets()) {
+        // Helper gunnery leaves asteroid clearing to the player.
+        if (ship !== playerShip && !(asteroid instanceof BorgCube)) continue;
         const x = asteroid.x - ship.x - directionX * muzzle;
         const y = asteroid.y - ship.y - directionY * muzzle;
         const velocityX = asteroid.velocityX - directionX * BULLET_SPEED;
@@ -4643,6 +4735,7 @@ function restartGame(width, height) {
     asteroidsGenerated = false;
     borgCubes.length = 0;
     borgTacticsCubeIndex = 0;
+    starfleetTacticsState.index = 0;
     generateAsteroids(width, height);
 }
 
@@ -5245,6 +5338,7 @@ function drawGame(width, height) {
 
     drawAimAssist(width, playfieldHeight);
     drawBorgFocusLock(width, playfieldHeight);
+    drawStarfleetFocus(width, playfieldHeight);
     for (const ship of starships) drawStarship(ship);
 
     drawSparks();
@@ -5314,6 +5408,64 @@ function drawAimAssist(width, height) {
             context.lineTo(x, y + radius + gap);
             context.stroke();
         }
+    }
+    context.restore();
+}
+
+/**
+ * Lavender brackets identify helper assignments, including a lone helper, so
+ * the player can support the fleet without enabling automatic controls.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {void}
+ */
+function drawStarfleetFocus(width, height) {
+    if (shipFailureActive || gameWon) return;
+    /** @type {Map<Asteroid, number>} Helper counts for visible live targets. */
+    const groups = new Map();
+    for (const ship of starships) {
+        if (
+            ship === playerShip ||
+            !ship.alive ||
+            !ship.fleetTarget ||
+            !isLiveTarget(ship.fleetTarget)
+        )
+            continue;
+        groups.set(ship.fleetTarget, (groups.get(ship.fleetTarget) ?? 0) + 1);
+    }
+    context.save();
+    context.beginPath();
+    context.rect(0, 0, width, height);
+    context.clip();
+    context.strokeStyle = LCARS_LAVENDER;
+    context.fillStyle = LCARS_LAVENDER;
+    context.lineWidth = 2;
+    context.font = `700 12px ${LCARS_FONT_FAMILY}`;
+    context.textAlign = "center";
+    context.textBaseline = "top";
+    for (const [target, count] of groups) {
+        const radius = target.radius + BORG_FOCUS_LOCK_BRACKET_PADDING;
+        context.beginPath();
+        for (const x of [-1, 1])
+            for (const y of [-1, 1]) {
+                context.moveTo(
+                    target.x + x * (radius - 9),
+                    target.y + y * radius,
+                );
+                context.lineTo(target.x + x * radius, target.y + y * radius);
+                context.lineTo(
+                    target.x + x * radius,
+                    target.y + y * (radius - 9),
+                );
+            }
+        context.stroke();
+        const label = `STARFLEET ×${count}`;
+        const halfWidth = context.measureText(label).width / 2 + 4;
+        context.fillText(
+            label,
+            Math.max(halfWidth, Math.min(width - halfWidth, target.x)),
+            Math.max(4, Math.min(height - 16, target.y + radius + 5)),
+        );
     }
     context.restore();
 }
@@ -5937,6 +6089,13 @@ function drawPauseHelp(width, height) {
         context.fillText(helpItem.description, 208, rowY);
         context.font = `700 18px ${LCARS_FONT_FAMILY}`;
     }
+    context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
+    context.fillStyle = LCARS_LAVENDER;
+    context.fillText(
+        "Lavender brackets: help Starfleet attack Borg cubes",
+        70,
+        474,
+    );
     context.restore();
 }
 
@@ -8206,6 +8365,7 @@ function updateAutobrake(ship, deltaTime, width, height) {
  * @returns {void}
  */
 function updateGame(deltaTime, width, height) {
+    updateStarfleetTactics(width, height);
     for (const ship of starships) {
         if (!ship.alive) continue;
         ship.refillCollisionDamageBudget(deltaTime);

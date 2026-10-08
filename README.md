@@ -80,7 +80,11 @@ brief wait until firing becomes available.
 
 ### Combat cues
 
-Gold identifies your ship and lavender identifies friendly support. Starship
+Gold identifies your ship and lavender identifies friendly support. Lavender
+brackets marked STARFLEET show helper targets and the number of assigned helpers;
+attack these cubes to support their coordinated fire. Helpers target only live
+Borg cubes, leaving asteroid clearing to the player. Helpers share the Borg
+fleet’s gradual focus assignment policy. Starship
 phasers can ricochet once; Borg pulses disappear on their first contact.
 Your ship has three seconds of protection from collision damage after spawning.
 Yellow alert automatically enables aim assist; red alert also enables autopilot.
