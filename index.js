@@ -67,6 +67,10 @@ const BORG_MASS_MULTIPLIER = 33.2;
 // The shield circle is the collision boundary. The saucer and nacelles stay
 // inside it at every heading, so the new silhouette preserves familiar handling.
 const STARSHIP_RADIUS = 28 * WORLD_BODY_SCALE;
+// Support hulls stay readable while giving the player's gold ship priority.
+const FRIENDLY_STARSHIP_OPACITY = 0.72;
+// Unlit wrecks retain a visible collision silhouette after losing their shields.
+const FRIENDLY_WRECK_OPACITY = 0.5;
 // Scale ship mass with its phasers to preserve launch recoil. Asteroids and
 // cubes share this compensation to retain relative body masses.
 const STARSHIP_MASS = 1000 * BODY_MASS_COMPENSATION;
@@ -347,6 +351,8 @@ const PHASER_SHOT_HEAT = 0.14;
 const PHASER_WARM_SHOT_HEAT = 0.1;
 const PHASER_COOLING_RATE = 0.4;
 const PHASER_OVERHEAT_THRESHOLD = 0.9;
+// Match the HUD heat scale: warn strictly above 80% of the firing limit.
+const PHASER_WARNING_HEAT_RATIO = 0.8;
 const BULLET_SPEED = 720;
 const BULLET_HALF_LENGTH = 10;
 const BULLET_LINE_WIDTH = 3;
@@ -716,6 +722,12 @@ const STARSHIP_SILHOUETTE = new Path2D(
 const STARSHIP_DETAILS = new Path2D(
     "M .58 0 A .23 .23 0 1 0 .12 0 A .23 .23 0 1 0 .58 0 " +
     "M -.69 -.57 L -.13 -.57 M -.69 .57 L -.13 .57",
+);
+// Dark cuts across the saucer and nacelles distinguish a destroyed helper.
+const STARSHIP_WRECK_FRACTURES = new Path2D(
+    "M .2 -.4 L .32 -.12 L .18 .08 L .48 .39 " +
+        "M -.58 -.68 L -.42 -.55 L -.5 -.46 " +
+        "M -.25 .46 L -.4 .56 L -.3 .68",
 );
 const STARSHIP_HEADING_MARKER = new Path2D("M .7 -.08 L .94 0 L .7 .08 Z");
 const PAUSE_BACKDROP_ALPHA = 0.44;
@@ -5058,19 +5070,33 @@ function drawAlert(controlRightX, statusBarsLeft) {
         LCARS_CONSOLE_TOP + (STATUS_BARS_HEIGHT * (index + 0.5)) / lanes.length;
     // Reserve the left half-lane only when both legends fit; compact consoles
     // prioritize the active emergency cue without overlapping right-side text.
-    const brakeWidth = context.measureText("AUTOBRAKE").width;
-    const rightWidth = context.measureText("YELLOW ALERT").width;
-    if (
-        brakeWidth <= availableWidth &&
-        (brakeWidth + rightWidth + ALERT_EDGE_GAP <= availableWidth ||
-            (alertLevel === 0 && !playerShip.controls.autopilotEnabled))
-    ) {
+    const leftLanes = [
+        {
+            text: "OVERHEATING",
+            active:
+                playerShip.phaserHeat >
+                PHASER_OVERHEAT_THRESHOLD * PHASER_WARNING_HEAT_RATIO,
+            color: LCARS_CORAL,
+        },
+        {
+            text: "AUTOBRAKE",
+            active: playerShip.controls.autobrakeActive,
+            color: LCARS_GOLD,
+        },
+    ];
+    for (const [index, lane] of leftLanes.entries()) {
+        const leftWidth = context.measureText(lane.text).width;
+        const rightWidth = context.measureText(lanes[index].text).width;
+        if (
+            leftWidth > availableWidth ||
+            (lanes[index].visible &&
+                leftWidth + rightWidth + ALERT_EDGE_GAP > availableWidth)
+        )
+            continue;
         context.textAlign = "left";
-        context.fillStyle = LCARS_GOLD;
-        context.globalAlpha = playerShip.controls.autobrakeActive
-            ? 1
-            : ALERT_LCD_SILHOUETTE_OPACITY;
-        context.fillText("AUTOBRAKE", alertLeft, laneY(1));
+        context.fillStyle = lane.color;
+        context.globalAlpha = lane.active ? 1 : ALERT_LCD_SILHOUETTE_OPACITY;
+        context.fillText(lane.text, alertLeft, laneY(index));
         context.textAlign = "right";
     }
     const legends = [
@@ -5299,6 +5325,20 @@ function blendShieldColors(fromColor, toColor, fraction) {
 function drawStarship(ship) {
     context.save();
     context.translate(ship.x, ship.y);
+    const opacity = ship === playerShip ? 1 : FRIENDLY_STARSHIP_OPACITY;
+    // Destroyed helpers keep their physical hull but lose all powered cues.
+    if (ship !== playerShip && !ship.alive) {
+        context.rotate(ship.angle);
+        context.scale(STARSHIP_RADIUS, STARSHIP_RADIUS);
+        context.globalAlpha = FRIENDLY_WRECK_OPACITY;
+        context.fillStyle = LCARS_LAVENDER;
+        context.fill(STARSHIP_SILHOUETTE);
+        context.strokeStyle = LCARS_BLACK;
+        context.lineWidth = 3 / STARSHIP_RADIUS;
+        context.stroke(STARSHIP_WRECK_FRACTURES);
+        context.restore();
+        return;
+    }
     // Share the HUD's animated charge so both indicators agree during impacts.
     // The whole rim changes together: missing arcs would imply a physical gap.
     const shieldRatio = Math.max(
@@ -5320,14 +5360,15 @@ function drawStarship(ship) {
     );
     context.beginPath();
     context.arc(0, 0, STARSHIP_RADIUS, 0, Math.PI * 2);
-    context.globalAlpha = SHIELD_HALO_OPACITY * shieldRatio;
+    context.globalAlpha = opacity * SHIELD_HALO_OPACITY * shieldRatio;
     context.lineWidth = SHIELD_HALO_WIDTH;
     context.stroke();
     context.globalAlpha =
-        SHIELD_DEPLETED_OPACITY + (1 - SHIELD_DEPLETED_OPACITY) * shieldRatio;
+        opacity *
+        (SHIELD_DEPLETED_OPACITY + (1 - SHIELD_DEPLETED_OPACITY) * shieldRatio);
     context.lineWidth = SHIELD_RIM_WIDTH;
     context.stroke();
-    context.globalAlpha = 1;
+    context.globalAlpha = opacity;
 
     context.rotate(ship.angle);
     context.scale(STARSHIP_RADIUS, STARSHIP_RADIUS);
@@ -6067,7 +6108,7 @@ function drawWinScreen(width, height) {
     context.fillStyle = LCARS_MUTED_TEXT;
     context.font = `500 20px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
-        `PRESS ${PAUSE_KEY_LABEL} TO PLAY AGAIN`,
+        `PRESS ${PAUSE_KEY_LABEL} FOR NEXT ROUND`,
         WIN_SCREEN_PANEL_WIDTH / 2,
         panelHeight - 46,
     );

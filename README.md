@@ -80,7 +80,9 @@ brief wait until firing becomes available.
 
 ### Combat cues
 
-Gold identifies your ship and lavender identifies friendly support. Lavender
+Gold identifies your ship and faint lavender identifies friendly support.
+Destroyed helpers appear as dark fractured hulls without shields or bow lights.
+The coral OVERHEATING indicator above AUTOBRAKE lights above 80% phaser heat. Lavender
 brackets marked STARFLEET show helper targets and the number of assigned helpers;
 attack these targets to support their coordinated fire. Helpers target live
 Borg cubes first, then coordinate asteroid clearing once all cubes are defeated. Helpers share the Borg
