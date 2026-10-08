@@ -273,8 +273,7 @@ const WIN_SCREEN_PANEL_WIDTH = 560;
 // rows; viewport scaling keeps every unlocked icon and its caption visible.
 const WIN_SCREEN_PANEL_HEIGHT = 274;
 const WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT = 120;
-// Wolf 359 recognizes destruction in a field that began with a fleet of five.
-const WOLF_359_MINIMUM_CUBES = 5;
+// Wolf 359 recognizes a friendly helper lost to Borg fire or a cube collision.
 // A looming cube above a broken Starfleet hull uses the shared vector style.
 const WOLF_359_ACHIEVEMENT_GLYPH = new Path2D(
     "M 20 6 L 44 6 L 54 16 L 54 34 L 30 34 L 20 24 Z " +
@@ -306,14 +305,14 @@ const WIN_SCREEN_TITLE = "SECTOR CLEAR";
 // Stable IDs make unlocks idempotent. Catalog order is also display order,
 // so future achievements join the same list without separate rendering code.
 /**
- * @typedef {Object} SessionAchievement
- * @property {string} id Stable session unlock identifier.
+ * @typedef {Object} RoundAchievement
+ * @property {string} id Stable round unlock identifier.
  * @property {string} title Readable caption beneath the icon.
  * @property {Path2D} glyph Cached vector in the shared icon coordinate system.
  * @property {string} color LCARS background color for this achievement.
  */
-/** @type {ReadonlyArray<Readonly<SessionAchievement>>} */
-const SESSION_ACHIEVEMENTS = Object.freeze([
+/** @type {ReadonlyArray<Readonly<RoundAchievement>>} */
+const ROUND_ACHIEVEMENTS = Object.freeze([
     Object.freeze({
         id: "friendly-fire",
         title: "FRIENDLY FIRE",
@@ -913,10 +912,10 @@ function isLiveTarget(target) {
     );
 }
 
-// Achievements survive completed fields and pauses within one life. Clear them
-// after the failure screen when restarting. A Set prevents duplicate unlocks.
+// Keep only this round's achievements, including through pauses and its result
+// screen. Starting any new field clears them; a Set prevents duplicate unlocks.
 /** @type {Set<string>} */
-const sessionAchievements = new Set();
+const roundAchievements = new Set();
 // Asteroids have no health pool: compare the impulse-based impact damage
 // delivered directly to them by each weapon in this field. Wall impacts,
 // asteroid-to-asteroid contacts, and damage received by the ship do not count.
@@ -4844,7 +4843,7 @@ function updateAlert(ship, deltaTime) {
 
 /**
  * Begin a fresh field after destruction or a completed field. Achievements
- * persist across wins and reset after the destruction screen finishes.
+ * reset only after the previous round's result screen has been shown.
  * Rebuilding the asteroid field with the world
  * makes the restart a real game restart instead of leaving the player inside
  * the collision that ended the previous life.
@@ -4854,9 +4853,7 @@ function updateAlert(ship, deltaTime) {
  */
 function restartGame(width, height) {
     // Victory advances the same session; destruction returns to asteroids only.
-    if (!gameWon) {
-        sessionAchievements.clear();
-    }
+    roundAchievements.clear();
     sessionField = gameWon ? sessionField + 1 : 1;
     fieldAsteroidDamage.ramming = 0;
     fieldAsteroidDamage.blasters = 0;
@@ -4892,10 +4889,6 @@ function beginShipFailure() {
     }
 
     shipFailureActive = true;
-    // Count the starting fleet, including defeated cubes still drifting as wrecks.
-    if (borgCubes.length >= WOLF_359_MINIMUM_CUBES) {
-        sessionAchievements.add("wolf-359");
-    }
     shipFailureTimeRemaining = SHIP_FAILURE_DISPLAY_SECONDS;
     defeatSound.playRandom();
     for (const ship of starships) {
@@ -4907,7 +4900,7 @@ function beginShipFailure() {
 /**
  * Unlock the ramming challenge before displaying achievements.
  * Rammer requires strictly more ramming damage in the completed field; ties
- * (including an empty comparison) never qualify. Earned badges survive wins.
+ * (including an empty comparison) never qualify. Earned badges belong only to that field.
  * Keep the result visible until the player starts another field, separately
  * from the ordinary pause state.
  * @returns {void}
@@ -4924,7 +4917,7 @@ function beginWin() {
 
     gameWon = true;
     if (fieldAsteroidDamage.ramming > fieldAsteroidDamage.blasters) {
-        sessionAchievements.add("rammer");
+        roundAchievements.add("rammer");
     }
     gamePaused = true;
     winSound.playRandom();
@@ -6041,7 +6034,7 @@ function drawLCARSOverlayFrame(panelWidth, panelHeight, accent) {
 function drawShipFailure(width, height) {
     const panelHeight =
         SHIP_FAILURE_PANEL_HEIGHT +
-        Math.ceil(sessionAchievements.size / ACHIEVEMENT_COLUMNS) *
+        Math.ceil(roundAchievements.size / ACHIEVEMENT_COLUMNS) *
             WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT;
     const failureScale = Math.max(
         0,
@@ -6076,7 +6069,7 @@ function drawShipFailure(width, height) {
     context.fillStyle = LCARS_TEXT;
     context.font = `500 22px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(SHIP_FAILURE_REASON, SHIP_FAILURE_PANEL_WIDTH / 2, 142);
-    drawSessionAchievements(SHIP_FAILURE_PANEL_WIDTH, 182);
+    drawRoundAchievements(SHIP_FAILURE_PANEL_WIDTH, 182);
     context.fillStyle = LCARS_AMBER;
     context.font = `600 23px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
@@ -6091,7 +6084,7 @@ function drawShipFailure(width, height) {
  * Draw a flat LCARS achievement tile with a recognizable glyph and caption.
  * Matching asymmetric corners and segmented accents tie it to the console;
  * the name preserves meaning without requiring the player to guess the icon.
- * @param {Readonly<SessionAchievement>} achievement Unlocked catalog entry.
+ * @param {Readonly<RoundAchievement>} achievement Unlocked catalog entry.
  * @param {number} x Left edge of the badge in panel coordinates.
  * @param {number} y Top edge of the badge in panel coordinates.
  * @returns {void}
@@ -6138,15 +6131,17 @@ function drawAchievementBadge(achievement, x, y) {
 }
 
 /**
- * Draw the same complete collection on victory and destruction screens.
+ * Draw the completed round's badges on victory and destruction screens.
  * @param {number} panelWidth Result panel width in logical pixels.
  * @param {number} y Collection heading center in logical pixels.
  * @returns {void}
  */
-function drawSessionAchievements(panelWidth, y) {
-    const unlockedAchievements = SESSION_ACHIEVEMENTS.filter((achievement) =>
-        sessionAchievements.has(achievement.id),
+function drawRoundAchievements(panelWidth, y) {
+    const unlockedAchievements = ROUND_ACHIEVEMENTS.filter((achievement) =>
+        roundAchievements.has(achievement.id),
     );
+    if (unlockedAchievements.length === 0) return;
+
     context.fillStyle = LCARS_LILAC;
     context.font = `600 18px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText("ACHIEVEMENTS", panelWidth / 2, y);
@@ -6179,8 +6174,8 @@ function drawSessionAchievements(panelWidth, y) {
  * @returns {void}
  */
 function drawWinScreen(width, height) {
-    const unlockedAchievements = SESSION_ACHIEVEMENTS.filter((achievement) =>
-        sessionAchievements.has(achievement.id),
+    const unlockedAchievements = ROUND_ACHIEVEMENTS.filter((achievement) =>
+        roundAchievements.has(achievement.id),
     );
     const panelHeight =
         WIN_SCREEN_PANEL_HEIGHT +
@@ -6223,7 +6218,7 @@ function drawWinScreen(width, height) {
         WIN_SCREEN_PANEL_WIDTH / 2,
         144,
     );
-    drawSessionAchievements(WIN_SCREEN_PANEL_WIDTH, 184);
+    drawRoundAchievements(WIN_SCREEN_PANEL_WIDTH, 184);
     context.restore();
 }
 
@@ -7679,13 +7674,15 @@ function resolveBulletCollisions(width, height) {
                     normal,
                     hitPoint,
                 );
-                // Only a player-launched pulse hitting a separate friendly hull
-                // counts; helper fire and self-hits are not friendly-fire acts.
-                if (bullet.source === "starship" && ship !== playerShip) {
-                    sessionAchievements.add("friendly-fire");
-                }
                 applyShipCollisionAngleAdjustment(bulletImpulse, ship);
                 ship.applyWeaponDamage(contactImpulseMagnitude(bulletImpulse));
+                // Only the lethal weapon hit earns a combat badge. Helpers
+                // lost to other causes and damage to the player do not qualify.
+                if (ship !== playerShip && !ship.alive) {
+                    roundAchievements.add(
+                        bullet.source === "borg" ? "wolf-359" : "friendly-fire",
+                    );
+                }
                 if (bulletImpulse.normalImpulse > COLLISION_EPSILON) {
                     empSound.playRandom();
                 }
@@ -8412,6 +8409,11 @@ function resolveBorgCollisions(contactAsteroids = asteroids.slice()) {
                 if (response !== undefined) {
                     const impulse = contactImpulseMagnitude(response);
                     ship.applyCollisionDamage(impulse);
+                    // Cube hulls remain dangerous after defeat, so lethal
+                    // helper collisions with live cubes or wrecks qualify.
+                    if (ship !== playerShip && !ship.alive) {
+                        roundAchievements.add("wolf-359");
+                    }
                     applyShipCollisionAngleAdjustment(response, ship);
                     cube.hitBody(impulse, shipManifold.contactPoint);
                 }

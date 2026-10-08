@@ -138,6 +138,14 @@ lighter body impacts bounce without splitting. Arena walls only bounce asteroids
 Clearing the asteroids and defeating the Borg cube wins. Points count asteroid
 area removed, plus 8,000 for defeating the cube.
 
+### Achievements
+
+Result screens show achievements earned in the completed round only.
+**Friendly Fire** requires killing a friendly helper with Starfleet phasers;
+**Wolf 359** requires losing a friendly helper to Borg fire or a collision with
+a cube (including its wreck). **Rammer** requires
+dealing more asteroid damage by ramming than by phasers during that round.
+
 ### Borg cube
 
 Each cube has 200 hull and an 18-point shield buffer per face.
