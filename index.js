@@ -71,9 +71,8 @@ const STARSHIP_RADIUS = 28 * WORLD_BODY_SCALE;
 const FRIENDLY_STARSHIP_OPACITY = 0.72;
 // Unlit wrecks retain a visible collision silhouette after losing their shields.
 const FRIENDLY_WRECK_OPACITY = 0.5;
-// Scale ship mass with its phasers to preserve launch recoil. Asteroids and
-// cubes share this compensation to retain relative body masses.
-const STARSHIP_MASS = 1000 * BODY_MASS_COMPENSATION;
+// Ship mass retains the shared phaser calibration with a 20% hull mass increase.
+const STARSHIP_MASS = 1200 * BODY_MASS_COMPENSATION;
 // This inertia is only the scale used to convert a collision's angular impulse
 // into one immediate heading adjustment; the ship does not retain angular
 // velocity or intrinsic angular momentum after the contact.
