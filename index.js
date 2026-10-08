@@ -288,7 +288,7 @@ const RAMMER_ACHIEVEMENT_GLYPH = new Path2D(
 );
 const WIN_SCREEN_BACKDROP_ALPHA = 0.58;
 const WIN_SCREEN_TITLE = "SECTOR CLEAR";
-const WIN_SCREEN_REASON = "Asteroids cleared. Borg fleet defeated.";
+const WIN_SCREEN_REASON = "Asteroids cleared.";
 // Stable IDs make unlocks idempotent. Catalog order is also display order,
 // so future achievements join the same list without separate rendering code.
 /**
@@ -876,8 +876,8 @@ function isLiveTarget(target) {
     );
 }
 
-// Achievements survive completed fields, pauses, and ship destruction until
-// a page reload. A Set prevents repeated events from duplicating an unlock.
+// Achievements survive completed fields and pauses within one life. Clear them
+// after the failure screen when restarting. A Set prevents duplicate unlocks.
 /** @type {Set<string>} */
 const sessionAchievements = new Set();
 // Asteroids have no health pool: compare the impulse-based impact damage
@@ -4733,7 +4733,7 @@ function updateAlert(ship, deltaTime) {
 
 /**
  * Begin a fresh field after destruction or a completed field. Achievements
- * persist across wins and ship destruction until the page is reloaded.
+ * persist across wins and reset after the destruction screen finishes.
  * Rebuilding the asteroid field with the world
  * makes the restart a real game restart instead of leaving the player inside
  * the collision that ended the previous life.
@@ -4743,6 +4743,9 @@ function updateAlert(ship, deltaTime) {
  */
 function restartGame(width, height) {
     // Victory advances the same session; destruction returns to asteroids only.
+    if (!gameWon) {
+        sessionAchievements.clear();
+    }
     sessionField = gameWon ? sessionField + 1 : 1;
     fieldAsteroidDamage.ramming = 0;
     fieldAsteroidDamage.blasters = 0;
@@ -6127,19 +6130,6 @@ function drawPauseHelp(width, height) {
         context.fillText(helpItem.description, 208, rowY);
         context.font = `700 18px ${LCARS_FONT_FAMILY}`;
     }
-    context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
-    context.fillStyle = LCARS_LAVENDER;
-    context.fillText(
-        "Round 1: asteroids; then one helper per Borg cube",
-        70,
-        452,
-    );
-    context.fillText("Starfleet brackets: Borg first, then asteroids", 70, 474);
-    context.fillText(
-        "Achievements survive destruction until you reload the page",
-        70,
-        496,
-    );
     context.restore();
 }
 
