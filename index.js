@@ -368,13 +368,23 @@ const BORG_GREEN = "#77ff88";
 const BORG_HULL = 200;
 const BORG_FACE_SHIELD = 18;
 // Shields cannot erase hull damage. Collective transfers conserve total hull;
-// six seconds per participant preserves a window to finish a weakened cube.
+// four seconds per participant makes collective support frequent while leaving
+// a short window to finish a weakened cube.
 const BORG_PHASER_DAMAGE = 9;
-const BORG_TRANSFER_COOLDOWN_SECONDS = 6;
+const BORG_TRANSFER_COOLDOWN_SECONDS = 4;
 // Ignore tiny differences to avoid spending exchanges on floating-point noise.
 const BORG_TRANSFER_MIN_DIFFERENCE = 1;
 // The radiation tether follows both moving endpoints and fades after exchange.
-const BORG_TRANSFER_PULSE_SECONDS = 0.8;
+const BORG_TRANSFER_PULSE_SECONDS = 1.4;
+// Layered strokes and three traveling packets make the donor direction legible
+// without expensive blur filters or persistent particle objects.
+const BORG_TRANSFER_HALO_WIDTH = 16;
+const BORG_TRANSFER_BEAM_WIDTH = 5;
+const BORG_TRANSFER_PACKET_COUNT = 3;
+const BORG_TRANSFER_PACKET_RADIUS = 4;
+// Soften every beam layer and traveling packet together, retaining the richer
+// exchange animation at a brightness between the original tether and full glow.
+const BORG_TRANSFER_BRIGHTNESS = 0.75;
 // Allied bolts dissipate harmlessly with a faint, short inward ripple.
 const BORG_ABSORPTION_PULSE_SECONDS = 0.3;
 // Let 55% of post-resistance phaser damage reach hull while buffers are charged,
@@ -2652,18 +2662,38 @@ class BorgCube extends Asteroid {
     drawTransfer() {
         const target = this.transferTarget;
         if (this.transferPulse <= 0 || !this.alive || !target?.alive) return;
+        const remaining = this.transferPulse / BORG_TRANSFER_PULSE_SECONDS;
+        const progress = 1 - remaining;
+        const opacity = remaining * BORG_TRANSFER_BRIGHTNESS;
         context.save();
+        context.lineCap = "round";
         context.strokeStyle = BORG_GREEN;
-        context.globalAlpha = this.transferPulse / BORG_TRANSFER_PULSE_SECONDS;
         context.beginPath();
         context.moveTo(this.x, this.y);
         context.lineTo(target.x, target.y);
-        context.lineWidth = 7;
-        context.globalAlpha *= 0.15;
+        context.lineWidth = BORG_TRANSFER_HALO_WIDTH;
+        context.globalAlpha = opacity * 0.25;
         context.stroke();
+        context.lineWidth = BORG_TRANSFER_BEAM_WIDTH;
+        context.globalAlpha = opacity * 0.85;
+        context.stroke();
+        context.strokeStyle = "#e6ffe9";
         context.lineWidth = 1.5;
-        context.globalAlpha *= 4;
         context.stroke();
+        context.fillStyle = "#e6ffe9";
+        for (let packet = 0; packet < BORG_TRANSFER_PACKET_COUNT; packet += 1) {
+            const fraction =
+                (progress * 2 + packet / BORG_TRANSFER_PACKET_COUNT) % 1;
+            context.beginPath();
+            context.arc(
+                this.x + (target.x - this.x) * fraction,
+                this.y + (target.y - this.y) * fraction,
+                BORG_TRANSFER_PACKET_RADIUS,
+                0,
+                Math.PI * 2,
+            );
+            context.fill();
+        }
         context.restore();
     }
 

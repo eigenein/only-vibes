@@ -175,11 +175,12 @@ with no ricochets and no immunity for allied cubes. The cube receives matching
 recoil when firing. Changing course after aim locks or while the pulse travels
 gives room to dodge.
 
-Green links redistribute hull evenly between connected cubes, taking six
-seconds per cube. They transfer existing hull rather than creating new hull.
+Bright green links with moving pulses redistribute hull evenly between connected
+cubes, with a four-second cooldown per cube. They transfer existing hull rather than creating new hull.
 
 Defeat switches off weapons, shields, and engines. The intact, unlit wreck keeps
-its velocity and spin, floats freely, bounces from walls and rocks, reflects
+its velocity and spin, floats freely, and loses motion through the same collision
+friction and inelastic bounces as asteroids and live cubes. It reflects
 bullets, and still damages the ship on impact. It never splits or disappears
 and no longer counts as a combat target. Defeat awards points once; clearing
 the remaining asteroids completes the field. A new field replaces the wreck.
