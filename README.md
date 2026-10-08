@@ -82,7 +82,7 @@ brief wait until firing becomes available.
 
 Gold identifies your ship and faint lavender identifies friendly support.
 Destroyed helpers appear as dark fractured hulls without shields or bow lights.
-The coral OVERHEATING indicator above AUTOBRAKE lights above 80% phaser heat. Lavender
+The coral OVERHEATING indicator above COLLISION COURSE lights above 80% phaser heat. Lavender
 brackets marked STARFLEET show helper targets and the number of assigned helpers;
 attack these targets to support their coordinated fire. Helpers target live
 Borg cubes first, then coordinate asteroid clearing once all cubes are defeated. Helpers share the Borg
@@ -102,12 +102,16 @@ The green AUTOPILOT indicator shows that automatic helm is engaged.
 - Body and wall impacts share a replenishing damage budget that limits repeated
   contacts during a scrape. Weapon hits bypass that budget and do not consume it.
 - Hull damage does not regenerate during the current life.
-- Arena walls also damage the ship. Border autobrake overrides thrust near a
-  wall and uses ordinary braking until stopped while turning away at the normal
-  turn rate. Corners steer diagonally inward; manual steering overrides the
-  assisted turn. It helps approaches below 50%
-  maximum speed; faster approaches can still hit. The gold AUTOBRAKE cue beside
-  the controls lights while it intervenes.
+- Arena walls also damage the ship. On an outward collision course, a temporary
+  safeguard triggers from stopping distance and a short reaction buffer, capped
+  to allow late high-speed impacts. It reuses autopilot wall avoidance: brake,
+  turn toward an escape lane,
+  then thrust until moving safely inward. It preserves an already inward-facing
+  heading. Held manual throttle resumes after recovery; manual steering and
+  firing stay available. Parallel travel does not activate the safeguard.
+  AUTOPILOT and COLLISION COURSE light together during the safeguard and clear
+  when control returns. Wall proximity alone triggers neither.
+  Brake takes priority when thrust and brake inputs are held together.
 - Yellow alert means ongoing hull damage threatens major loss; give the situation
   full attention. Red means an immediate destruction risk. Both require depleted
   shield/hull reserves and recent hull damage, so safe recovery stays quiet.

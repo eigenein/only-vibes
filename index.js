@@ -99,15 +99,12 @@ const MAX_SPEED = 360;
 // This is the rate at which the ship gains or loses speed while a throttle key
 // is held. Keeping it global makes the handling easy to tune.
 const MOVEMENT_RESPONSIVENESS = 480;
-// Emergency assistance uses ordinary braking, never extra engine power. The
-// fixed rim clearance is v²/(2a) at half maximum speed (33.75 CSS pixels).
-// Faster head-on approaches retain too much momentum and can still hit walls.
-// https://en.wikipedia.org/wiki/Equations_of_motion
-const AUTOBRAKE_CLEARANCE =
-    (MAX_SPEED * 0.5) ** 2 / (2 * MOVEMENT_RESPONSIVENESS);
-// Reuse one immutable input set; emergency braking overrides held thrust.
-const AUTOBRAKE_KEYS = new Set(["KeyS"]);
-
+// Temporary wall recovery starts at stopping distance plus a short reaction
+// buffer, capped at 65% engine speed so reckless approaches can still hit.
+const WALL_AVOIDANCE_STOPPING_CAP =
+    (MAX_SPEED * 0.65) ** 2 / (2 * MOVEMENT_RESPONSIVENESS);
+// A tenth of a second supplies a small speed-scaled clearance for frame entry.
+const WALL_AVOIDANCE_REACTION_SECONDS = 0.1;
 // The LCARS palette is shared by every presentation layer so the arena,
 // objects, and overlays read as one interface rather than independent styles.
 // Warm operational colors carry the strongest emphasis; lilac is reserved for
@@ -652,12 +649,16 @@ const FIRE_KEY_LABEL = "SPACE";
 // command strip uses shorter LCARS action names suited to its button geometry.
 const PLAY_HELP = Object.freeze([
     Object.freeze({
+        label: "SAFEGUARD",
+        description: "collision-course avoidance",
+    }),
+    Object.freeze({
         label: FIRE_KEY_LABEL,
         description: "fire phasers",
     }),
     Object.freeze({
         label: "W / S",
-        description: "thrust / brake",
+        description: "thrust / brake (brake wins)",
     }),
     Object.freeze({
         label: "A / D",
@@ -683,7 +684,7 @@ const PLAY_HELP = Object.freeze([
 const HELP_PANEL_WIDTH = 540;
 // Keep pause help focused on controls; README.md holds the mechanics reference.
 // The final control row keeps the same bottom breathing room as the frame.
-const HELP_PANEL_HEIGHT = 516;
+const HELP_PANEL_HEIGHT = 558;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -801,7 +802,8 @@ const STATIC_WALL_BODY = Object.freeze({
 /**
  * Integrate manual turning at both keyboard edges and animation steps. This
  * preserves even taps that begin and end between frames, without rounding a
- * tap up to a whole frame. Autopilot retains its existing direct turn rate.
+ * tap up to a whole frame. Wall avoidance presses use this same control and ramp;
+ * autopilot retains its existing direct turn rate.
  */
 class ManualTurnControl {
     #direction = 0;
@@ -845,7 +847,7 @@ class ManualTurnControl {
      * Finish the old input interval before adopting a new direction. Opposing
      * keys cancel; release or reversal starts the next turn gently. Repeats and
      * pressing another key for the same direction never restart a held ramp.
-     * @param {number} direction Net manual turn: -1 CCW, 0 stopped, or 1 CW.
+     * @param {number} direction Net input turn: -1 CCW, 0 stopped, or 1 CW.
      * @param {number} time Monotonic input timestamp in milliseconds.
      * @returns {number} Heading adjustment accrued before this input change.
      */
@@ -1044,9 +1046,14 @@ class ShipControls {
     manualPressedKeys = new Set();
     autopilotPressedKeys = new Set();
     autoGunnerPressedKeys = new Set();
+    wallAvoidancePressedKeys = new Set();
+    automatedDesiredAngle = 0;
+    /** @type {number | undefined} Release assisted turn input at this heading. */
+    turnTargetAngle = undefined;
     autopilotEnabled = false;
-    autobrakeActive = false;
-    autobrakeDesiredAngle = 0;
+    wallAvoidanceActive = false;
+    wallAvoidanceEscapeAngle = 0;
+    wallAvoidanceDesiredAngle = 0;
     /** @type {Asteroid | undefined} Independent navigation engagement. */
     autopilotTargetLock = undefined;
     autopilotDesiredAngle = 0;
@@ -1263,8 +1270,10 @@ class Starship {
      */
     applyThrottle(keys, deltaTime) {
         if (!Number.isFinite(deltaTime) || deltaTime < 0) return;
-        const accelerates = keys.has("ArrowUp") || keys.has("KeyW");
         const decelerates = keys.has("ArrowDown") || keys.has("KeyS");
+        // Brake wins when manual and automated input sources hold both.
+        const accelerates =
+            !decelerates && (keys.has("ArrowUp") || keys.has("KeyW"));
 
         if (accelerates !== decelerates) {
             if (accelerates) {
@@ -1290,7 +1299,8 @@ class Starship {
                         currentSpeed,
                         MOVEMENT_RESPONSIVENESS * deltaTime,
                     );
-                    const speedRatio = (currentSpeed - deceleration) / currentSpeed;
+                    const speedRatio =
+                        (currentSpeed - deceleration) / currentSpeed;
                     this.velocityX *= speedRatio;
                     this.velocityY *= speedRatio;
                 }
@@ -3656,30 +3666,60 @@ function updateSparks(deltaTime) {
  * Keeping manual and autopilot keys separate lets a human input disable the
  * autopilot without allowing one producer to forge the other producer's
  * events. Settle manual turn timing at each edge; the combined held-key set
- * still supplies thrust, braking, firing, and the command-strip highlights.
+ * supplies thrust, braking, rotation, firing, and command-strip highlights.
+ * Wall avoidance is an independent key producer with priority over autopilot helm.
  * @param {Starship} ship Hull and independent controller being operated.
  * @returns {void}
  */
 function syncPressedKeys(ship) {
-    ship.angle = wrapAngle(
-        ship.angle +
-        ship.controls.manualTurnControl.setDirection(
-            turnDirectionForKeys(ship.controls.manualPressedKeys),
-            performance.now(),
-        ),
+    const time = performance.now();
+    applyTurnInput(ship, ship.controls.manualTurnControl.advance(time));
+    const controls = ship.controls;
+    controls.pressedKeys.clear();
+    const steeringKeys = ["KeyA", "KeyD", "ArrowLeft", "ArrowRight"];
+    const manuallySteering = steeringKeys.some((key) =>
+        controls.manualPressedKeys.has(key),
     );
-    ship.controls.pressedKeys.clear();
-
-    for (const key of ship.controls.manualPressedKeys) {
-        ship.controls.pressedKeys.add(key);
+    const automatedInput = controls.wallAvoidanceActive
+        ? controls.wallAvoidancePressedKeys
+        : controls.autopilotPressedKeys;
+    controls.automatedDesiredAngle = controls.wallAvoidanceActive
+        ? controls.wallAvoidanceDesiredAngle
+        : controls.autopilotDesiredAngle;
+    for (const input of [
+        controls.manualPressedKeys,
+        controls.autopilotPressedKeys,
+        controls.autoGunnerPressedKeys,
+        controls.wallAvoidancePressedKeys,
+    ]) {
+        for (const key of input) {
+            if (
+                controls.wallAvoidanceActive &&
+                input !== controls.wallAvoidancePressedKeys &&
+                ["KeyW", "KeyS", "ArrowUp", "ArrowDown"].includes(key)
+            )
+                continue;
+            // Only the winning helm producer supplies turn keys. Brake and
+            // thrust remain ordinary merged inputs; braking takes priority.
+            if (
+                steeringKeys.includes(key) &&
+                input !== controls.manualPressedKeys &&
+                (manuallySteering || input !== automatedInput)
+            )
+                continue;
+            controls.pressedKeys.add(key);
+        }
     }
-
-    for (const key of ship.controls.autopilotPressedKeys) {
-        ship.controls.pressedKeys.add(key);
-    }
-    for (const key of ship.controls.autoGunnerPressedKeys) {
-        ship.controls.pressedKeys.add(key);
-    }
+    controls.turnTargetAngle =
+        !manuallySteering && controls.wallAvoidanceActive
+            ? controls.wallAvoidanceDesiredAngle
+            : undefined;
+    controls.manualTurnControl.setDirection(
+        manuallySteering || controls.wallAvoidanceActive
+            ? turnDirectionForKeys(controls.pressedKeys)
+            : 0,
+        time,
+    );
 }
 
 /**
@@ -3696,6 +3736,9 @@ function clearPressedKeys(ship) {
     ship.controls.manualPressedKeys.clear();
     ship.controls.autopilotPressedKeys.clear();
     ship.controls.autoGunnerPressedKeys.clear();
+    ship.controls.wallAvoidancePressedKeys.clear();
+    ship.controls.wallAvoidanceActive = false;
+    ship.controls.turnTargetAngle = undefined;
     ship.controls.pressedKeys.clear();
 }
 
@@ -4208,21 +4251,27 @@ function autopilotEscapeAngle(ship, obstacle, width, height) {
  * @param {Starship} ship Hull and independent controller being operated.
  * @param {number} width Arena width in CSS pixels.
  * @param {number} height Arena height in CSS pixels.
+ * @param {number} [collisionCourseStep] Use imminent-contact thresholds for this step.
  * @returns {{ desiredAngle: number, brake: boolean } | undefined} Wall response.
  */
-function autopilotWallThreat(ship, width, height) {
+function autopilotWallThreat(
+    ship,
+    width,
+    height,
+    collisionCourseStep = undefined,
+) {
     const margin = autopilotCanApproach(ship)
         ? AUTOPILOT_RAM_WALL_MARGIN
         : AUTOPILOT_WALL_SAFE_MARGIN + autopilotHealthSafetyMargin(ship);
     const edges = [
-        {distance: ship.x - STARSHIP_RADIUS, x: 1, y: 0, extent: width},
+        { distance: ship.x - STARSHIP_RADIUS, x: 1, y: 0, extent: width },
         {
             distance: width - ship.x - STARSHIP_RADIUS,
             x: -1,
             y: 0,
             extent: width,
         },
-        {distance: ship.y - STARSHIP_RADIUS, x: 0, y: 1, extent: height},
+        { distance: ship.y - STARSHIP_RADIUS, x: 0, y: 1, extent: height },
         {
             distance: height - ship.y - STARSHIP_RADIUS,
             x: 0,
@@ -4240,20 +4289,40 @@ function autopilotWallThreat(ship, width, height) {
         );
         const inwardSpeed = ship.velocityX * edge.x + ship.velocityY * edge.y;
         const outwardSpeed = Math.max(0, -inwardSpeed);
-        const stoppingDistance = outwardSpeed ** 2 / (2 * MOVEMENT_RESPONSIVENESS);
-        if (
+        const stoppingDistance =
+            (outwardSpeed * Math.hypot(ship.velocityX, ship.velocityY)) /
+            (2 * MOVEMENT_RESPONSIVENESS);
+        if (collisionCourseStep !== undefined) {
+            // A nearby wall contributes no normal unless velocity points at it.
+            // Buffer scales with closing speed, so tiny glancing drift stays free.
+            const triggerDistance = Math.min(
+                WALL_AVOIDANCE_STOPPING_CAP,
+                stoppingDistance +
+                    outwardSpeed * WALL_AVOIDANCE_REACTION_SECONDS,
+            );
+            if (
+                outwardSpeed <= COLLISION_EPSILON ||
+                edge.distance >
+                    triggerDistance + outwardSpeed * collisionCourseStep
+            )
+                continue;
+        } else if (
             inwardSpeed >= AUTOPILOT_MIN_COAST_SPEED ||
             edge.distance > clearance + stoppingDistance
         ) {
             continue;
         }
-        brake ||= outwardSpeed > AUTOPILOT_MIN_COAST_SPEED;
+        brake ||=
+            outwardSpeed >
+            (collisionCourseStep === undefined
+                ? AUTOPILOT_MIN_COAST_SPEED
+                : COLLISION_EPSILON);
         inwardX += edge.x;
         inwardY += edge.y;
     }
     return inwardX === 0 && inwardY === 0
         ? undefined
-        : {desiredAngle: Math.atan2(inwardY, inwardX), brake};
+        : { desiredAngle: Math.atan2(inwardY, inwardX), brake };
 }
 
 /**
@@ -4363,22 +4432,9 @@ function updateAutopilotInput(ship, deltaTime, width, height) {
         );
         if (!escapingBody) ship.controls.autopilotEscapeTarget = undefined;
         if (wall !== undefined && !escapingBody) {
-            if (wall.brake) {
-                // S removes outward velocity without interrupting the firing heading.
-                input.add("KeyS");
-            } else {
-                ship.controls.autopilotDesiredAngle = wall.desiredAngle;
-                if (
-                    Math.abs(
-                        shortestAngleDifference(
-                            ship.controls.autopilotDesiredAngle,
-                            ship.angle,
-                        ),
-                    ) <= AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
-                ) {
-                    input.add("KeyW");
-                }
-            }
+            ship.controls.autopilotDesiredAngle = applyWallAvoidanceInput(
+                ship, input, wall,
+            );
         } else if (threat !== undefined) {
             // Turn toward clearance even while braking. Continuing to aim at the
             // combat target until speed falls lets repeated impacts reset the turn.
@@ -5034,12 +5090,12 @@ function drawAlert(controlRightX, statusBarsLeft) {
     const alertLeft = controlRightX + ALERT_EDGE_GAP;
     const alertRight = statusBarsLeft - ALERT_EDGE_GAP;
     const availableWidth = alertRight - alertLeft;
-        const blinkIsBright =
-            Math.floor(
-                window.performance.now() / RED_ALERT_BLINK_INTERVAL_MILLISECONDS,
-            ) %
+    const blinkIsBright =
+        Math.floor(
+            window.performance.now() / RED_ALERT_BLINK_INTERVAL_MILLISECONDS,
+        ) %
             2 ===
-            0;
+        0;
     const lanes = [
         {
             text: alertLevel === 2 ? "RED ALERT" : "YELLOW ALERT",
@@ -5049,7 +5105,9 @@ function drawAlert(controlRightX, statusBarsLeft) {
         },
         {
             text: "AUTOPILOT",
-            visible: playerShip.controls.autopilotEnabled,
+            visible:
+                playerShip.controls.autopilotEnabled ||
+                playerShip.controls.wallAvoidanceActive,
             color: LCARS_AUTOPILOT_GREEN,
             blinking: true,
         },
@@ -5058,7 +5116,7 @@ function drawAlert(controlRightX, statusBarsLeft) {
     context.save();
     context.font = `700 21px ${LCARS_FONT_FAMILY}`;
     context.textAlign = "right";
-        context.textBaseline = "middle";
+    context.textBaseline = "middle";
     // Ghost legends share the danger row like overlapping old LCD segments.
     // Paint all ghosts first so an inactive legend cannot dim an active one.
     // Both LCD lanes share the right edge beside the health bars.
@@ -5079,8 +5137,8 @@ function drawAlert(controlRightX, statusBarsLeft) {
             color: LCARS_CORAL,
         },
         {
-            text: "AUTOBRAKE",
-            active: playerShip.controls.autobrakeActive,
+            text: "COLLISION COURSE",
+            active: playerShip.controls.wallAvoidanceActive,
             color: LCARS_GOLD,
         },
     ];
@@ -5091,8 +5149,28 @@ function drawAlert(controlRightX, statusBarsLeft) {
             leftWidth > availableWidth ||
             (lanes[index].visible &&
                 leftWidth + rightWidth + ALERT_EDGE_GAP > availableWidth)
-        )
+        ) {
+            if (index === 1 && lane.active) {
+                context.save();
+                context.font = `700 16px ${LCARS_FONT_FAMILY}`;
+                context.textAlign = "right";
+                context.globalAlpha = 1;
+                const right = viewportWidth - ALERT_EDGE_GAP;
+                const labelWidth = context.measureText(lane.text).width;
+                const top = LCARS_CONSOLE_HEIGHT + ALERT_EDGE_GAP;
+                context.fillStyle = LCARS_BLACK;
+                context.fillRect(
+                    right - labelWidth - ALERT_EDGE_GAP,
+                    top,
+                    labelWidth + ALERT_EDGE_GAP * 2,
+                    24,
+                );
+                context.fillStyle = lane.color;
+                context.fillText(lane.text, right, top + 12);
+                context.restore();
+            }
             continue;
+        }
         context.textAlign = "left";
         context.fillStyle = lane.color;
         context.globalAlpha = lane.active ? 1 : ALERT_LCD_SILHOUETTE_OPACITY;
@@ -5100,9 +5178,9 @@ function drawAlert(controlRightX, statusBarsLeft) {
         context.textAlign = "right";
     }
     const legends = [
-        {text: "RED ALERT", color: LCARS_ALERT_RED, index: 0},
-        {text: "YELLOW ALERT", color: LCARS_GOLD, index: 0},
-        {text: "AUTOPILOT", color: LCARS_AUTOPILOT_GREEN, index: 1},
+        { text: "RED ALERT", color: LCARS_ALERT_RED, index: 0 },
+        { text: "YELLOW ALERT", color: LCARS_GOLD, index: 0 },
+        { text: "AUTOPILOT", color: LCARS_AUTOPILOT_GREEN, index: 1 },
     ];
     for (const legend of legends) {
         if (context.measureText(legend.text).width > availableWidth) continue;
@@ -5866,11 +5944,16 @@ function drawFlightControls(width) {
         titleWidth * rowScale,
         buttonHeight,
         "HELM CONTROL",
-        playerShip.controls.autobrakeActive
-            ? "AUTOBRAKE"
-            : playerShip.controls.autopilotEnabled ? "AUTOPILOT" : "MANUAL HELM",
-        playerShip.controls.autobrakeActive || playerShip.controls.autopilotEnabled ? LCARS_AMBER : LCARS_LILAC,
-        playerShip.controls.autopilotEnabled,
+        playerShip.controls.wallAvoidanceActive ||
+            playerShip.controls.autopilotEnabled
+            ? "AUTOPILOT"
+            : "MANUAL HELM",
+        playerShip.controls.wallAvoidanceActive ||
+            playerShip.controls.autopilotEnabled
+            ? LCARS_AMBER
+            : LCARS_LILAC,
+        playerShip.controls.autopilotEnabled ||
+            playerShip.controls.wallAvoidanceActive,
         true,
     );
     buttonX += titleWidth * rowScale + FLIGHT_CONTROL_GAP * rowScale;
@@ -8387,57 +8470,138 @@ function turnDirectionForKeys(keys) {
 }
 
 /**
- * Latch the player's emergency brake until stopped, including after a bounce.
- * One step of lookahead prevents skipping the fixed trigger zone at low FPS;
- * it does not expand the zone to accommodate a faster stopping distance.
- * Moving away from a nearby wall never starts an emergency stop. The escape
- * heading stays latched through bounces; corner threats combine inward normals.
- * Manual steering takes priority over the ordinary-rate assisted turn.
- * @param {Starship} ship Player hull receiving limited border assistance.
+ * Reuse autopilot wall navigation: brake outward drift, face an escape lane,
+ * then thrust away. Preserve a nose already aimed inward instead of turning it.
+ * @param {Starship} ship Hull receiving ordinary flight inputs.
+ * @param {Set<string>} input Keys produced by this navigation controller.
+ * @param {{desiredAngle: number, brake: boolean}} wall Shared wall response.
+ * @returns {number} Heading used to steer and align escape thrust.
+ */
+function applyWallAvoidanceInput(ship, input, wall) {
+    const facingInward = Math.cos(ship.angle - wall.desiredAngle) > 0.5;
+    const desiredAngle = facingInward ? ship.angle : wall.desiredAngle;
+    if (wall.brake) {
+        input.add("KeyS");
+    } else if (
+        Math.abs(shortestAngleDifference(desiredAngle, ship.angle)) <=
+        AUTOPILOT_THRUST_ALIGNMENT_TOLERANCE
+    ) {
+        input.add("KeyW");
+    }
+    return desiredAngle;
+}
+
+/**
+ * Borrow wall avoidance without enabling combat navigation. Trigger only on
+ * outward travel, then commit through the low-speed turn and escape thrust.
+ * Release after inward velocity reaches the autopilot's safe coast speed.
+ * Ordinary manual helm inputs resume unchanged afterward; firing stays live.
+ * @param {Starship} ship Player hull receiving temporary navigation assistance.
  * @param {number} deltaTime Bounded simulation step in seconds.
  * @param {number} width Arena width in CSS pixels.
  * @param {number} height Arena height in CSS pixels.
  * @returns {void}
  */
-function updateAutobrake(ship, deltaTime, width, height) {
-    const speed = Math.hypot(ship.velocityX, ship.velocityY);
-    if (speed <= COLLISION_EPSILON) {
-        ship.controls.autobrakeActive = false;
+function updateWallAvoidance(ship, deltaTime, width, height) {
+    const controls = ship.controls;
+    controls.wallAvoidancePressedKeys.clear();
+    const wall = autopilotWallThreat(ship, width, height, deltaTime);
+    if (controls.autopilotEnabled) {
+        controls.wallAvoidanceActive = false;
+        syncPressedKeys(ship);
         return;
     }
-    /**
-     * @param {number} distance Shield-rim clearance in CSS pixels.
-     * @param {number} outwardSpeed Velocity toward this wall in CSS pixels/s.
-     * @returns {boolean} Whether this step reaches the emergency zone.
-     */
-    const approaches = (distance, outwardSpeed) =>
-        outwardSpeed > COLLISION_EPSILON &&
-        distance <= AUTOBRAKE_CLEARANCE + outwardSpeed * deltaTime;
-    if (!ship.controls.autobrakeActive) {
-        const inwardX =
-            Number(approaches(ship.x - ship.radius, -ship.velocityX)) -
-            Number(approaches(width - ship.radius - ship.x, ship.velocityX));
-        const inwardY =
-            Number(approaches(ship.y - ship.radius, -ship.velocityY)) -
-            Number(approaches(height - ship.radius - ship.y, ship.velocityY));
-        if (inwardX === 0 && inwardY === 0) return;
-        ship.controls.autobrakeActive = true;
-        ship.controls.autobrakeDesiredAngle = Math.atan2(inwardY, inwardX);
+    if (!controls.wallAvoidanceActive && wall !== undefined) {
+        const inwardSpeed =
+            ship.velocityX * Math.cos(wall.desiredAngle) +
+            ship.velocityY * Math.sin(wall.desiredAngle);
+        if (inwardSpeed < -COLLISION_EPSILON) {
+            controls.wallAvoidanceActive = true;
+            controls.wallAvoidanceEscapeAngle = wall.desiredAngle;
+        }
     }
-    const manuallySteering = ["KeyA", "KeyD", "ArrowLeft", "ArrowRight"].some(
-        (key) => ship.controls.manualPressedKeys.has(key),
+    if (controls.wallAvoidanceActive) {
+        // A new corner threat may add a second inward normal during escape.
+        if (wall !== undefined && wall.brake)
+            controls.wallAvoidanceEscapeAngle = wall.desiredAngle;
+        const inwardSpeed =
+            ship.velocityX * Math.cos(controls.wallAvoidanceEscapeAngle) +
+            ship.velocityY * Math.sin(controls.wallAvoidanceEscapeAngle);
+        if (inwardSpeed >= AUTOPILOT_MIN_COAST_SPEED) {
+            controls.wallAvoidanceActive = false;
+        } else {
+            controls.wallAvoidanceDesiredAngle = applyWallAvoidanceInput(
+                ship,
+                controls.wallAvoidancePressedKeys,
+                {
+                    desiredAngle: controls.wallAvoidanceEscapeAngle,
+                    brake: inwardSpeed < -COLLISION_EPSILON,
+                },
+            );
+            const error = shortestAngleDifference(
+                controls.wallAvoidanceDesiredAngle,
+                ship.angle,
+            );
+            if (Math.abs(error) > COLLISION_EPSILON) {
+                controls.wallAvoidancePressedKeys.add(
+                    error > 0 ? "KeyD" : "KeyA",
+                );
+            }
+        }
+    }
+    syncPressedKeys(ship);
+}
+
+/**
+ * Apply the shared turn control's displacement, releasing an assisted press
+ * exactly at its target rather than taking an extra frame past parallel.
+ * Manual input has no target limit and uses the same speed and ramp.
+ * @param {Starship} ship Hull receiving ordinary rotation input.
+ * @param {number} displacement Signed turn integrated from held A/D input.
+ * @returns {void}
+ */
+function applyTurnInput(ship, displacement) {
+    const target = ship.controls.turnTargetAngle;
+    const error =
+        target === undefined
+            ? displacement
+            : shortestAngleDifference(target, ship.angle);
+    ship.angle = wrapAngle(
+        ship.angle +
+            Math.sign(displacement) *
+                Math.min(Math.abs(displacement), Math.abs(error)),
     );
-    if (!manuallySteering) {
-        const error = shortestAngleDifference(
-            ship.controls.autobrakeDesiredAngle,
-            ship.angle,
-        );
+}
+
+/**
+ * Consume merged flight inputs. Manual and wall avoidance A/D presses use the same
+ * ramped turn control; autopilot keeps its existing navigation turn behavior.
+ * @param {Starship} ship Hull receiving ordinary brake, thrust, and turn inputs.
+ * @param {number} deltaTime Bounded simulation step in seconds.
+ * @returns {void}
+ */
+function applyFlightInput(ship, deltaTime) {
+    const controls = ship.controls;
+    const manuallySteering = ["KeyA", "KeyD", "ArrowLeft", "ArrowRight"].some(
+        (key) => controls.manualPressedKeys.has(key),
+    );
+    applyTurnInput(ship, controls.manualTurnControl.advance(performance.now()));
+    if (!manuallySteering && !controls.wallAvoidanceActive) {
         ship.angle = wrapAngle(
             ship.angle +
-                Math.sign(error) *
-                    Math.min(ROTATION_SPEED * deltaTime, Math.abs(error)),
+                turnDirectionForKeys(controls.pressedKeys) *
+                    Math.min(
+                        ROTATION_SPEED * deltaTime,
+                        Math.abs(
+                            shortestAngleDifference(
+                                controls.automatedDesiredAngle,
+                                ship.angle,
+                            ),
+                        ),
+                    ),
         );
     }
+    ship.applyThrottle(controls.pressedKeys, deltaTime);
 }
 
 /**
@@ -8460,32 +8624,8 @@ function updateGame(deltaTime, width, height) {
         updateAutopilotInput(ship, deltaTime, width, height);
 
         if (ship === playerShip)
-            updateAutobrake(ship, deltaTime, width, height);
-        ship.angle = wrapAngle(
-            ship.angle +
-                ship.controls.manualTurnControl.advance(performance.now()) +
-                (ship.controls.autobrakeActive
-                    ? 0
-                    : turnDirectionForKeys(
-                          ship.controls.autopilotPressedKeys,
-                      )) *
-                    Math.min(
-                        ROTATION_SPEED * deltaTime,
-                        Math.abs(
-                            shortestAngleDifference(
-                                ship.controls.autopilotDesiredAngle,
-                                ship.angle,
-                            ),
-                        ),
-                    ),
-        );
-
-        ship.applyThrottle(
-            ship.controls.autobrakeActive
-                ? AUTOBRAKE_KEYS
-                : ship.controls.pressedKeys,
-            deltaTime,
-        );
+            updateWallAvoidance(ship, deltaTime, width, height);
+        applyFlightInput(ship, deltaTime);
     }
 
     for (const asteroid of asteroids) {
