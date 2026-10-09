@@ -181,14 +181,14 @@ const STATUS_BARS_HEIGHT = STATUS_BAR_HEIGHT * 2 + STATUS_BAR_GAP;
 // The alert lives only in the deliberate gap between the fire key and health bars;
 // Two stacked lanes separate danger from engaged automatic helm. Compact
 // consoles retain their mode key and colored hull bar when text cannot fit.
-// Reserve alone confuses recoverable damage with immediate danger. Require both
-// a heavy-contact reserve deficit and ongoing hull attrition. The exponentially
-// weighted loss rate forgets isolated hits in one active second; it is an
-// evidence signal, not a promise that future flight follows the same course.
-// Seeded calibration and the five-second outcome definitions live in
-// ALERT_CALIBRATION.md. Shorter red projection prioritizes precision over lead.
-const ALERT_YELLOW_CONTACT_COUNT = 2;
-const ALERT_RED_CONTACT_COUNT = 1;
+// Contact reserve and recent attrition are independent danger signals. Taking
+// the larger projection lets depleted shields warn before hull damage begins,
+// while weapon fire can still escalate without a predicted collision burst.
+// Three heavy contacts mark an urgent situation; two threaten survival.
+// Seeded calibration and the ten-second outcome definitions live in
+// ALERT_CALIBRATION.md.
+const ALERT_YELLOW_CONTACT_COUNT = 3;
+const ALERT_RED_CONTACT_COUNT = 2;
 const ALERT_DAMAGE_MEMORY_SECONDS = 1;
 const ALERT_YELLOW_DAMAGE_PROJECTION_SECONDS = 1.5;
 const ALERT_RED_DAMAGE_PROJECTION_SECONDS = 0.25;
@@ -4721,7 +4721,7 @@ function alertHullLoss(ship, contactCount) {
 
 /**
  * Escalate immediately after damage; clear only after sustained recovery.
- * Yellow sounds only on escalation from healthy; recovery from red is silent.
+ * Yellow sounds whenever the bridge enters yellow, including recovery from red.
  * Red remains a single cue per ship life.
  * Entry enables appropriate assistance once, so manual overrides continue to
  * work while an alert persists. Recovery leaves the selected modes enabled.
@@ -4742,11 +4742,11 @@ function updateAlert(ship, deltaTime) {
             ALERT_DAMAGE_MEMORY_SECONDS;
     alertPreviousHullState = ship.hullState;
     const previousLevel = alertLevel;
-    const redLoss = Math.min(
+    const redLoss = Math.max(
         alertHullLoss(ship, ALERT_RED_CONTACT_COUNT),
         alertHullLossRate * ALERT_RED_DAMAGE_PROJECTION_SECONDS,
     );
-    const yellowLoss = Math.min(
+    const yellowLoss = Math.max(
         alertHullLoss(ship, ALERT_YELLOW_CONTACT_COUNT),
         alertHullLossRate * ALERT_YELLOW_DAMAGE_PROJECTION_SECONDS,
     );
@@ -4771,7 +4771,7 @@ function updateAlert(ship, deltaTime) {
         if (alertLevel === 2 && !ship.controls.autopilotEnabled)
             toggleAutopilot(ship);
     }
-    if (alertLevel === 1 && previousLevel === 0) {
+    if (alertLevel === 1 && previousLevel !== 1) {
         yellowAlertSound.playRandom();
     }
     if (alertLevel === 2 && !redAlertSoundPlayed) {

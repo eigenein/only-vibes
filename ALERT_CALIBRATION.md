@@ -1,125 +1,69 @@
 # Alert calibration — 9 October 2026
 
-Alerts are calibrated as predictions of a serious outcome, rather than as
-labels for depleted reserves. The target is approximately 90–95% entry
-precision under the simulated risk protocol below.
+Alerts are intervention cues. Their primary measures are whether they precede
+fatal outcomes and how much reaction time they provide. Measuring only how often
+an alert is followed by damage rewards warnings that wait until the hull is
+already failing. It also counts successful automatic assistance as a false alarm.
 
-## Meaning and measurement
+## Meaning and rule
 
-- **Yellow:** at least 10 additional hull points lost, or loss of the current
-  command hull, within 10 active seconds. Give the situation full attention.
-- **Red:** loss of the current command hull within 10 active seconds. Immediate
-  survival intervention is warranted.
+- **Yellow:** the current shield/hull reserve or ongoing damage cannot safely
+  absorb three more heavy contacts. Give the situation full attention.
+- **Red:** the same evidence cannot safely absorb two more heavy contacts.
+  Immediate survival intervention is warranted.
 
-The window starts when the alert level is entered. Damage before entry does not
-count. A captain hand-off counts as loss of the prior command hull; later damage
-to the receiving ship does not. Victory ends the hazard window. An unfinished
-180-second run is right-censored when the remaining observation cannot establish
-the outcome.
+One heavy contact projects 34 damage points using the actual pre-impact shield
+transmission and 1.1 shield depletion multiplier. Regeneration is excluded from
+this short burst. The bridge also tracks an exponentially decaying hull-loss rate
+with a one-second memory. Yellow projects that trend for 1.5 seconds and red for
+0.25 seconds. Each level uses the **larger** of the contact and trend projections,
+so depleted shields can warn before hull damage, while weapon fire can warn
+without a collision pattern.
 
-The earlier five-second measurement understated risk from contacts which the
-current flight model turns into a second impact several seconds later. It also
-measured outcomes after alert assistance changed the trajectory. A warning that
-successfully prevents destruction is useful, but that post-intervention outcome
-cannot estimate the risk present when the warning was issued.
-
-Calibration therefore measures entry precision with automatic alert assistance
-disabled. The alert state and sounds still advance, but entry does not enable aim
-assist or autopilot. A separate assisted cohort runs the shipped behavior to
-check the effect of accepting those interventions. Red-to-yellow recovery is not
-a fresh entry. Direct healthy-to-red escalation counts as one yellow and one red
-entry because both thresholds were crossed.
-
-## Selected rule
-
-For each heavy contact, project 34 damage points using the actual pre-impact
-shield transmission and 1.1 shield depletion multiplier. Regeneration is
-excluded from this short reserve calculation. Weapon hits can exceed this
-contact budget; the alert also observes their actual hull damage through the
-damage history.
-
-Require both depleted reserves and recent hull attrition:
-
-| Parameter | Yellow | Red |
-| --- | ---: | ---: |
-| Full-budget contacts in reserve projection | 2 | 1 |
-| Recent hull-loss projection | 1.5 seconds | 0.25 seconds |
-
-The bridge tracks an exponentially decaying hull-loss rate with a one-second
-memory. At each active step of duration `dt`, it updates
-`rate = rate × exp(-dt / 1 s) + hullLost / 1 s`. Each severity threshold is the
-smaller of its contact-projected hull loss and `rate × projectionSeconds`.
-Entry occurs when remaining hull is at or below that threshold.
-
-Recovery requires remaining hull to exceed the current threshold by five points
-for two continuous active seconds. Pausing freezes the history and timer. A
-captain hand-off and every fresh field reset the alert history. Yellow sounds
-only on escalation from healthy; red sounds once per command hull. Entering
-either level enables aim assist, and entering red enables normal autopilot.
-Manual overrides remain effective until another transition; recovery leaves the
-selected modes enabled.
+Recovery requires five points beyond the active threshold for two continuous
+active seconds. Pausing freezes the history and recovery timer. A captain handoff
+and every fresh field reset the alert history. Yellow sounds whenever yellow is
+entered, including recovery from red; red sounds once per command hull. Yellow
+enables aim assist and red also enables autopilot. Manual overrides remain
+available.
 
 ## Simulation protocol
 
-A temporary Node `node:vm` harness loaded the actual `index.js`. Only browser
-services were stubbed: DOM, Canvas 2D, Path2D, audio, font readiness, network
-audio loading, and animation scheduling. Physics, generation, shields, scrape
-budget, Borg weapons, helpers, captain hand-off, autopilot, gunner, and alert
-functions were real. Rendering and sound output were excluded. No server ran.
+A temporary Node `node:vm` harness loaded the actual `index.js`. Browser-only
+services were stubbed; physics, generation, shields, weapons, helpers, captain
+handoff, automation, and alert functions were unchanged. Each run advanced at
+60 steps per second until fleet destruction, victory, or 180 active seconds.
 
-Randomness used a seeded 32-bit LCG:
-`seed = (imul(seed, 1664525) + 1013904223) >>> 0`, divided by `2 ** 32`.
-Each run advanced at 60 steps per second and stopped on fleet destruction,
-victory, or 180 active seconds. Spawn protection and bridge status advanced in
-the same order as `animate`.
+The 100-run validation cohort used fresh seeds **801–900**, after the rule and
+outcome definitions were frozen. Runs cycled through four arena sizes, fields
+1–4, and three flight policies: autopilot with gunner; forward thrust without a
+gunner; and patterned turning thrust with a gunner. The last policy deliberately
+overrides alert assistance. This is a repeatable stress mix, not a model of all
+human play.
 
-For zero-based run index `r` within a cohort:
+## Validation
 
-- Arena size: `[800×500, 1200×700, 1600×800, 1920×980][r % 4]`, excluding the
-  command strip.
-- Field: `1 + floor(r / 4) % 4`.
-- Flight policy: `floor(r / 16) % 3`.
+| Measure | Result |
+| --- | ---: |
+| Fatal runs preceded by yellow | **49/49** |
+| Fatal runs preceded by red | **49/49** |
+| Median yellow-to-destruction lead | **6.85 s** |
+| Median red-to-destruction lead | **5.68 s** |
+| Yellow entries followed by major loss or destruction within 10 s | 74/99 |
+| Red entries followed by destruction within 10 s | 31/94 |
+| Fleet destructions / victories / timed runs | 49 / 2 / 49 |
 
-| Policy | Flight and firing |
-| --- | --- |
-| 0 | Autopilot and auto-gunner |
-| 1 | Continuous forward thrust, no gunner |
-| 2 | Forward thrust and auto-gunner; manual turn cycles left, straight, right every two seconds |
+The outcome rates are measured after alerts enable assistance. They therefore do
+not estimate risk at entry: a red alert that engages autopilot and averts death
+is working as designed. The fatal-run coverage and lead times directly address
+the previous failure mode, where red appeared only shortly before a fatal impact.
 
-Policy 2 uses the actual manual turn ramp and override logic. The patterned mix
-stresses the alerts and does not represent measured human behavior. Hull,
-shield, command-hull identity, and alert state were sampled every 0.25 seconds,
-at every transition, and on termination.
+The exploration cohort on seeds 701–800 compared the prior rule on the same
+protocol. Its red warning preceded only 17 of 62 fatal runs, with 1.37 seconds
+median lead among fatal outcomes. The selected rule preceded all 43 fatal runs
+with red, with 5.63 seconds median lead, and had 19 fewer fleet destructions.
+Different alert assistance changed the trajectories, so the death-count change
+is evidence of useful intervention rather than a paired causal estimate.
 
-Seeds 1–600 were used while checking the protocol and candidate definitions.
-After fixing the definitions above, seeds **601–700** supplied 100 fresh
-validation runs. No alert constant or outcome definition changed afterward.
-
-## Final validation
-
-| Measure | Unassisted risk cohort | Normal assisted cohort |
-| --- | ---: | ---: |
-| Yellow entry precision | **75/83 = 90.4%** | 71/86 = 82.6% |
-| Red entry precision | **16/17 = 94.1%** | 6/18 = 33.3% |
-| Time displaying yellow | 6.6% | 7.7% |
-| Time displaying red | 2.7% | 21.6% |
-| Runs with fleet destruction | 58 | 48 |
-| Victories | 42 | 46 |
-| Censored runs | 0 | 6 |
-| Total active time | 2,897.65 s | 4,158.55 s |
-
-The unassisted cohort is the calibration result: yellow and red both fall in the
-requested probability band. Approximate 95% Wilson intervals are 82.1–95.0% for
-yellow and 73.0–99.0% for red. Entries within a run are not fully independent,
-so these intervals are descriptive rather than universal guarantees.
-
-The assisted cohort is not a second probability calibration. Alert assistance
-changes later controls and therefore the observed outcome. Its lower post-alert
-rates, ten fewer fleet destructions, and four additional victories are consistent
-with successful intervention, although divergent trajectories prevent a paired
-causal claim. Red can remain displayed after autopilot averts the immediate loss
-because a critically damaged hull may lack the five-point recovery margin.
-
-No production constant changed in this recalibration. The current rule already
-meets the target once risk at entry is measured before the warning changes the
-flight path. Mechanics or player behavior changes can still move these rates.
+Recalibration is required when collision damage, shields, weapons, automatic
+assistance, or common flight behavior changes.

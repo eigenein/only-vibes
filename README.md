@@ -132,18 +132,14 @@ Yellow alert automatically enables aim assist; red alert also enables autopilot.
   AUTOPILOT and COLLISION COURSE light together during the safeguard and clear
   when control returns. Wall proximity alone triggers neither.
   Brake takes priority when thrust and brake inputs are held together.
-- Yellow alert means ongoing hull damage threatens major loss; give the situation
-  full attention. Red means an immediate destruction risk. Both require depleted
-  shield/hull reserves and recent hull damage, so safe recovery stays quiet.
-  In the [calibration simulations](ALERT_CALIBRATION.md), about 90% of yellow
-  entries predicted at least 10 more hull points lost or loss of the current
-  command hull within ten seconds; about 94% of red entries predicted loss of
-  that hull within ten seconds. Calibration measures the risk present before
-  automatic alert assistance changes the ship's trajectory. These rates describe
-  the simulated flight mix, rather than a guaranteed probability for every
-  situation. Alerts clear after two seconds with extra reserve; yellow sounds
-  on escalation from healthy, red sounds once per command hull. Recovery is
-  silent.
+- Yellow alert means the current shield/hull reserve or ongoing damage threatens
+  major loss; give the situation full attention. Red means the same evidence
+  threatens destruction. The reserve check warns before hull damage when shields
+  are too weak for the projected contacts; the damage trend also catches weapon
+  fire independently. See the [calibration protocol](ALERT_CALIBRATION.md) for
+  the measured warning behavior. Alerts clear after two seconds with extra
+  reserve; yellow sounds whenever yellow is entered, including recovery from red.
+  Red sounds once per command hull.
 - Entering yellow or red enables aim assist; entering red also enables
   autopilot. You can override these modes normally while the alert persists.
   Recovery leaves them enabled.
