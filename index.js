@@ -5689,7 +5689,9 @@ function drawBorgFocusLock(width, height) {
         // 5. Poisonous Borg HUD telemetry lock badge
         const badgeX = ship.x + halfBox + 6;
         const badgeY = ship.y - halfBox;
-        const badgeWidth = 96;
+        const badgeText = `BORG FOCUS x${focusCount}`;
+        context.font = `700 12px ${LCARS_FONT_FAMILY}`;
+        const badgeWidth = Math.ceil(context.measureText(badgeText).width) + 14;
         const badgeHeight = 22;
 
         context.fillStyle = "rgba(10, 26, 14, 0.88)";
@@ -5709,18 +5711,7 @@ function drawBorgFocusLock(width, height) {
         context.textAlign = "left";
         context.textBaseline = "middle";
         context.fillStyle = BORG_FOCUS_LOCK_ACCENT;
-        context.font = `700 12px ${LCARS_FONT_FAMILY}`;
-        context.fillText(`BORG FOCUS x${focusCount}`, badgeX + 7, badgeY + 11);
-
-        // Status pips for each focusing cube
-        for (let pipIndex = 0; pipIndex < focusCount; pipIndex += 1) {
-            const pipX = badgeX + badgeWidth - 8 - pipIndex * 7;
-            const pipY = badgeY + 11;
-            context.fillStyle = BORG_FOCUS_LOCK_COLOR;
-            context.beginPath();
-            context.arc(pipX, pipY, 2, 0, Math.PI * 2);
-            context.fill();
-        }
+        context.fillText(badgeText, badgeX + 7, badgeY + 11);
     }
 
     context.restore();
