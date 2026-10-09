@@ -488,11 +488,17 @@ const BORG_HULL_FRACTURES = Object.freeze([
         {x: 0.7, y: -1},
     ]),
 ]);
-// Collective tactical coordination allows multiple cubes (2+) to focus fire
-// on priority starships, forming coordinated focus groups across the fleet.
-// One cube reconsiders its target per simulation step. Existing assignments
-// are the collective's working strategy; local improvements take effect at once.
+// Collective tactical coordination allows multiple attackers to focus fire
+// on priority targets, forming coordinated focus groups across the fleet.
+// One attacker reconsiders its target per simulation step. Existing
+// assignments are the working strategy; local improvements take effect at once.
 // A small switching threshold prevents target flicker as distances change.
+// The shared algorithm accepts per-faction constants so each side can tune
+// its cooperation tendency independently.
+
+// --- Borg focus constants ---
+// Borg cubes coordinate in groups of 2 or more but spread across multiple
+// targets when the fleet is large enough to maintain coverage.
 const BORG_FOCUS_GROUP_MIN_SIZE = 2;
 // Nearby teamwork can justify about 12% of a field diagonal in extra travel;
 // distant cubes favor their own local targets instead of crossing the field.
@@ -503,6 +509,25 @@ const BORG_FOCUS_DISTANCE_WEIGHT = 5.2;
 const BORG_FOCUS_VULNERABILITY_WEIGHT = 0.35;
 const BORG_FOCUS_PLAYER_PRIORITY_WEIGHT = 0.2;
 const BORG_FOCUS_HYSTERESIS_BONUS = 0.05;
+// Zero preserves Borg's existing flat group reward and willingness to split.
+const BORG_FOCUS_COHESION_WEIGHT = 0;
+
+// --- Starfleet focus constants ---
+// Starfleet helpers favor cooperation through a stronger group bonus, no
+// oversaturation penalty, and no extra reward for maintaining multiple groups.
+// The lower distance weight lets helpers travel farther to join a focus group.
+// Each helper pair sharing a target earns cohesion, so larger groups keep
+// attracting helpers. Distance can still justify separate engagements.
+const STARFLEET_FOCUS_GROUP_MIN_SIZE = 2;
+const STARFLEET_FOCUS_SYNERGY_BONUS = 2.0;
+const STARFLEET_FOCUS_MULTI_GROUP_BONUS = 0;
+const STARFLEET_FOCUS_OVERSATURATION_PENALTY = 0;
+const STARFLEET_FOCUS_DISTANCE_WEIGHT = 3.6;
+const STARFLEET_FOCUS_VULNERABILITY_WEIGHT = 0.35;
+const STARFLEET_FOCUS_HYSTERESIS_BONUS = 0.02;
+// Per-pair reward: joining a pair gains twice this value; merging two pairs
+// gains this value minus the flat synergy bonus lost by the departing pair.
+const STARFLEET_FOCUS_COHESION_WEIGHT = 2.4;
 const BORG_FOCUS_LOCK_ROTATION_SPEED = 0.85;
 const BORG_FOCUS_LOCK_BRACKET_PADDING = 12;
 const BORG_FOCUS_LOCK_COLOR = "#77ff88";
@@ -3027,17 +3052,62 @@ function scoreBorgTarget(cube, target, arenaDiagonal) {
 }
 
 /**
- * Value of a single focus group; excessive concentration leaves other threats free.
+ * Score group formation, pairwise cohesion, and optional overcrowding costs.
+ * @param {number} count Attackers assigned to the target.
+ * @param {number} targetCount Eligible targets.
+ * @param {number} groupMinSize Minimum group size for synergy.
+ * @param {number} synergyBonus Bonus applied when the group meets the minimum size.
+ * @param {number} oversaturationPenalty Per-attacker penalty beyond the saturation threshold.
+ * @param {number} cohesionWeight Reward per attacker pair sharing this target.
+ * @returns {number} Group contribution to the collective tactical score.
+ */
+function scoreFocusGroup(
+    count,
+    targetCount,
+    groupMinSize,
+    synergyBonus,
+    oversaturationPenalty,
+    cohesionWeight,
+) {
+    // Count shared attacker pairs directly; no pair enumeration or fleet search.
+    return (
+        (count >= groupMinSize ? synergyBonus : 0) +
+        (cohesionWeight * count * (count - 1)) / 2 -
+        (targetCount > 1 ? Math.max(0, count - 3) * oversaturationPenalty : 0)
+    );
+}
+
+/**
+ * Value of a single Borg focus group; excessive concentration leaves other threats free.
  * @param {number} count Cubes assigned to the target.
  * @param {number} shipCount Eligible enemy ships.
  * @returns {number} Group contribution to the collective tactical score.
  */
 function scoreBorgFocusGroup(count, shipCount) {
-    return (
-        (count >= BORG_FOCUS_GROUP_MIN_SIZE ? BORG_FOCUS_SYNERGY_BONUS : 0) -
-        (shipCount > 1
-            ? Math.max(0, count - 3) * BORG_FOCUS_OVERSATURATION_PENALTY
-            : 0)
+    return scoreFocusGroup(
+        count,
+        shipCount,
+        BORG_FOCUS_GROUP_MIN_SIZE,
+        BORG_FOCUS_SYNERGY_BONUS,
+        BORG_FOCUS_OVERSATURATION_PENALTY,
+        BORG_FOCUS_COHESION_WEIGHT,
+    );
+}
+
+/**
+ * Value of a single Starfleet focus group using the shared cooperation formula.
+ * @param {number} count Helpers assigned to the target.
+ * @param {number} targetCount Eligible targets.
+ * @returns {number} Group contribution to the tactical score.
+ */
+function scoreStarfleetFocusGroup(count, targetCount) {
+    return scoreFocusGroup(
+        count,
+        targetCount,
+        STARFLEET_FOCUS_GROUP_MIN_SIZE,
+        STARFLEET_FOCUS_SYNERGY_BONUS,
+        STARFLEET_FOCUS_OVERSATURATION_PENALTY,
+        STARFLEET_FOCUS_COHESION_WEIGHT,
     );
 }
 
@@ -3063,6 +3133,10 @@ function updateBorgFleetTactics(width, height) {
             cube.targetStarship = target;
         },
         scoreBorgTarget,
+        scoreBorgFocusGroup,
+        BORG_FOCUS_GROUP_MIN_SIZE,
+        BORG_FOCUS_HYSTERESIS_BONUS,
+        BORG_FOCUS_MULTI_GROUP_BONUS,
         width,
         height,
     );
@@ -3070,8 +3144,9 @@ function updateBorgFleetTactics(width, height) {
 }
 
 /**
- * Shared Borg assignment algorithm. Only faction eligibility, target storage,
- * and reserve scoring are adapters; thresholds and every gain calculation stay identical.
+ * Shared fleet assignment algorithm. Only faction eligibility, target storage,
+ * scoring callbacks, and focus-group constants are adapters; the gain
+ * calculation and round-robin adaptation are identical for both sides.
  * @template A, T
  * @param {A[]} liveCubes Eligible attackers, in fleet order.
  * @param {T[]} liveShips Eligible targets, in world order.
@@ -3079,6 +3154,10 @@ function updateBorgFleetTactics(width, height) {
  * @param {(attacker: A) => T | undefined} getTarget Read an assignment.
  * @param {(attacker: A, target: T | undefined) => void} setTarget Store an assignment.
  * @param {(attacker: A, target: T, diagonal: number) => number} scoreTarget Local opportunity score.
+ * @param {(count: number, targetCount: number) => number} scoreFocusGroupCallback Group scoring callback.
+ * @param {number} groupMinSize Minimum group size for synergy.
+ * @param {number} hysteresisBonus Staying-bonus threshold that prevents target flicker.
+ * @param {number} multiGroupBonus Bonus for maintaining two or more focus groups.
  * @param {number} width Arena width in CSS pixels.
  * @param {number} height Arena height in CSS pixels.
  * @returns {void}
@@ -3090,6 +3169,10 @@ function updateFleetTactics(
     getTarget,
     setTarget,
     scoreTarget,
+    scoreFocusGroupCallback,
+    groupMinSize,
+    hysteresisBonus,
+    multiGroupBonus,
     width,
     height,
 ) {
@@ -3122,31 +3205,31 @@ function updateFleetTactics(
     if (!currentTarget) return;
     const currentCount = counts.get(currentTarget) ?? 0;
     const focusGroupCount = [...counts.values()].filter(
-        (count) => count >= BORG_FOCUS_GROUP_MIN_SIZE,
+        (count) => count >= groupMinSize,
     ).length;
     const arenaDiagonal = Math.max(1, Math.hypot(width, height));
     const currentScore = scoreTarget(cube, currentTarget, arenaDiagonal);
-    let bestGain = BORG_FOCUS_HYSTERESIS_BONUS;
+    let bestGain = hysteresisBonus;
     let bestTarget = currentTarget;
     for (const target of liveShips) {
         if (target === currentTarget) continue;
         const targetCount = counts.get(target) ?? 0;
         const nextGroupCount =
             focusGroupCount -
-            (currentCount === BORG_FOCUS_GROUP_MIN_SIZE ? 1 : 0) +
-            (targetCount === BORG_FOCUS_GROUP_MIN_SIZE - 1 ? 1 : 0);
+            (currentCount === groupMinSize ? 1 : 0) +
+            (targetCount === groupMinSize - 1 ? 1 : 0);
         const coverageGain =
             liveShips.length > 1 && liveCubes.length >= 4
                 ? (Number(nextGroupCount >= 2) - Number(focusGroupCount >= 2)) *
-                  BORG_FOCUS_MULTI_GROUP_BONUS
+                  multiGroupBonus
                 : 0;
         const gain =
             scoreTarget(cube, target, arenaDiagonal) -
             currentScore +
-            scoreBorgFocusGroup(currentCount - 1, liveShips.length) -
-            scoreBorgFocusGroup(currentCount, liveShips.length) +
-            scoreBorgFocusGroup(targetCount + 1, liveShips.length) -
-            scoreBorgFocusGroup(targetCount, liveShips.length) +
+            scoreFocusGroupCallback(currentCount - 1, liveShips.length) -
+            scoreFocusGroupCallback(currentCount, liveShips.length) +
+            scoreFocusGroupCallback(targetCount + 1, liveShips.length) -
+            scoreFocusGroupCallback(targetCount, liveShips.length) +
             coverageGain;
         if (gain > bestGain) {
             bestGain = gain;
@@ -3162,9 +3245,9 @@ function updateFleetTactics(
 const starfleetTacticsState = {index: 0};
 
 /**
- * Apply the same distance and vulnerability weights to enemy reserves.
+ * Apply Starfleet distance and vulnerability weights to enemy reserves.
  * @param {Starship} ship Attacking helper.
- * @param {Asteroid} target Live cube or asteroid after the Borg fleet is defeated.
+ * @param {Asteroid | BorgCube} target Live cube or asteroid after the Borg fleet is defeated.
  * @param {number} diagonal Positive arena diagonal.
  * @returns {number} Local opportunity value.
  */
@@ -3179,9 +3262,9 @@ function scoreStarfleetTarget(ship, target, diagonal) {
             : 1;
     return (
         -(Math.hypot(ship.x - target.x, ship.y - target.y) / diagonal) *
-            BORG_FOCUS_DISTANCE_WEIGHT +
+            STARFLEET_FOCUS_DISTANCE_WEIGHT +
         (1 - Math.max(0, Math.min(1, healthRatio))) *
-            BORG_FOCUS_VULNERABILITY_WEIGHT
+            STARFLEET_FOCUS_VULNERABILITY_WEIGHT
     );
 }
 
@@ -3202,6 +3285,10 @@ function updateStarfleetTactics(width, height) {
             ship.fleetTarget = target;
         },
         scoreStarfleetTarget,
+        scoreStarfleetFocusGroup,
+        STARFLEET_FOCUS_GROUP_MIN_SIZE,
+        STARFLEET_FOCUS_HYSTERESIS_BONUS,
+        STARFLEET_FOCUS_MULTI_GROUP_BONUS,
         width,
         height,
     );
@@ -6255,6 +6342,14 @@ function drawPauseHelp(width, height) {
         context.fillText(helpItem.description, 208, rowY);
         context.font = `700 18px ${LCARS_FONT_FAMILY}`;
     }
+    context.textAlign = "center";
+    context.fillStyle = LCARS_LILAC;
+    context.font = `500 16px ${LCARS_BODY_FONT_FAMILY}`;
+    context.fillText(
+        "Helpers favor shared targets; Borg may split.",
+        HELP_PANEL_WIDTH / 2,
+        480,
+    );
     context.restore();
 }
 

@@ -90,8 +90,9 @@ brackets marked STARFLEET show helper targets and the number of assigned helpers
 attack these targets to support their coordinated fire. Green BORG FOCUS markers
 show targeted ships and the number of assigned cubes. Both cues appear even
 with a single attacker. Helpers target live
-Borg cubes first, then coordinate asteroid clearing once all cubes are defeated. Helpers share the Borg
-fleet’s gradual focus assignment policy. Starship
+Borg cubes first, then coordinate asteroid clearing once all cubes are defeated.
+Helpers increasingly favor a shared target as more helpers join it; distance can
+still justify a split. Borg retain their gradual, more distributed focus policy. Starship
 phasers can ricochet once; Borg pulses disappear on their first contact.
 Every friendly ship has three seconds of protection from collision and weapon
 damage after spawning, shown by a cyan shield. Borg targeting excludes protected
