@@ -519,21 +519,6 @@ const DEVELOPER_FRIENDLY_SPAWN_KEY = "KeyF";
 // Sample a ring around the player to keep injected helpers clear of live bodies.
 const DEVELOPER_SPAWN_CANDIDATES = 16;
 
-// Aim assist advises the player without steering or changing phaser behavior.
-const AIM_ASSIST_TOGGLE_KEY = "KeyM";
-const AIM_ASSIST_TOGGLE_KEY_LABEL = "M";
-// A 90-degree sector accepts nearby headings; acquisition compares against a
-// fixed heading anchor so slow continuous rotation cannot accumulate dwell.
-const AIM_ASSIST_SECTOR_HALF_ANGLE = Math.PI / 4;
-const AIM_ASSIST_ACQUIRE_SECONDS = 0.5;
-// Keep a live target for at least one second, then release only outside the
-// current nose sector. A nearer arrival never steals an existing lock.
-const AIM_ASSIST_MIN_LOCK_SECONDS = 1;
-// CSS-pixel marker geometry stays legible independently of target size.
-const AIM_ASSIST_MARKER_RADIUS = 11;
-const AIM_ASSIST_MARKER_GAP = 4;
-const AIM_ASSIST_TARGET_PADDING = 7;
-
 // Autopilot and auto-gunner independently produce the same held controls a
 // player can use. Enabling both combines navigation and firing, with movement,
 // heat, and collisions on normal gameplay paths.
@@ -696,17 +681,13 @@ const PLAY_HELP = Object.freeze([
         description: "toggle auto-gunner",
     }),
     Object.freeze({
-        label: AIM_ASSIST_TOGGLE_KEY_LABEL,
-        description: "toggle aim assist",
-    }),
-    Object.freeze({
         label: RESTART_KEY_LABEL,
         description: "restart current round",
     }),
 ]);
 const HELP_PANEL_WIDTH = 540;
 // Leave breathing room below the final control row.
-const HELP_PANEL_HEIGHT = 516;
+const HELP_PANEL_HEIGHT = 476;
 
 // The training-simulator identity sits quietly behind gameplay. Capping its
 // type size avoids a full-arena billboard on large bridge displays.
@@ -942,128 +923,6 @@ const roundAchievements = new Set();
 const fieldAsteroidDamage = {ramming: 0, blasters: 0};
 
 /**
- * Heading dwell and target commitment use simulation time, so pausing cannot
- * acquire a target. Pause and focus loss clear the lock; a new sector also
- * disables assistance. Target centers define the sector and nearest distance.
- */
-class AimAssist {
-    /** @param {Starship} ship Hull owning this independent target lock. */
-    constructor(ship) {
-        /** @type {Starship} Hull whose heading and position define acquisition. */
-        this.ship = ship;
-    }
-
-    enabled = false;
-    /** @type {Asteroid | undefined} Currently committed live body. */
-    target = undefined;
-    heading = undefined;
-    dwell = 0;
-    lockRemaining = 0;
-
-    /** @returns {void} Discard transient acquisition and lock state. */
-    reset() {
-        this.target = undefined;
-        this.heading = undefined;
-        this.dwell = 0;
-        this.lockRemaining = 0;
-    }
-
-    /** @returns {void} Switch assistance without supplying flight input. */
-    toggle() {
-        this.enabled = !this.enabled;
-        this.reset();
-    }
-
-    /**
-     * Follow the closest surviving child of the locked body, keeping successive
-     * cuts on one lineage instead of acquiring an unrelated nearby asteroid.
-     * A child receives the normal minimum commitment even across the sector
-     * edge; terminal destruction releases the lock for ordinary acquisition.
-     * @param {Asteroid} parent Body replaced by the fragmentation transaction.
-     * @param {Asteroid[]} fragments Retained children already added to the field.
-     * @returns {void}
-     */
-    followFragments(parent, fragments) {
-        if (!this.enabled || this.target !== parent) return;
-        let closest = undefined;
-        let closestDistance = Infinity;
-        for (const fragment of fragments) {
-            const distance =
-                (fragment.x - this.ship.x) ** 2 + (fragment.y - this.ship.y) ** 2;
-            if (distance < closestDistance) {
-                closest = fragment;
-                closestDistance = distance;
-            }
-        }
-        if (closest === undefined) {
-            this.reset();
-            return;
-        }
-        this.target = closest;
-        this.lockRemaining = AIM_ASSIST_MIN_LOCK_SECONDS;
-    }
-
-    /**
-     * @param {Asteroid} target Candidate body in the current world.
-     * @returns {boolean} Whether its center lies in the current nose sector.
-     */
-    inSector(target) {
-        return (
-            Math.abs(
-                shortestAngleDifference(
-                    Math.atan2(target.y - this.ship.y, target.x - this.ship.x),
-                    this.ship.angle,
-                ),
-            ) <= AIM_ASSIST_SECTOR_HALF_ANGLE
-        );
-    }
-
-    /**
-     * @param {number} deltaTime Active simulation seconds since the last step.
-     * @returns {void}
-     */
-    update(deltaTime) {
-        if (!this.enabled) return;
-        if (this.target !== undefined) {
-            this.lockRemaining = Math.max(0, this.lockRemaining - deltaTime);
-            if (
-                !isLiveTarget(this.target) ||
-                (this.lockRemaining <= COLLISION_EPSILON && !this.inSector(this.target))
-            ) {
-                this.reset();
-            } else {
-                return;
-            }
-        }
-        if (
-            this.heading === undefined ||
-            Math.abs(shortestAngleDifference(this.ship.angle, this.heading)) >
-            AIM_ASSIST_SECTOR_HALF_ANGLE
-        ) {
-            this.heading = this.ship.angle;
-            this.dwell = 0;
-            return;
-        }
-        this.dwell += deltaTime;
-        if (this.dwell + COLLISION_EPSILON < AIM_ASSIST_ACQUIRE_SECONDS) return;
-        let closestDistance = Infinity;
-        for (const target of combatTargets()) {
-            const distance =
-                (target.x - this.ship.x) ** 2 + (target.y - this.ship.y) ** 2;
-            if (distance < closestDistance && this.inSector(target)) {
-                this.target = target;
-                closestDistance = distance;
-            }
-        }
-        if (this.target !== undefined) {
-            this.lockRemaining = AIM_ASSIST_MIN_LOCK_SECONDS;
-        }
-        // Once the heading is settled, an entering target can lock immediately.
-        this.dwell = Math.min(this.dwell, AIM_ASSIST_ACQUIRE_SECONDS);
-    }
-}
-
-/**
  * Input producers and tactical commitments are private to one hull. Helpers
  * use the same navigation and weapon policy as the player, with independent
  * locks, escape lanes, reaction clocks, bursts and key sets. Only the player's
@@ -1110,7 +969,6 @@ class Starship {
     /** @type {Asteroid | undefined} Shared fleet assignment for helper navigation. */
     fleetTarget = undefined;
     controls = new ShipControls();
-    aimAssist = new AimAssist(this);
     x = 0;
     y = 0;
     angle = -Math.PI / 2;
@@ -1147,7 +1005,6 @@ class Starship {
      */
     reset(x, y, angle = 0) {
         Object.assign(this, new Starship(x, y));
-        this.aimAssist = new AimAssist(this);
         this.angle = angle;
     }
 
@@ -3760,7 +3617,6 @@ function clearPressedKeys(ship) {
     ship.controls.autopilotTurnDirection = 0;
     ship.controls.autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
     ship.controls.manualTurnControl.reset();
-    ship.aimAssist.reset();
     ship.controls.manualPressedKeys.clear();
     ship.controls.autopilotPressedKeys.clear();
     ship.controls.autoGunnerPressedKeys.clear();
@@ -3812,7 +3668,6 @@ function toggleAutopilot(ship) {
     ship.controls.autopilotTurnDirection = 0;
     ship.controls.autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
     ship.controls.manualTurnControl.reset();
-    ship.aimAssist.reset();
     for (const key of ship.controls.manualPressedKeys) {
         if (key !== FIRE_KEY) ship.controls.manualPressedKeys.delete(key);
     }
@@ -4767,7 +4622,6 @@ function updateAlert(ship, deltaTime) {
         }
     }
     if (alertLevel !== previousLevel && alertLevel > 0) {
-        if (!ship.aimAssist.enabled) ship.aimAssist.toggle();
         if (alertLevel === 2 && !ship.controls.autopilotEnabled)
             toggleAutopilot(ship);
     }
@@ -5657,7 +5511,6 @@ function drawGame(width, height) {
         bullet.draw();
     }
 
-    drawAimAssist(width, playfieldHeight);
     drawBorgFocusLock(width, playfieldHeight);
     drawStarfleetFocus(width, playfieldHeight);
     for (const ship of starships) drawStarship(ship);
@@ -5678,60 +5531,6 @@ function drawGame(width, height) {
     const controlRightX = drawFlightControls(width);
     const statusBarsLeft = drawStatusBars(width);
     drawAlert(controlRightX, statusBarsLeft);
-}
-
-/**
- * Draw a target ring and the true predicted intercept point. Clip predictions
- * to the arena instead of pinning an offscreen point to a false aim position.
- * @param {number} width Arena width in CSS pixels.
- * @param {number} height Arena height in CSS pixels.
- * @returns {void}
- */
-function drawAimAssist(width, height) {
-    const target = playerShip.aimAssist.target;
-    if (
-        !playerShip.aimAssist.enabled ||
-        target === undefined ||
-        shipFailureActive ||
-        gameWon
-    )
-        return;
-    context.save();
-    context.beginPath();
-    context.rect(0, 0, width, height);
-    context.clip();
-    context.strokeStyle = LCARS_BARLEY;
-    context.lineWidth = 1.5;
-    context.beginPath();
-    context.arc(
-        target.x,
-        target.y,
-        target.radius + AIM_ASSIST_TARGET_PADDING,
-        0,
-        Math.PI * 2,
-    );
-    context.stroke();
-    const time = linearInterceptTime(playerShip, target);
-    if (time !== undefined) {
-        const x = target.x + target.velocityX * time;
-        const y = target.y + target.velocityY * time;
-        if (Number.isFinite(x) && Number.isFinite(y)) {
-            const radius = AIM_ASSIST_MARKER_RADIUS;
-            const gap = AIM_ASSIST_MARKER_GAP;
-            context.beginPath();
-            context.arc(x, y, radius, 0, Math.PI * 2);
-            context.moveTo(x - radius - gap, y);
-            context.lineTo(x - gap, y);
-            context.moveTo(x + gap, y);
-            context.lineTo(x + radius + gap, y);
-            context.moveTo(x, y - radius - gap);
-            context.lineTo(x, y - gap);
-            context.moveTo(x, y + gap);
-            context.lineTo(x, y + radius + gap);
-            context.stroke();
-        }
-    }
-    context.restore();
 }
 
 /**
@@ -6044,12 +5843,6 @@ function drawFlightControls(width) {
             playerShip.controls.autoGunnerEnabled,
         ],
         [PAUSE_KEY_LABEL, "PAUSE", LCARS_BUTTERSCOTCH, gamePaused],
-        [
-            AIM_ASSIST_TOGGLE_KEY_LABEL,
-            "AIM ASSIST",
-            LCARS_BARLEY,
-            playerShip.aimAssist.enabled,
-        ],
         [
             "W⏶",
             "THRUST",
@@ -7248,8 +7041,6 @@ function fragmentAsteroidAtImpact(
     const fragments = splitAsteroid(asteroid, hitPoint, cutDirection);
 
     asteroids.splice(asteroidIndex, 1, ...fragments);
-    for (const ship of starships)
-        ship.aimAssist.followFragments(asteroid, fragments);
     return fragments;
 }
 
@@ -8855,8 +8646,6 @@ function updateGame(deltaTime, width, height) {
     resolveBulletCollisions(width, height);
     resolveAsteroidCollisions();
     resolveStarshipCollisions();
-    for (const ship of starships)
-        if (ship.alive) ship.aimAssist.update(deltaTime);
     if (
         starships.some((ship) => ship.alive) &&
         asteroids.length === 0 &&
@@ -8869,8 +8658,8 @@ function updateGame(deltaTime, width, height) {
 /**
  * Beam the captain to the nearest surviving hull, with fleet order breaking
  * distance ties. Keep the helper's automatic helm and gunner online while
- * transferring aim assistance and held manual input:
- * reserves, weapon cadence, immunity, motion, and fleet assignments stay intact.
+ * transferring held manual input: reserves, weapon cadence, immunity, motion,
+ * and fleet assignments stay intact.
  * @returns {boolean} Whether a surviving hull received the captain.
  */
 function handoffCaptain() {
@@ -8890,7 +8679,6 @@ function handoffCaptain() {
 
     destination.controls.autopilotEnabled = true;
     destination.controls.autoGunnerEnabled = true;
-    destination.aimAssist.enabled = departing.aimAssist.enabled;
     destination.controls.manualPressedKeys.clear();
     for (const key of departing.controls.manualPressedKeys) {
         destination.controls.manualPressedKeys.add(key);
@@ -9058,12 +8846,6 @@ document.addEventListener("keydown", (event) => {
         } else {
             spawnDeveloperFriendly(viewportWidth, height);
         }
-        return;
-    }
-
-    if (event.code === AIM_ASSIST_TOGGLE_KEY) {
-        if (!event.repeat) playerShip.aimAssist.toggle();
-        event.preventDefault();
         return;
     }
 
