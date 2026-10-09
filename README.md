@@ -133,13 +133,15 @@ Yellow alert automatically enables aim assist; red alert also enables autopilot.
 - Yellow alert means ongoing hull damage threatens major loss; give the situation
   full attention. Red means an immediate destruction risk. Both require depleted
   shield/hull reserves and recent hull damage, so safe recovery stays quiet.
-  In the [calibration simulations](ALERT_CALIBRATION.md), about 94% of yellow
-  entries preceded at least 20 more hull points lost or destruction within five
-  seconds; about 93% of red entries preceded destruction within five seconds.
-  These rates describe the simulated flight mix, rather than a guaranteed
-  probability for every situation. More selective warnings can miss sudden
-  lethal hits. Alerts clear after two seconds with extra reserve; yellow sounds
-  on escalation from healthy, red sounds once per life. Recovery is silent.
+  In the [calibration simulations](ALERT_CALIBRATION.md), about 90% of yellow
+  entries predicted at least 10 more hull points lost or loss of the current
+  command hull within ten seconds; about 94% of red entries predicted loss of
+  that hull within ten seconds. Calibration measures the risk present before
+  automatic alert assistance changes the ship's trajectory. These rates describe
+  the simulated flight mix, rather than a guaranteed probability for every
+  situation. Alerts clear after two seconds with extra reserve; yellow sounds
+  on escalation from healthy, red sounds once per command hull. Recovery is
+  silent.
 - Entering yellow or red enables aim assist; entering red also enables
   autopilot. You can override these modes normally while the alert persists.
   Recovery leaves them enabled.
