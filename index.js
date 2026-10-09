@@ -104,22 +104,22 @@ const WALL_AVOIDANCE_STOPPING_CAP =
     (MAX_SPEED * 0.65) ** 2 / (2 * MOVEMENT_RESPONSIVENESS);
 // A tenth of a second supplies a small speed-scaled clearance for frame entry.
 const WALL_AVOIDANCE_REACTION_SECONDS = 0.1;
-// The LCARS palette is shared by every presentation layer so the arena,
-// objects, and overlays read as one interface rather than independent styles.
-// Warm operational colors carry the strongest emphasis; lilac is reserved for
-// shields and low-density material, while black keeps the playfield spacious.
+// The Classic theme from TheLCARS.com supplies every interface color so the
+// arena, objects, and overlays read as one coherent LCARS display. Warm colors
+// carry the strongest emphasis; bluey and violet identify shields, automation,
+// and low-density material, while black keeps the playfield spacious.
 const LCARS_BLACK = "#000000";
-const LCARS_AMBER = "#ff9900";
-const LCARS_GOLD = "#ffcc66";
-const LCARS_CORAL = "#ff8866";
-const LCARS_RED = "#cc6666";
-const LCARS_ALERT_RED = "#ff3333";
-// Green marks engaged automatic helm as a positive operational state.
-const LCARS_AUTOPILOT_GREEN = "#66ff99";
-const LCARS_LILAC = "#9999ff";
-const LCARS_LAVENDER = "#cc99cc";
-const LCARS_TEXT = "#fff4dd";
-const LCARS_PANEL = "rgba(12, 8, 18, 0.92)";
+const LCARS_ORANGE = "#eb943a";
+const LCARS_BARLEY = "#edb378";
+const LCARS_BUTTERSCOTCH = "#ea9c72";
+const LCARS_RED = "#cf4f4f";
+const LCARS_MARS = "#ff2200";
+const LCARS_BLUEY = "#8899ff";
+const LCARS_AFRICAN_VIOLET = "#baa4e5";
+const LCARS_ALMOND_CREME = "#fcc19f";
+// Lower Decks PADD starship-white makes engaged controls read as illuminated.
+const LCARS_ACTIVE_STARSHIP_WHITE = "#f3f3fc";
+const LCARS_PANEL = "rgba(0, 0, 0, 0.92)";
 // Antonio keeps the tall, narrow geometry associated with LCARS while offering
 // enough weight variation for readable data and instructions. The local
 // fallbacks preserve a condensed silhouette if the CDN font is unavailable.
@@ -127,9 +127,6 @@ const LCARS_FONT_FAMILY = 'Antonio, "Arial Narrow", "Aptos Narrow", sans-serif';
 const LCARS_BODY_FONT_FAMILY = LCARS_FONT_FAMILY;
 const LCARS_FRAME_MARGIN = 14;
 const LCARS_CONSOLE_TOP = 10;
-// This is the smallest fixed width that keeps “HELM CONTROL” and its
-// horizontal padding legible at the command-strip title size.
-const LCARS_MODE_WIDTH = 164;
 // The command strip turns the keyboard map into persistent LCARS controls.
 // Compact gaps keep the keycaps grouped at the left, while their square-like
 // width makes the keyboard map immediately recognizable.
@@ -148,11 +145,11 @@ const SHIP_MAX_STATE = 100;
 const SHIELD_REGENERATION_RATE = 7.5;
 // The shield always encloses the physical collision body. Charge changes its
 // LCARS color and strength, never its radius or coverage. Color blends through
-// amber at half charge to red at one quarter; a depleted rim remains visible.
+// orange at half charge to Mars red at one quarter; a depleted rim remains visible.
 const SHIELD_WARNING_RATIO = 0.5;
 const SHIELD_CRITICAL_RATIO = 0.25;
-// Cyan distinguishes temporary spawn immunity from ordinary charge colors.
-const SHIELD_SPAWN_IMMUNITY_COLOR = "#66ddff";
+// Classic bluey distinguishes temporary spawn immunity from charge colors.
+const SHIELD_SPAWN_IMMUNITY_COLOR = LCARS_BLUEY;
 const SHIELD_RIM_WIDTH = 3;
 const SHIELD_DEPLETED_OPACITY = 0.28;
 // A broad, faint stroke suggests a force field without expensive shadow blur
@@ -202,6 +199,8 @@ const RED_ALERT_BLINK_INTERVAL_MILLISECONDS = 450;
 const ALERT_EDGE_GAP = 12;
 // Unlit LCD legends remain barely visible; active text is painted over them.
 const ALERT_LCD_SILHOUETTE_OPACITY = 0.08;
+// Heat deserves a stronger idle reminder than alerts that may never activate.
+const OVERHEATING_LCD_SILHOUETTE_OPACITY = 0.14;
 // Overlapping automation legends use a quieter ghost so the active mode wins.
 const AUTO_LCD_SILHOUETTE_OPACITY = 0.05;
 // Three active-play seconds protect every friendly hull at every field start.
@@ -296,19 +295,19 @@ const ROUND_ACHIEVEMENTS = Object.freeze([
         id: "friendly-fire",
         title: "FRIENDLY FIRE",
         glyph: FRIENDLY_FIRE_ACHIEVEMENT_GLYPH,
-        color: LCARS_ALERT_RED,
+        color: LCARS_MARS,
     }),
     Object.freeze({
         id: "wolf-359",
         title: "WOLF 359",
         glyph: WOLF_359_ACHIEVEMENT_GLYPH,
-        color: LCARS_AMBER,
+        color: LCARS_ORANGE,
     }),
     Object.freeze({
         id: "rammer",
         title: "RAMMER",
         glyph: RAMMER_ACHIEVEMENT_GLYPH,
-        color: LCARS_CORAL,
+        color: LCARS_BUTTERSCOTCH,
     }),
 ]);
 
@@ -644,12 +643,12 @@ const SPARK_MAX_INTENSITY = 1.0;
 const SPARK_CORE_RADIUS = 3;
 const SPARK_GLOW_RADIUS = 10;
 const SPARK_GLOW_ALPHA = 0.18;
-const SPARK_COLOR = LCARS_GOLD;
+const SPARK_COLOR = LCARS_BARLEY;
 // --- Captain transporter presentation ---
 // A short cyan shimmer connects hulls while control transfers immediately.
 // Fixed particle counts and deterministic phases never consume combat randomness.
 const CAPTAIN_TRANSPORT_SECONDS = 0.9;
-const CAPTAIN_TRANSPORT_COLOR = "#99ddff";
+const CAPTAIN_TRANSPORT_COLOR = LCARS_BLUEY;
 const CAPTAIN_TRANSPORT_COLUMN_COUNT = 12;
 // Columns extend beyond the hull to distinguish transport from shield impacts.
 const CAPTAIN_TRANSPORT_HEIGHT = STARSHIP_RADIUS * 3;
@@ -757,8 +756,8 @@ const PAUSE_BACKDROP_ALPHA = 0.44;
 // The arena boundary is a gameplay hazard, so its warm gradient and soft
 // bloom should be visible without obscuring the ship or asteroid silhouettes.
 const WALL_GLOW_THICKNESS = 14;
-const WALL_GLOW_COLOR = "rgba(204, 102, 102, 0.88)";
-const WALL_GLOW_FADE_COLOR = "rgba(204, 102, 102, 0)";
+const WALL_GLOW_COLOR = "rgba(207, 79, 79, 0.88)";
+const WALL_GLOW_FADE_COLOR = "rgba(207, 79, 79, 0)";
 // Each field keeps a minimum playable rock presence while removing one rock
 // for every additional Borg cube, shifting late fields toward fleet combat.
 const ASTEROID_BASE_COUNT = 8;
@@ -1895,7 +1894,7 @@ class Asteroid {
         context.closePath();
         context.fillStyle = this.materialColor;
         context.fill();
-        context.strokeStyle = LCARS_GOLD;
+        context.strokeStyle = LCARS_BARLEY;
         context.globalAlpha = 0.72;
         context.lineWidth = 1.5;
         context.stroke();
@@ -2762,7 +2761,7 @@ class BorgCube extends Asteroid {
             if (face.impact > 0) {
                 const progress = 1 - face.impact / BORG_IMPACT_SECONDS;
                 context.globalAlpha = (1 - progress) * 0.9;
-                context.strokeStyle = face.resistance > 0.35 ? BORG_GREEN : LCARS_GOLD;
+                context.strokeStyle = face.resistance > 0.35 ? BORG_GREEN : LCARS_BARLEY;
                 context.lineWidth = 1 + (1 - face.resistance) * 3;
                 context.beginPath();
                 context.ellipse(
@@ -3353,9 +3352,9 @@ class Bullet {
         // Transparent ends soften the phaser silhouette; its origin retains
         // the same color even after a ricochet.
         gradient.addColorStop(0, "rgba(0, 0, 0, 0)");
-        gradient.addColorStop(0.3, this.materialColor ?? LCARS_AMBER);
-        gradient.addColorStop(0.5, this.materialColor ?? LCARS_GOLD);
-        gradient.addColorStop(0.7, this.materialColor ?? LCARS_AMBER);
+        gradient.addColorStop(0.3, this.materialColor ?? LCARS_ORANGE);
+        gradient.addColorStop(0.5, this.materialColor ?? LCARS_BARLEY);
+        gradient.addColorStop(0.7, this.materialColor ?? LCARS_ORANGE);
         gradient.addColorStop(1, "rgba(0, 0, 0, 0)");
         return gradient;
     }
@@ -5008,7 +5007,7 @@ function drawStatusBars(width) {
         {
             label: "SHIELD",
             state: playerShip.displayedShieldState,
-            color: LCARS_LILAC,
+            color: LCARS_BLUEY,
         },
         {
             label: "HULL",
@@ -5016,10 +5015,10 @@ function drawStatusBars(width) {
             // Keep a steady warning visible even when the console has no text gap.
             color:
                 alertLevel === 2
-                    ? LCARS_ALERT_RED
+                    ? LCARS_MARS
                     : alertLevel === 1
-                        ? LCARS_GOLD
-                        : LCARS_CORAL,
+                        ? LCARS_BARLEY
+                        : LCARS_BUTTERSCOTCH,
         },
     ];
 
@@ -5085,20 +5084,22 @@ function drawAlert(controlRightX, statusBarsLeft) {
         0;
     const autopilotEnabled = playerShip.controls.autopilotEnabled;
     const autoGunnerEnabled = playerShip.controls.autoGunnerEnabled;
+    const automatedHelmActive =
+        autopilotEnabled || playerShip.controls.wallAvoidanceActive;
     // The three automation legends share one LCD position. Showing exactly one
     // active label makes the current division of helm and weapons unambiguous.
     const automationLabel =
-        autopilotEnabled && autoGunnerEnabled
+        automatedHelmActive && autoGunnerEnabled
             ? "AUTO FULL"
-            : autopilotEnabled
+            : automatedHelmActive
                 ? "AUTOPILOT"
                 : "AUTO-GUNNER";
-    const automationActive = autopilotEnabled || autoGunnerEnabled;
+    const automationActive = automatedHelmActive || autoGunnerEnabled;
     const lanes = [
         {
             text: alertLevel === 2 ? "RED ALERT" : "YELLOW ALERT",
             visible: alertLevel > 0,
-            color: alertLevel === 2 ? LCARS_ALERT_RED : LCARS_GOLD,
+            color: alertLevel === 2 ? LCARS_MARS : LCARS_BARLEY,
             blinking: alertLevel === 2,
         },
         {
@@ -5106,7 +5107,7 @@ function drawAlert(controlRightX, statusBarsLeft) {
             visible:
                 playerShip.phaserHeat >
                 PHASER_OVERHEAT_THRESHOLD * PHASER_WARNING_HEAT_RATIO,
-            color: LCARS_CORAL,
+            color: LCARS_BUTTERSCOTCH,
             blinking: false,
         },
     ];
@@ -5130,36 +5131,36 @@ function drawAlert(controlRightX, statusBarsLeft) {
         {
             text: automationLabel,
             active: automationActive,
-            color: LCARS_AUTOPILOT_GREEN,
+            color: LCARS_BLUEY,
         },
         {
             text: "COLLISION COURSE",
             active: playerShip.controls.wallAvoidanceActive,
-            color: LCARS_GOLD,
+            color: LCARS_BARLEY,
         },
     ];
     const leftLegends = [
         {
             text: "AUTOPILOT",
-            color: LCARS_AUTOPILOT_GREEN,
+            color: LCARS_BLUEY,
             opacity: AUTO_LCD_SILHOUETTE_OPACITY,
             index: 0,
         },
         {
             text: "AUTO-GUNNER",
-            color: LCARS_AUTOPILOT_GREEN,
+            color: LCARS_BLUEY,
             opacity: AUTO_LCD_SILHOUETTE_OPACITY,
             index: 0,
         },
         {
             text: "AUTO FULL",
-            color: LCARS_AUTOPILOT_GREEN,
+            color: LCARS_BLUEY,
             opacity: AUTO_LCD_SILHOUETTE_OPACITY,
             index: 0,
         },
         {
             text: "COLLISION COURSE",
-            color: LCARS_GOLD,
+            color: LCARS_BARLEY,
             opacity: ALERT_LCD_SILHOUETTE_OPACITY,
             index: 1,
         },
@@ -5207,14 +5208,20 @@ function drawAlert(controlRightX, statusBarsLeft) {
         context.textAlign = "right";
     }
     const legends = [
-        { text: "RED ALERT", color: LCARS_ALERT_RED, index: 0 },
-        { text: "YELLOW ALERT", color: LCARS_GOLD, index: 0 },
-        { text: "OVERHEATING", color: LCARS_CORAL, index: 1 },
+        { text: "RED ALERT", color: LCARS_MARS, index: 0 },
+        { text: "YELLOW ALERT", color: LCARS_BARLEY, index: 0 },
+        {
+            text: "OVERHEATING",
+            color: LCARS_BUTTERSCOTCH,
+            opacity: OVERHEATING_LCD_SILHOUETTE_OPACITY,
+            index: 1,
+        },
     ];
     for (const legend of legends) {
         if (context.measureText(legend.text).width > availableWidth) continue;
         context.fillStyle = legend.color;
-        context.globalAlpha = ALERT_LCD_SILHOUETTE_OPACITY;
+        context.globalAlpha =
+            legend.opacity ?? ALERT_LCD_SILHOUETTE_OPACITY;
         context.fillText(legend.text, alertRight, laneY(legend.index));
     }
     for (const [index, lane] of lanes.entries()) {
@@ -5249,7 +5256,7 @@ function drawPhraseBackground(width, height) {
 
     context.save();
     context.font = `${PHRASE_FONT_WEIGHT} ${fontSize}px ${PHRASE_FONT_FAMILY}`;
-    context.fillStyle = LCARS_LAVENDER;
+    context.fillStyle = LCARS_AFRICAN_VIOLET;
     context.globalAlpha = PHRASE_OPACITY;
     context.textAlign = "center";
     context.textBaseline = "alphabetic";
@@ -5263,7 +5270,7 @@ function drawPhraseBackground(width, height) {
     }
 
     if (alertLevel > 0) {
-        context.fillStyle = alertLevel === 2 ? LCARS_ALERT_RED : LCARS_GOLD;
+        context.fillStyle = alertLevel === 2 ? LCARS_MARS : LCARS_BARLEY;
         context.fillText(
             PHRASE_ALERT_LINES[alertLevel],
             width / 2,
@@ -5556,7 +5563,7 @@ function drawStarship(ship) {
         context.rotate(ship.angle);
         context.scale(STARSHIP_RADIUS, STARSHIP_RADIUS);
         context.globalAlpha = FRIENDLY_WRECK_OPACITY;
-        context.fillStyle = LCARS_LAVENDER;
+        context.fillStyle = LCARS_AFRICAN_VIOLET;
         context.fill(STARSHIP_SILHOUETTE);
         context.strokeStyle = LCARS_BLACK;
         context.lineWidth = 3 / STARSHIP_RADIUS;
@@ -5583,8 +5590,8 @@ function drawStarship(ship) {
         ship.spawnImmunityRemaining > 0
             ? SHIELD_SPAWN_IMMUNITY_COLOR
             : blendShieldColors(
-                  healthy ? LCARS_AMBER : LCARS_ALERT_RED,
-                  healthy ? LCARS_LILAC : LCARS_AMBER,
+                  healthy ? LCARS_ORANGE : LCARS_MARS,
+                  healthy ? LCARS_BLUEY : LCARS_ORANGE,
                   colorFraction,
               );
     context.beginPath();
@@ -5602,15 +5609,15 @@ function drawStarship(ship) {
     context.rotate(ship.angle);
     context.scale(STARSHIP_RADIUS, STARSHIP_RADIUS);
     // Hull identity remains visible regardless of helm mode or shield charge.
-    context.fillStyle = ship === playerShip ? LCARS_GOLD : LCARS_LAVENDER;
+    context.fillStyle = ship === playerShip ? LCARS_BARLEY : LCARS_AFRICAN_VIOLET;
     context.fill(STARSHIP_SILHOUETTE);
     context.strokeStyle = LCARS_BLACK;
     context.lineWidth = 1 / STARSHIP_RADIUS;
     context.stroke(STARSHIP_SILHOUETTE);
-    context.strokeStyle = LCARS_LILAC;
+    context.strokeStyle = LCARS_BLUEY;
     context.lineWidth = 2 / STARSHIP_RADIUS;
     context.stroke(STARSHIP_DETAILS);
-    context.fillStyle = LCARS_CORAL;
+    context.fillStyle = LCARS_BUTTERSCOTCH;
     context.fill(STARSHIP_HEADING_MARKER);
     context.restore();
 }
@@ -5630,9 +5637,9 @@ function drawGame(width, height) {
     context.translate(0, LCARS_CONSOLE_HEIGHT);
     context.save();
     context.globalAlpha = STARFIELD_OPACITY;
-    context.fillStyle = LCARS_LILAC;
+    context.fillStyle = LCARS_BLUEY;
     context.fill(starfieldPaths[0]);
-    context.fillStyle = LCARS_TEXT;
+    context.fillStyle = LCARS_ALMOND_CREME;
     context.fill(starfieldPaths[1]);
     context.restore();
     drawPhraseBackground(width, playfieldHeight);
@@ -5695,7 +5702,7 @@ function drawAimAssist(width, height) {
     context.beginPath();
     context.rect(0, 0, width, height);
     context.clip();
-    context.strokeStyle = LCARS_GOLD;
+    context.strokeStyle = LCARS_BARLEY;
     context.lineWidth = 1.5;
     context.beginPath();
     context.arc(
@@ -5754,8 +5761,8 @@ function drawStarfleetFocus(width, height) {
     context.beginPath();
     context.rect(0, 0, width, height);
     context.clip();
-    context.strokeStyle = LCARS_LAVENDER;
-    context.fillStyle = LCARS_LAVENDER;
+    context.strokeStyle = LCARS_AFRICAN_VIOLET;
+    context.fillStyle = LCARS_AFRICAN_VIOLET;
     context.lineWidth = 2;
     context.font = `700 12px ${LCARS_FONT_FAMILY}`;
     context.textAlign = "center";
@@ -5924,8 +5931,8 @@ function drawBorgFocusLock(width, height) {
 
 /**
  * Draw one LCARS control button with a large command and smaller action.
- * Active controls receive a bright inset, keeping their base color and label
- * readable while making held manual and autopilot input equally visible.
+ * Active controls receive a bright accent inset, keeping their base color
+ * and label readable while making held manual and autopilot input equally visible.
  * @param {number} x Left edge in CSS pixels.
  * @param {number} y Top edge in CSS pixels.
  * @param {number} width Button width in CSS pixels.
@@ -5934,7 +5941,6 @@ function drawBorgFocusLock(width, height) {
  * @param {string} detail Small action label.
  * @param {string} color Resting LCARS fill color.
  * @param {boolean} active Whether the control is currently engaged.
- * @param {boolean} [leftCap=false] Whether to round the left end of the row.
  * @returns {void}
  */
 function drawFlightControlButton(
@@ -5946,16 +5952,15 @@ function drawFlightControlButton(
     detail,
     color,
     active,
-    leftCap = false,
 ) {
     context.save();
     context.fillStyle = color;
     context.beginPath();
-    context.roundRect(x, y, width, height, leftCap ? [height / 2, 4, 4, 4] : 4);
+    context.roundRect(x, y, width, height, 4);
     context.fill();
 
     if (active) {
-        context.strokeStyle = LCARS_TEXT;
+        context.strokeStyle = LCARS_ACTIVE_STARSHIP_WHITE;
         context.lineWidth = FLIGHT_CONTROL_ACTIVE_INSET;
         context.beginPath();
         context.roundRect(
@@ -5963,7 +5968,7 @@ function drawFlightControlButton(
             y + FLIGHT_CONTROL_ACTIVE_INSET / 2,
             Math.max(0, width - FLIGHT_CONTROL_ACTIVE_INSET),
             Math.max(0, height - FLIGHT_CONTROL_ACTIVE_INSET),
-            leftCap ? [height / 2, 3, 3, 3] : 3,
+            3,
         );
         context.stroke();
     }
@@ -6002,13 +6007,15 @@ function drawFlightControls(width) {
         return undefined;
     }
 
-    const titleWidth = Math.min(
-        LCARS_MODE_WIDTH,
-        Math.max(0, width - LCARS_FRAME_MARGIN * 2),
-    );
     const statusWidth = Math.min(
         STATUS_BAR_WIDTH,
-        Math.max(0, width - LCARS_FRAME_MARGIN * 2 - titleWidth - 12),
+        Math.max(
+            0,
+            width -
+                LCARS_FRAME_MARGIN * 2 -
+                FLIGHT_CONTROL_KEY_WIDTH -
+                FLIGHT_CONTROL_GAP * 2,
+        ),
     );
     const rowWidth = Math.max(
         0,
@@ -6019,9 +6026,8 @@ function drawFlightControls(width) {
     const rowScale = Math.min(
         1,
         rowWidth /
-        (titleWidth +
-            desiredKeyWidth * keyButtonCount +
-            FLIGHT_CONTROL_GAP * keyButtonCount),
+        (desiredKeyWidth * keyButtonCount +
+            FLIGHT_CONTROL_GAP * (keyButtonCount - 1)),
     );
     const buttonHeight = STATUS_BARS_HEIGHT;
     let buttonX = LCARS_FRAME_MARGIN;
@@ -6029,47 +6035,48 @@ function drawFlightControls(width) {
         [
             AUTOPILOT_TOGGLE_KEY_LABEL,
             "AUTOPILOT",
-            LCARS_AMBER,
-            playerShip.controls.autopilotEnabled,
+            LCARS_ORANGE,
+            playerShip.controls.autopilotEnabled ||
+                playerShip.controls.wallAvoidanceActive,
         ],
         [
             AUTO_GUNNER_TOGGLE_KEY_LABEL,
             "AUTO-GUNNER",
-            LCARS_GOLD,
+            LCARS_BARLEY,
             playerShip.controls.autoGunnerEnabled,
         ],
-        [PAUSE_KEY_LABEL, "PAUSE", LCARS_CORAL, gamePaused],
+        [PAUSE_KEY_LABEL, "PAUSE", LCARS_BUTTERSCOTCH, gamePaused],
         [
             AIM_ASSIST_TOGGLE_KEY_LABEL,
             "AIM ASSIST",
-            LCARS_GOLD,
+            LCARS_BARLEY,
             playerShip.aimAssist.enabled,
         ],
         [
             "W⏶",
             "THRUST",
-            LCARS_LILAC,
+            LCARS_BLUEY,
             playerShip.controls.pressedKeys.has("KeyW") ||
             playerShip.controls.pressedKeys.has("ArrowUp"),
         ],
         [
             "S⏷",
             "BRAKE",
-            LCARS_LAVENDER,
+            LCARS_AFRICAN_VIOLET,
             playerShip.controls.pressedKeys.has("KeyS") ||
             playerShip.controls.pressedKeys.has("ArrowDown"),
         ],
         [
             "A⏴",
             "TURN CCW",
-            LCARS_LILAC,
+            LCARS_BLUEY,
             playerShip.controls.pressedKeys.has("KeyA") ||
             playerShip.controls.pressedKeys.has("ArrowLeft"),
         ],
         [
             "D⏵",
             "TURN CW",
-            LCARS_LAVENDER,
+            LCARS_AFRICAN_VIOLET,
             playerShip.controls.pressedKeys.has("KeyD") ||
             playerShip.controls.pressedKeys.has("ArrowRight"),
         ],
@@ -6081,31 +6088,11 @@ function drawFlightControls(width) {
                     ? `HOT ${Math.max(0, (playerShip.phaserHeat - PHASER_OVERHEAT_THRESHOLD) / PHASER_COOLING_RATE).toFixed(1)}s`
                     : `HEAT ${Math.round((playerShip.phaserHeat / PHASER_OVERHEAT_THRESHOLD) * 100)}%`,
             playerShip.phaserHeat >= PHASER_OVERHEAT_THRESHOLD
-                ? LCARS_CORAL
-                : LCARS_AMBER,
+                ? LCARS_BUTTERSCOTCH
+                : LCARS_ORANGE,
             playerShip.controls.pressedKeys.has(FIRE_KEY),
         ],
     ];
-
-    drawFlightControlButton(
-        buttonX,
-        LCARS_CONSOLE_TOP,
-        titleWidth * rowScale,
-        buttonHeight,
-        "HELM CONTROL",
-        playerShip.controls.wallAvoidanceActive ||
-            playerShip.controls.autopilotEnabled
-            ? "AUTOPILOT"
-            : "MANUAL HELM",
-        playerShip.controls.wallAvoidanceActive ||
-            playerShip.controls.autopilotEnabled
-            ? LCARS_AMBER
-            : LCARS_LILAC,
-        playerShip.controls.autopilotEnabled ||
-            playerShip.controls.wallAvoidanceActive,
-        true,
-    );
-    buttonX += titleWidth * rowScale + FLIGHT_CONTROL_GAP * rowScale;
 
     for (const [title, detail, color, active] of controls) {
         drawFlightControlButton(
@@ -6187,14 +6174,14 @@ function drawShipFailure(width, height) {
 
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillStyle = LCARS_CORAL;
+    context.fillStyle = LCARS_BUTTERSCOTCH;
     context.font = `700 42px ${LCARS_FONT_FAMILY}`;
     context.fillText("FLEET DESTROYED", SHIP_FAILURE_PANEL_WIDTH / 2, 82);
-    context.fillStyle = LCARS_TEXT;
+    context.fillStyle = LCARS_ALMOND_CREME;
     context.font = `500 22px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(SHIP_FAILURE_REASON, SHIP_FAILURE_PANEL_WIDTH / 2, 142);
     drawRoundAchievements(SHIP_FAILURE_PANEL_WIDTH, 182);
-    context.fillStyle = LCARS_AMBER;
+    context.fillStyle = LCARS_ORANGE;
     context.font = `600 23px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
         `RETRY ROUND IN ${Math.max(1, Math.ceil(shipFailureTimeRemaining))}`,
@@ -6238,12 +6225,12 @@ function drawAchievementBadge(achievement, x, y) {
     context.fill(achievement.glyph);
     context.restore();
 
-    context.fillStyle = achievement.id === "friendly-fire" ? LCARS_BLACK : LCARS_LILAC;
+    context.fillStyle = achievement.id === "friendly-fire" ? LCARS_BLACK : LCARS_BLUEY;
     context.fillRect(iconX, ACHIEVEMENT_ICON_SIZE + 6, 24, 4);
     context.fillRect(iconX + 30, ACHIEVEMENT_ICON_SIZE + 6, 42, 4);
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillStyle = LCARS_TEXT;
+    context.fillStyle = LCARS_ALMOND_CREME;
     context.font = `700 18px ${LCARS_FONT_FAMILY}`;
     context.fillText(
         achievement.title,
@@ -6266,7 +6253,7 @@ function drawRoundAchievements(panelWidth, y) {
     );
     if (unlockedAchievements.length === 0) return;
 
-    context.fillStyle = LCARS_LILAC;
+    context.fillStyle = LCARS_BLUEY;
     context.font = `600 18px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText("ACHIEVEMENTS", panelWidth / 2, y);
     for (const [index, achievement] of unlockedAchievements.entries()) {
@@ -6328,14 +6315,14 @@ function drawWinScreen(width, height) {
 
     context.translate(panelX, panelY);
     context.scale(winScale, winScale);
-    drawLCARSOverlayFrame(WIN_SCREEN_PANEL_WIDTH, panelHeight, LCARS_LILAC);
+    drawLCARSOverlayFrame(WIN_SCREEN_PANEL_WIDTH, panelHeight, LCARS_BLUEY);
 
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillStyle = LCARS_GOLD;
+    context.fillStyle = LCARS_BARLEY;
     context.font = `700 46px ${LCARS_FONT_FAMILY}`;
     context.fillText(WIN_SCREEN_TITLE, WIN_SCREEN_PANEL_WIDTH / 2, 86);
-    context.fillStyle = LCARS_TEXT;
+    context.fillStyle = LCARS_ALMOND_CREME;
     context.font = `500 22px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
         `PRESS ${PAUSE_KEY_LABEL} FOR NEXT ROUND`,
@@ -6384,14 +6371,14 @@ function drawPauseHelp(width, height) {
 
     context.translate(panelX, panelY);
     context.scale(helpScale, helpScale);
-    drawLCARSOverlayFrame(HELP_PANEL_WIDTH, HELP_PANEL_HEIGHT, LCARS_LAVENDER);
+    drawLCARSOverlayFrame(HELP_PANEL_WIDTH, HELP_PANEL_HEIGHT, LCARS_AFRICAN_VIOLET);
 
     context.textAlign = "center";
     context.textBaseline = "middle";
-    context.fillStyle = LCARS_GOLD;
+    context.fillStyle = LCARS_BARLEY;
     context.font = `800 32px ${LCARS_FONT_FAMILY}`;
     context.fillText("SIMULATION PAUSED", HELP_PANEL_WIDTH / 2, 82);
-    context.fillStyle = LCARS_LILAC;
+    context.fillStyle = LCARS_BLUEY;
     context.font = `600 18px ${LCARS_BODY_FONT_FAMILY}`;
     context.fillText(
         `Press ${PAUSE_KEY_LABEL} to resume`,
@@ -6405,13 +6392,13 @@ function drawPauseHelp(width, height) {
         const helpItem = PLAY_HELP[helpIndex];
         const rowY = 166 + helpIndex * 42;
 
-        context.fillStyle = helpIndex % 2 === 0 ? LCARS_AMBER : LCARS_LILAC;
+        context.fillStyle = helpIndex % 2 === 0 ? LCARS_ORANGE : LCARS_BLUEY;
         context.beginPath();
         context.roundRect(70, rowY - 16, 112, 30, [15, 3, 3, 15]);
         context.fill();
         context.fillStyle = LCARS_BLACK;
         context.fillText(helpItem.label, 82, rowY);
-        context.fillStyle = LCARS_TEXT;
+        context.fillStyle = LCARS_ALMOND_CREME;
         context.font = `500 18px ${LCARS_BODY_FONT_FAMILY}`;
         context.fillText(helpItem.description, 208, rowY);
         context.font = `700 18px ${LCARS_FONT_FAMILY}`;
