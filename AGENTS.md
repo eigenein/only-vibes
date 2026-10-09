@@ -48,6 +48,6 @@ We are building a classic single-page "Asteroids" game in pure HTML and JavaScri
 - May add debug console output.
 - Must not rely merely on code analysis.
 - May temporarily change the code to isolate certain behaviour; must revert it back when done.
-- Must verify on different browser window sizes when applicable.
+- Must verify on different browser window sizes when changing the UI.
 - May control the browser window.
 - Must not ask to control the computer.

@@ -67,10 +67,10 @@ const BORG_MASS_MULTIPLIER = 33.2;
 // The shield circle is the collision boundary. The saucer and nacelles stay
 // inside it at every heading, preserving a circular collision boundary.
 const STARSHIP_RADIUS = 28 * WORLD_BODY_SCALE;
-// Support hulls stay readable while giving the player's gold ship priority.
-const FRIENDLY_STARSHIP_OPACITY = 0.72;
+// Translucent support hulls keep the fully opaque gold player ship unmistakable.
+const FRIENDLY_STARSHIP_OPACITY = 0.5;
 // Unlit wrecks retain a visible collision silhouette after losing their shields.
-const FRIENDLY_WRECK_OPACITY = 0.5;
+const FRIENDLY_WRECK_OPACITY = 0.35;
 // Ship mass retains the shared phaser calibration with a 20% hull mass increase.
 const STARSHIP_MASS = 1200 * BODY_MASS_COMPENSATION;
 // This inertia is only the scale used to convert a collision's angular impulse
@@ -510,8 +510,8 @@ const BORG_FOCUS_LOCK_COLOR = "#77ff88";
 const BORG_FOCUS_LOCK_ACCENT = "#b4ffbe";
 const BORG_FOCUS_LOCK_BEAM = "rgba(119, 255, 136, 0.35)";
 
-// Each victory adds one helper to the repaired survivors. Keep their fresh
-// formation separated from the player's spawn point.
+// Each victory adds one helper to the field's configured starting fleet,
+// regardless of losses. Keep their fresh formation separated from the player.
 const HELPER_SPAWN_DISTANCE = STARSHIP_RADIUS * 4;
 // Developer cheats are intentionally omitted from the bridge and paused help.
 const DEVELOPER_BORG_SPAWN_KEY = "KeyB";
@@ -3623,7 +3623,7 @@ function generateAsteroids(width, height) {
 
 /**
  * Rebuild the friendly fleet from the round's configured starting count.
- * Victory updates that count to survivors plus one; defeat preserves it.
+ * Victory adds one ship to that count; defeat preserves it.
  * Helpers use the same ordinary autopilot and weapon gates as the player.
  * Their input is exposed to DOM controls only when the captain takes their helm. Retain that
  * controlled instance at index zero when rebuilding for the next field.
@@ -4808,12 +4808,11 @@ function updateAlert(ship, deltaTime) {
  * @returns {void}
  */
 function restartGame(width, height) {
-    // Only victory changes the next fleet. Count before clearing any bodies:
-    // friendlies include the live player; cubes include defeated drifting wrecks.
-    // Developer-spawned bodies count on victory, but never change retry numbers.
+    // Only victory advances the next fleet. Friendly losses and developer-spawned
+    // helpers do not affect its steady one-ship growth. Cubes include wrecks and
+    // developer-spawned bodies; retries preserve both configured starting counts.
     if (gameWon) {
-        roundStartingFleet.friendlies =
-            starships.filter((ship) => ship.alive).length + 1;
+        roundStartingFleet.friendlies += 1;
         roundStartingFleet.cubes = borgCubes.length + 1;
     }
     roundAchievements.clear();

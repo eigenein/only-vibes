@@ -58,11 +58,12 @@ Borg target ships by combat conditions, without a special player preference.
 The round ends in defeat only when the entire friendly fleet is destroyed.
 
 The first field contains only asteroids and the player's ship. After victory,
-the next field starts with the number of currently live friendly ships plus one
-(including the player), and the total number of cubes plus one (including wrecks).
-Developer-spawned vehicles count toward these victory totals. Surviving friendlies
-are fully repaired; helpers are equipped with autopilot and auto-gunner. Defeat
-replays the round with its original starting fleet counts and fresh bodies.
+the next field adds one friendly to the current field's starting fleet regardless
+of losses, and starts with the total number of cubes plus one (including wrecks).
+Developer-spawned cubes count toward the next cube total; spawned friendlies do not
+change the steady one-ship growth. Every friendly is rebuilt at full strength, and
+helpers are equipped with autopilot and auto-gunner. Defeat replays the round with
+its original starting fleet counts and fresh bodies.
 
 Autopilot (`T`) pilots close-range attack passes, interception, and ramming.
 Every 1.2 seconds it rolls for an attack pass: healthy shields favor closing
@@ -92,7 +93,8 @@ brief wait until firing becomes available.
 
 ### Combat cues
 
-Gold identifies your ship and faint lavender identifies friendly support.
+Opaque gold identifies your ship and translucent lavender identifies friendly
+support.
 Destroyed helpers appear as dark fractured hulls without shields or bow lights.
 The coral OVERHEATING indicator lights above 80% phaser heat. The shared green
 automation indicator reads AUTOPILOT, AUTO-GUNNER, or AUTO FULL according to
