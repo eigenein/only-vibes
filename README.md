@@ -157,9 +157,9 @@ area removed, plus 8,000 for defeating the cube.
 ### Achievements
 
 Result screens show achievements earned in the completed round only.
-**Friendly Fire** requires killing a friendly helper with Starfleet phasers;
-**Wolf 359** requires losing a friendly helper to Borg fire or a collision with
-a cube (including its wreck). **Rammer** requires
+**Friendly Fire** requires killing a friendly helper with Starfleet phasers or
+by ramming; **Wolf 359** requires losing any Starfleet vessel to Borg fire or a
+collision with a cube (including its wreck). **Rammer** requires
 dealing more asteroid damage by ramming than by phasers during that round.
 
 ### Borg cube

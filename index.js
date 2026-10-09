@@ -251,7 +251,7 @@ const WIN_SCREEN_PANEL_WIDTH = 560;
 // rows; viewport scaling keeps every unlocked icon and its caption visible.
 const WIN_SCREEN_PANEL_HEIGHT = 274;
 const WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT = 120;
-// Wolf 359 recognizes a friendly helper lost to Borg fire or a cube collision.
+// Wolf 359 recognizes any vessel lost to Borg fire or a cube collision.
 // A looming cube above a broken Starfleet hull uses the shared vector style.
 const WOLF_359_ACHIEVEMENT_GLYPH = new Path2D(
     "M 20 6 L 44 6 L 54 16 L 54 34 L 30 34 L 20 24 Z " +
@@ -961,7 +961,7 @@ class ShipControls {
  * Identical ships share geometry and tuning, but own their motion, defenses,
  * damage protection and weapon state. Each controller owns independent
  * tactical state; helper controllers can supply input without sharing a hull or
- * weapon cooldown. World contacts award helper-loss achievements; the bridge
+ * weapon cooldown. Combat contacts award achievement unlocks; the bridge
  * observes the player hull to trigger its destruction screen.
  * @implements {PhysicsBody}
  */
@@ -7619,12 +7619,14 @@ function resolveBulletCollisions(width, height) {
                     hitPoint,
                 );
                 ship.applyWeaponDamage(contactImpulseMagnitude(bulletImpulse));
-                // Attribute lethal helper weapon hits to the firing faction.
-                // Cube-contact losses are handled by the body collision pass.
-                if (ship !== playerShip && !ship.alive) {
-                    roundAchievements.add(
-                        bullet.source === "borg" ? "wolf-359" : "friendly-fire",
-                    );
+                // Attribute lethal weapon hits: any vessel lost to Borg fire earns
+                // Wolf 359, while friendly-fire badges require losing a helper.
+                if (!ship.alive) {
+                    if (bullet.source === "borg") {
+                        roundAchievements.add("wolf-359");
+                    } else if (ship !== playerShip) {
+                        roundAchievements.add("friendly-fire");
+                    }
                 }
                 if (bulletImpulse.normalImpulse > COLLISION_EPSILON) {
                     empSound.playRandom();
@@ -8354,9 +8356,9 @@ function resolveBorgCollisions(contactAsteroids = asteroids.slice()) {
                 if (response !== undefined) {
                     const impulse = contactImpulseMagnitude(response);
                     ship.applyCollisionDamage(impulse);
-                    // Cube hulls remain dangerous after defeat, so lethal
-                    // helper collisions with live cubes or wrecks qualify.
-                    if (ship !== playerShip && !ship.alive) {
+                    // Cube hulls remain dangerous after defeat, so any lethal
+                    // vessel collision with a live cube or wreck qualifies.
+                    if (!ship.alive) {
                         roundAchievements.add("wolf-359");
                     }
                     applyShipCollisionAngleAdjustment(response, ship);
@@ -8413,6 +8415,12 @@ function resolveStarshipCollisions() {
             const impulse = contactImpulseMagnitude(response);
             ship.applyCollisionDamage(impulse);
             other.applyCollisionDamage(impulse);
+            if (
+                (ship !== playerShip && !ship.alive) ||
+                (other !== playerShip && !other.alive)
+            ) {
+                roundAchievements.add("friendly-fire");
+            }
             applyShipCollisionAngleAdjustment(response, ship);
             applyShipCollisionAngleAdjustment(
                 {
@@ -8421,6 +8429,7 @@ function resolveStarshipCollisions() {
                 },
                 other,
             );
+            if (!ship.alive) break;
         }
     }
 }
