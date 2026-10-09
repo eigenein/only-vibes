@@ -197,10 +197,10 @@ locks for the final 0.15 seconds of the charge, when the cue turns pale green.
 The warning shows the exact firing angle, with no random spread. The cube fires
 a thick green pulse along that committed heading. Its speed and physical impact
 rules match starship phasers, but its heavier mass removes about 20% of a full
-shield in a stationary head-on hit: it cuts asteroids, damages ships and live cubes,
-and transfers impulse. It disappears on first contact with any body or wall,
-with no ricochets and no immunity for allied cubes. The cube receives matching
-recoil when firing. Changing course after aim locks or while the pulse travels
+shield in a stationary head-on hit: it cuts asteroids and damages ships and live
+cubes without changing a vessel's momentum. It disappears on first contact with
+any body or wall, with no ricochets and no immunity for allied cubes. Firing does
+not recoil the cube. Changing course after aim locks or while the pulse travels
 gives room to dodge.
 
 Bright green links with moving pulses redistribute hull evenly between connected

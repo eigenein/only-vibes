@@ -536,7 +536,7 @@ const AIM_ASSIST_TARGET_PADDING = 7;
 
 // Autopilot and auto-gunner independently produce the same held controls a
 // player can use. Enabling both combines navigation and firing, with movement,
-// recoil, heat, and collisions on normal gameplay paths.
+// heat, and collisions on normal gameplay paths.
 const AUTOPILOT_TOGGLE_KEY = "KeyT";
 const AUTOPILOT_TOGGLE_KEY_LABEL = "T";
 // Auto-gunner independently contributes Space through the normal weapon gates.
@@ -1162,10 +1162,7 @@ class Starship {
         return this.hullState > COLLISION_EPSILON;
     }
 
-    /**
-     * Launch a pulse and apply recoil to its own ship.
-     * @returns {void}
-     */
+    /** @returns {void} Launch a pulse without changing the firing ship's motion. */
     emitBullet() {
         const directionX = Math.cos(this.angle);
         const directionY = Math.sin(this.angle);
@@ -1175,18 +1172,6 @@ class Starship {
             y: this.y + directionY * spawnDistance,
             angle: this.angle,
         });
-        const bulletImpulseX = bullet.mass * bullet.velocityX;
-        const bulletImpulseY = bullet.mass * bullet.velocityY;
-
-        // Firing transfers the bullet's launch impulse out of the ship. Applying
-        // equal and opposite recoil keeps the ship-plus-bullet total impulse equal
-        // to the ship's impulse before firing, while making the nudge visible even
-        // when the ship was initially at rest.
-        const recoilVelocityX = -bulletImpulseX / STARSHIP_MASS;
-        const recoilVelocityY = -bulletImpulseY / STARSHIP_MASS;
-        this.velocityX += recoilVelocityX;
-        this.velocityY += recoilVelocityY;
-
         heavyShotSound.playRandom();
         bullets.push(bullet);
     }
@@ -2444,8 +2429,7 @@ class BorgCube extends Asteroid {
 
     /**
      * Track ballistic lead while charging, then lock a visibly committed shot
-     * for the final reaction window. All clocks freeze on pause. Recoil balances
-     * the departing projectile's launch impulse.
+     * for the final reaction window. All clocks freeze on pause.
      * @param {number} deltaTime Active simulation seconds since the last step.
      * @returns {void}
      */
@@ -2468,12 +2452,6 @@ class BorgCube extends Asteroid {
                 source: "borg",
                 materialColor: BORG_GREEN,
             });
-            applyBodyImpulse(
-                this,
-                -bullet.mass * bullet.velocityX,
-                -bullet.mass * bullet.velocityY,
-                muzzle,
-            );
             bullets.push(bullet);
             this.muzzleFlash = BORG_MUZZLE_FLASH_SECONDS;
             this.fireCooldown = BORG_FIRE_INTERVAL;
@@ -7528,6 +7506,31 @@ function applyContactImpulse(
 }
 
 /**
+ * Resolve a projectile ricochet against a vessel without letting the pulse
+ * alter the vessel's linear or angular motion. The ordinary contact solver is
+ * retained for the projectile response and impact-strength calculation, while
+ * asteroid contacts continue to exchange momentum through that solver directly.
+ * @param {PhysicsBody} vessel Ship or Borg hull struck by the projectile.
+ * @param {Bullet} bullet Projectile receiving the contact response.
+ * @param {Vector2} normal Contact normal pointing toward the projectile.
+ * @param {Vector2} contactPoint World-space point of contact.
+ * @returns {ContactResponse} Hypothetical impulse used for damage and ricochet.
+ */
+function applyProjectileContact(vessel, bullet, normal, contactPoint) {
+    const velocityX = vessel.velocityX;
+    const velocityY = vessel.velocityY;
+    const angularVelocity = vessel.angularVelocity;
+    const response = applyContactImpulse(vessel, bullet, normal, contactPoint);
+
+    vessel.velocityX = velocityX;
+    vessel.velocityY = velocityY;
+    if (angularVelocity !== undefined) {
+        vessel.angularVelocity = angularVelocity;
+    }
+    return response;
+}
+
+/**
  * Use the total impulse exchanged at a contact as the collision's momentum
  * measure. Friction is included because it is part of the same interaction.
  * @param {ContactResponse} response Contact impulse response from the solver.
@@ -7705,8 +7708,8 @@ function resolveBulletCollisions(width, height) {
                     segmentEnd.y - segmentStart.y,
                 ) *
                 (1 - hitParameter);
-            // Every pulse applies the same impact response. Borg pulses are
-            // consumed immediately afterward; starship pulses may ricochet.
+            // Borg pulses are consumed immediately after impact; Starfleet
+            // pulses may ricochet. Vessel hits never alter the vessel's motion.
             const canReflect =
                 bullet.source !== "borg" &&
                 bullet.reflectionCount < MAX_BULLET_REFLECTIONS;
@@ -7721,14 +7724,6 @@ function resolveBulletCollisions(width, height) {
                 hitTarget instanceof BorgCube &&
                 hitTarget.alive
             ) {
-                // Absorption transfers the disappearing pulse's linear and angular
-                // impulse into the hull through the same rigid-body impulse helper.
-                applyBodyImpulse(
-                    hitTarget,
-                    bullet.mass * bullet.velocityX,
-                    bullet.mass * bullet.velocityY,
-                    hitPoint,
-                );
                 hitTarget.hitPhaser(hitPoint);
                 // Live cube shields consume either faction's pulse after damage.
                 // Starfleet pulses can still ricochet from rocks, ships and walls.
@@ -7752,12 +7747,20 @@ function resolveBulletCollisions(width, height) {
                     bullet.velocityX,
                     bullet.velocityY,
                 );
-                const response = applyContactImpulse(
-                    asteroid,
-                    bullet,
-                    normal,
-                    hitPoint,
-                );
+                const response =
+                    asteroid instanceof BorgCube
+                        ? applyProjectileContact(
+                              asteroid,
+                              bullet,
+                              normal,
+                              hitPoint,
+                          )
+                        : applyContactImpulse(
+                              asteroid,
+                              bullet,
+                              normal,
+                              hitPoint,
+                          );
                 if (!(asteroid instanceof BorgCube) && bullet.source === "starship")
                     recordAsteroidDamage(response, "blasters");
                 bullet.syncAngle();
@@ -7797,13 +7800,12 @@ function resolveBulletCollisions(width, height) {
                     bullet.velocityX,
                     bullet.velocityY,
                 );
-                const bulletImpulse = applyContactImpulse(
+                const bulletImpulse = applyProjectileContact(
                     ship,
                     bullet,
                     normal,
                     hitPoint,
                 );
-                applyShipCollisionAngleAdjustment(bulletImpulse, ship);
                 ship.applyWeaponDamage(contactImpulseMagnitude(bulletImpulse));
                 // Attribute lethal helper weapon hits to the firing faction.
                 // Cube-contact losses are handled by the body collision pass.
