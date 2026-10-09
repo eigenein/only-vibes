@@ -202,6 +202,8 @@ const RED_ALERT_BLINK_INTERVAL_MILLISECONDS = 450;
 const ALERT_EDGE_GAP = 12;
 // Unlit LCD legends remain barely visible; active text is painted over them.
 const ALERT_LCD_SILHOUETTE_OPACITY = 0.08;
+// Overlapping automation legends use a quieter ghost so the active mode wins.
+const AUTO_LCD_SILHOUETTE_OPACITY = 0.05;
 // Three active-play seconds protect every friendly hull at every field start.
 // Contacts retain their physical response; shields, hull and damage budget
 // remain untouched. Borg focus assignments also exclude protected ships during
@@ -5081,6 +5083,17 @@ function drawAlert(controlRightX, statusBarsLeft) {
         ) %
             2 ===
         0;
+    const autopilotEnabled = playerShip.controls.autopilotEnabled;
+    const autoGunnerEnabled = playerShip.controls.autoGunnerEnabled;
+    // The three automation legends share one LCD position. Showing exactly one
+    // active label makes the current division of helm and weapons unambiguous.
+    const automationLabel =
+        autopilotEnabled && autoGunnerEnabled
+            ? "AUTO FULL"
+            : autopilotEnabled
+                ? "AUTOPILOT"
+                : "AUTO-GUNNER";
+    const automationActive = autopilotEnabled || autoGunnerEnabled;
     const lanes = [
         {
             text: alertLevel === 2 ? "RED ALERT" : "YELLOW ALERT",
@@ -5089,12 +5102,12 @@ function drawAlert(controlRightX, statusBarsLeft) {
             blinking: alertLevel === 2,
         },
         {
-            text: "AUTOPILOT",
+            text: "OVERHEATING",
             visible:
-                playerShip.controls.autopilotEnabled ||
-                playerShip.controls.wallAvoidanceActive,
-            color: LCARS_AUTOPILOT_GREEN,
-            blinking: true,
+                playerShip.phaserHeat >
+                PHASER_OVERHEAT_THRESHOLD * PHASER_WARNING_HEAT_RATIO,
+            color: LCARS_CORAL,
+            blinking: false,
         },
     ];
 
@@ -5115,11 +5128,9 @@ function drawAlert(controlRightX, statusBarsLeft) {
     // prioritize the active emergency cue without overlapping right-side text.
     const leftLanes = [
         {
-            text: "OVERHEATING",
-            active:
-                playerShip.phaserHeat >
-                PHASER_OVERHEAT_THRESHOLD * PHASER_WARNING_HEAT_RATIO,
-            color: LCARS_CORAL,
+            text: automationLabel,
+            active: automationActive,
+            color: LCARS_AUTOPILOT_GREEN,
         },
         {
             text: "COLLISION COURSE",
@@ -5127,6 +5138,39 @@ function drawAlert(controlRightX, statusBarsLeft) {
             color: LCARS_GOLD,
         },
     ];
+    const leftLegends = [
+        {
+            text: "AUTOPILOT",
+            color: LCARS_AUTOPILOT_GREEN,
+            opacity: AUTO_LCD_SILHOUETTE_OPACITY,
+            index: 0,
+        },
+        {
+            text: "AUTO-GUNNER",
+            color: LCARS_AUTOPILOT_GREEN,
+            opacity: AUTO_LCD_SILHOUETTE_OPACITY,
+            index: 0,
+        },
+        {
+            text: "AUTO FULL",
+            color: LCARS_AUTOPILOT_GREEN,
+            opacity: AUTO_LCD_SILHOUETTE_OPACITY,
+            index: 0,
+        },
+        {
+            text: "COLLISION COURSE",
+            color: LCARS_GOLD,
+            opacity: ALERT_LCD_SILHOUETTE_OPACITY,
+            index: 1,
+        },
+    ];
+    for (const legend of leftLegends) {
+        if (context.measureText(legend.text).width > availableWidth) continue;
+        context.textAlign = "left";
+        context.fillStyle = legend.color;
+        context.globalAlpha = legend.opacity;
+        context.fillText(legend.text, alertLeft, laneY(legend.index));
+    }
     for (const [index, lane] of leftLanes.entries()) {
         const leftWidth = context.measureText(lane.text).width;
         const rightWidth = context.measureText(lanes[index].text).width;
@@ -5165,7 +5209,7 @@ function drawAlert(controlRightX, statusBarsLeft) {
     const legends = [
         { text: "RED ALERT", color: LCARS_ALERT_RED, index: 0 },
         { text: "YELLOW ALERT", color: LCARS_GOLD, index: 0 },
-        { text: "AUTOPILOT", color: LCARS_AUTOPILOT_GREEN, index: 1 },
+        { text: "OVERHEATING", color: LCARS_CORAL, index: 1 },
     ];
     for (const legend of legends) {
         if (context.measureText(legend.text).width > availableWidth) continue;
@@ -8815,7 +8859,8 @@ function updateGame(deltaTime, width, height) {
 
 /**
  * Beam the captain to the nearest surviving hull, with fleet order breaking
- * distance ties. Transfer control preferences and held manual input only:
+ * distance ties. Keep the helper's automatic helm and gunner online while
+ * transferring aim assistance and held manual input:
  * reserves, weapon cadence, immunity, motion, and fleet assignments stay intact.
  * @returns {boolean} Whether a surviving hull received the captain.
  */
@@ -8834,19 +8879,12 @@ function handoffCaptain() {
     }
     if (!destination) return false;
 
-    destination.controls.autopilotEnabled = departing.controls.autopilotEnabled;
-    destination.controls.autoGunnerEnabled =
-        departing.controls.autoGunnerEnabled;
+    destination.controls.autopilotEnabled = true;
+    destination.controls.autoGunnerEnabled = true;
     destination.aimAssist.enabled = departing.aimAssist.enabled;
     destination.controls.manualPressedKeys.clear();
     for (const key of departing.controls.manualPressedKeys) {
         destination.controls.manualPressedKeys.add(key);
-    }
-    if (!destination.controls.autopilotEnabled) {
-        destination.controls.autopilotPressedKeys.clear();
-    }
-    if (!destination.controls.autoGunnerEnabled) {
-        destination.controls.autoGunnerPressedKeys.clear();
     }
     clearPressedKeys(departing);
     captainTransport = new CaptainTransport(departing, destination);

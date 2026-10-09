@@ -51,7 +51,8 @@ lock. Every new sector starts with Aim Assist, autopilot, and auto-gunner disabl
 
 When your ship is destroyed, the captain automatically beams to the nearest
 surviving Starfleet ship. The gold highlight, controls, HUD, and assistance
-settings follow you. The receiving ship keeps its existing damage, shield,
+settings follow you, while the receiving helper keeps autopilot and auto-gunner
+enabled. The receiving ship keeps its existing damage, shield,
 phaser heat, motion, and spawn protection; handoff grants no repair or immunity.
 Borg target ships by combat conditions, without a special player preference.
 The round ends in defeat only when the entire friendly fleet is destroyed.
@@ -93,7 +94,9 @@ brief wait until firing becomes available.
 
 Gold identifies your ship and faint lavender identifies friendly support.
 Destroyed helpers appear as dark fractured hulls without shields or bow lights.
-The coral OVERHEATING indicator above COLLISION COURSE lights above 80% phaser heat. Lavender
+The coral OVERHEATING indicator lights above 80% phaser heat. The shared green
+automation indicator reads AUTOPILOT, AUTO-GUNNER, or AUTO FULL according to
+the enabled modes. Lavender
 brackets marked STARFLEET show helper targets and the number of assigned helpers;
 attack these targets to support their coordinated fire. Green BORG FOCUS markers
 show targeted ships and the number of assigned cubes. Both cues appear even
@@ -106,7 +109,6 @@ Every friendly ship has three seconds of protection from collision and weapon
 damage after spawning, shown by a cyan shield. Borg targeting excludes protected
 ships. Pausing preserves the remaining protection.
 Yellow alert automatically enables aim assist; red alert also enables autopilot.
-The green AUTOPILOT indicator shows that automatic helm is engaged.
 
 ### Shield and hull
 
