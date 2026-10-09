@@ -355,13 +355,13 @@ const BORG_TRANSFER_MIN_DIFFERENCE = 1;
 const BORG_TRANSFER_PULSE_SECONDS = 1.4;
 // Layered strokes and three traveling packets make the donor direction legible
 // without expensive blur filters or persistent particle objects.
-const BORG_TRANSFER_HALO_WIDTH = 16;
-const BORG_TRANSFER_BEAM_WIDTH = 5;
+const BORG_TRANSFER_HALO_WIDTH = 10;
+const BORG_TRANSFER_BEAM_WIDTH = 3;
 const BORG_TRANSFER_PACKET_COUNT = 3;
-const BORG_TRANSFER_PACKET_RADIUS = 4;
+const BORG_TRANSFER_PACKET_RADIUS = 3;
 // Soften every beam layer and traveling packet together, retaining the richer
 // exchange animation without overpowering the hull silhouettes.
-const BORG_TRANSFER_BRIGHTNESS = 0.75;
+const BORG_TRANSFER_BRIGHTNESS = 0.42;
 // Let 55% of post-resistance phaser damage reach hull while buffers are charged,
 // so a successful attack window makes progress before directional immunity.
 const BORG_SHIELD_ABSORPTION = 0.45;
@@ -645,14 +645,18 @@ const SPARK_GLOW_RADIUS = 10;
 const SPARK_GLOW_ALPHA = 0.18;
 const SPARK_COLOR = LCARS_BARLEY;
 // --- Captain transporter presentation ---
-// A short cyan shimmer connects hulls while control transfers immediately.
+// A short cyan beam carries a bright packet between distinct departure and
+// arrival shimmers while control transfers immediately.
 // Fixed particle counts and deterministic phases never consume combat randomness.
-const CAPTAIN_TRANSPORT_SECONDS = 0.9;
+const CAPTAIN_TRANSPORT_SECONDS = 1.1;
 const CAPTAIN_TRANSPORT_COLOR = LCARS_BLUEY;
 const CAPTAIN_TRANSPORT_COLUMN_COUNT = 12;
 // Columns extend beyond the hull to distinguish transport from shield impacts.
 const CAPTAIN_TRANSPORT_HEIGHT = STARSHIP_RADIUS * 3;
 const CAPTAIN_TRANSPORT_TRAIL_FRACTION = 0.18;
+const CAPTAIN_TRANSPORT_TRAVEL_FRACTION = 0.62;
+const CAPTAIN_TRANSPORT_BEAM_WIDTH = 2;
+const CAPTAIN_TRANSPORT_BEAM_HALO_WIDTH = 7;
 
 const PAUSE_KEY = "KeyP";
 const PAUSE_KEY_LABEL = "P";
@@ -5371,9 +5375,10 @@ class CaptainTransport {
      * Paint narrow shimmering columns around one hull, without covering it.
      * @param {Starship} ship Hull anchoring the materialization effect.
      * @param {number} intensity Bounded brightness of this endpoint.
+     * @param {-1 | 1} direction Upward departure or downward arrival motion.
      * @returns {void}
      */
-    drawEndpoint(ship, intensity) {
+    drawEndpoint(ship, intensity, direction) {
         context.save();
         context.translate(ship.x, ship.y);
         for (let column = 0; column < CAPTAIN_TRANSPORT_COLUMN_COUNT; column += 1) {
@@ -5389,10 +5394,15 @@ class CaptainTransport {
             context.moveTo(x, -halfHeight);
             context.lineTo(x, halfHeight);
             context.stroke();
-            // Deterministic bright flecks travel upward along each column.
+            // Flecks rise from the old hull and descend into the receiving hull.
             const phase = (fraction + this.elapsed * 1.8) % 1;
             context.globalAlpha = intensity * (0.55 + shimmer * 0.45);
-            context.fillRect(x - 1, halfHeight * (1 - phase * 2), 2, 3);
+            context.fillRect(
+                x - 1,
+                halfHeight * direction * (1 - phase * 2),
+                2,
+                3,
+            );
         }
         context.globalAlpha = intensity * 0.6;
         context.lineWidth = 1.5;
@@ -5419,7 +5429,7 @@ class CaptainTransport {
      */
     draw(width, height) {
         const progress = Math.min(1, this.elapsed / CAPTAIN_TRANSPORT_SECONDS);
-        const travel = Math.min(1, progress / 0.7);
+        const travel = Math.min(1, progress / CAPTAIN_TRANSPORT_TRAVEL_FRACTION);
         const tail = Math.max(0, travel - CAPTAIN_TRANSPORT_TRAIL_FRACTION);
         const x = this.from.x + (this.to.x - this.from.x) * travel;
         const y = this.from.y + (this.to.y - this.from.y) * travel;
@@ -5431,14 +5441,18 @@ class CaptainTransport {
         context.strokeStyle = CAPTAIN_TRANSPORT_COLOR;
         context.fillStyle = CAPTAIN_TRANSPORT_COLOR;
         context.lineCap = "round";
-        // The dim link establishes both endpoints; the bright packet gives direction.
-        context.globalAlpha = (1 - progress) * 0.18;
-        context.lineWidth = 1;
+        // The full beam establishes both endpoints; the bright packet gives direction.
+        const beamIntensity = Math.sin(Math.PI * Math.min(1, progress / 0.78));
+        context.globalAlpha = beamIntensity * 0.12;
+        context.lineWidth = CAPTAIN_TRANSPORT_BEAM_HALO_WIDTH;
         context.beginPath();
         context.moveTo(this.from.x, this.from.y);
         context.lineTo(this.to.x, this.to.y);
         context.stroke();
-        context.globalAlpha = (1 - progress) * 0.8;
+        context.globalAlpha = beamIntensity * 0.48;
+        context.lineWidth = CAPTAIN_TRANSPORT_BEAM_WIDTH;
+        context.stroke();
+        context.globalAlpha = (1 - progress) * 0.9;
         context.lineWidth = 3;
         context.beginPath();
         context.moveTo(
@@ -5450,8 +5464,15 @@ class CaptainTransport {
         context.beginPath();
         context.arc(x, y, 3, 0, Math.PI * 2);
         context.fill();
-        this.drawEndpoint(this.from, (1 - progress) ** 2);
-        this.drawEndpoint(this.to, Math.sin(Math.PI * progress));
+        const departureIntensity = Math.max(0, 1 - progress / 0.48) ** 2;
+        const arrivalProgress = Math.max(
+            0,
+            (progress - CAPTAIN_TRANSPORT_TRAVEL_FRACTION) /
+                (1 - CAPTAIN_TRANSPORT_TRAVEL_FRACTION),
+        );
+        const arrivalIntensity = Math.sin(Math.PI * arrivalProgress * 0.72);
+        this.drawEndpoint(this.from, departureIntensity, -1);
+        this.drawEndpoint(this.to, arrivalIntensity, 1);
         context.restore();
     }
 }
