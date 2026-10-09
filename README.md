@@ -27,6 +27,7 @@ Play the hosted version on [GitHub Pages](https://eigenein.github.io/only-vibes/
 | `W` / `S` | Thrust / brake                     |
 | `A` / `D` | Turn counter-clockwise / clockwise |
 | `P`       | Pause / resume                     |
+| `R`       | Restart current round              |
 | `T`       | Toggle autopilot                   |
 | `G`       | Toggle auto-gunner                 |
 | `M`       | Toggle Aim Assist                  |
@@ -47,6 +48,13 @@ current straight-line motion. The prediction includes phaser speed and muzzle
 offset, and ignores future collisions. Unreachable targets have no crosshair;
 predictions outside the arena are clipped. Pausing or losing focus clears the
 lock. Every new sector starts with Aim Assist, autopilot, and auto-gunner disabled.
+
+When your ship is destroyed, the captain automatically beams to the nearest
+surviving Starfleet ship. The gold highlight, controls, HUD, and assistance
+settings follow you. The receiving ship keeps its existing damage, shield,
+phaser heat, motion, and spawn protection; handoff grants no repair or immunity.
+Borg target ships by combat conditions, without a special player preference.
+The round ends in defeat only when the entire friendly fleet is destroyed.
 
 The first field contains only asteroids and the player's ship. After victory,
 the next field starts with the number of currently live friendly ships plus one
@@ -89,9 +97,9 @@ The coral OVERHEATING indicator above COLLISION COURSE lights above 80% phaser h
 brackets marked STARFLEET show helper targets and the number of assigned helpers;
 attack these targets to support their coordinated fire. Green BORG FOCUS markers
 show targeted ships and the number of assigned cubes. Both cues appear even
-with a single attacker. Helpers target live
+with a single attacker. All Starfleet autopilots target live
 Borg cubes first, then coordinate asteroid clearing once all cubes are defeated.
-Helpers increasingly favor a shared target as more helpers join it; distance can
+Autopilots increasingly favor a shared target as more ships join it; distance can
 still justify a split. Borg retain their gradual, more distributed focus policy. Starship
 phasers can ricochet once; Borg pulses disappear on their first contact.
 Every friendly ship has three seconds of protection from collision and weapon
@@ -133,7 +141,7 @@ The green AUTOPILOT indicator shows that automatic helm is engaged.
 - Entering yellow or red enables aim assist; entering red also enables
   autopilot. You can override these modes normally while the alert persists.
   Recovery leaves them enabled.
-- When the hull reaches zero, the game briefly shows the failure state before
+- When the entire fleet is destroyed, the game briefly shows the failure state before
   restarting the current round with full shield and hull.
 
 Redder asteroids are heavier and hit harder. Fire at will. Keep the hull operational.
