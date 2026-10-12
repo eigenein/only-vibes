@@ -43,6 +43,13 @@ let context = screenContext;
  * "environment" and never attribute a loss.
  * @typedef {"starfleet" | "borg" | "environment"} DamageCause
  */
+/**
+ * How a body answered a pulse that reached it.
+ * @typedef {Object} ProjectileHit
+ * @property {Vector2} normal Surface normal at the hit, facing the pulse.
+ * @property {PhysicsBody[]} bodies The struck body, or the fragments replacing
+ * it; they share the post-hit energy and are not struck again this step.
+ */
 
 // Keep keyboard control available after the player clicks the play field.
 canvas.tabIndex = 0;
@@ -214,6 +221,65 @@ const ALERT_LCD_SILHOUETTE_OPACITY = 0.08;
 const OVERHEATING_LCD_SILHOUETTE_OPACITY = 0.14;
 // Overlapping automation legends use a quieter ghost so the active mode wins.
 const AUTO_LCD_SILHOUETTE_OPACITY = 0.05;
+// Two console lanes: lane 0 for automation/alert level, lane 1 for collision
+// course/overheating.
+const ALERT_LANE_COUNT = 2;
+/**
+ * A dim LCD segment painted under every possible legend in its position.
+ * @typedef {Object} AlertLegend
+ * @property {string} text Legend text.
+ * @property {string} color LCARS segment color.
+ * @property {number} opacity Silhouette opacity.
+ * @property {number} index Console lane.
+ */
+/** @type {ReadonlyArray<Readonly<AlertLegend>>} Left-aligned automation legends. */
+const ALERT_LEFT_LEGENDS = Object.freeze([
+    Object.freeze({
+        text: "AUTOPILOT",
+        color: LCARS_BLUEY,
+        opacity: AUTO_LCD_SILHOUETTE_OPACITY,
+        index: 0,
+    }),
+    Object.freeze({
+        text: "AUTO-GUNNER",
+        color: LCARS_BLUEY,
+        opacity: AUTO_LCD_SILHOUETTE_OPACITY,
+        index: 0,
+    }),
+    Object.freeze({
+        text: "AUTO FULL",
+        color: LCARS_BLUEY,
+        opacity: AUTO_LCD_SILHOUETTE_OPACITY,
+        index: 0,
+    }),
+    Object.freeze({
+        text: "COLLISION COURSE",
+        color: LCARS_BARLEY,
+        opacity: ALERT_LCD_SILHOUETTE_OPACITY,
+        index: 1,
+    }),
+]);
+/** @type {ReadonlyArray<Readonly<AlertLegend>>} Right-aligned danger legends. */
+const ALERT_RIGHT_LEGENDS = Object.freeze([
+    Object.freeze({
+        text: "RED ALERT",
+        color: LCARS_MARS,
+        opacity: ALERT_LCD_SILHOUETTE_OPACITY,
+        index: 0,
+    }),
+    Object.freeze({
+        text: "YELLOW ALERT",
+        color: LCARS_BARLEY,
+        opacity: ALERT_LCD_SILHOUETTE_OPACITY,
+        index: 0,
+    }),
+    Object.freeze({
+        text: "OVERHEATING",
+        color: LCARS_BUTTERSCOTCH,
+        opacity: OVERHEATING_LCD_SILHOUETTE_OPACITY,
+        index: 1,
+    }),
+]);
 // Three active-play seconds protect every friendly hull at every field start.
 // Contacts retain their physical response; shields, hull and damage budget
 // remain untouched. Borg focus assignments also exclude protected ships during
@@ -536,7 +602,8 @@ const BORG_FOCUS_LOCK_ROTATION_SPEED = 0.85;
 const BORG_FOCUS_LOCK_BRACKET_PADDING = 12;
 const BORG_FOCUS_LOCK_COLOR = BORG_GREEN;
 const BORG_FOCUS_LOCK_ACCENT = "#b4ffbe";
-const BORG_FOCUS_LOCK_BEAM = "rgba(119, 255, 136, 0.35)";
+// Telemetry beams use the lock color at this opacity.
+const BORG_FOCUS_LOCK_BEAM_ALPHA = 0.35;
 
 // Each victory adds one helper to the field's configured starting fleet,
 // regardless of losses. Keep their fresh formation separated from the player.
@@ -830,6 +897,12 @@ const FRICTION_COEFFICIENT = 0.35;
 // named coefficient so the wall response can be tuned independently later.
 const SHIELD_WALL_FRICTION_COEFFICIENT = FRICTION_COEFFICIENT;
 const COLLISION_EPSILON = 0.000001;
+// Unit normals pointing from a body toward each arena wall. Shared and frozen
+// so per-frame wall contacts allocate nothing.
+const WALL_NORMAL_LEFT = Object.freeze({x: -1, y: 0});
+const WALL_NORMAL_RIGHT = Object.freeze({x: 1, y: 0});
+const WALL_NORMAL_TOP = Object.freeze({x: 0, y: -1});
+const WALL_NORMAL_BOTTOM = Object.freeze({x: 0, y: 1});
 const STATIC_WALL_BODY = Object.freeze({
     x: 0,
     y: 0,
@@ -929,11 +1002,69 @@ function* physicalTargets() {
     yield* borgCubes;
 }
 
-/** @returns {Generator<Asteroid>} Live bodies available for combat targeting. */
-function* combatTargets() {
-    for (const body of physicalTargets()) {
-        if (body.alive) yield body;
+/**
+ * Starfleet's standing order: live Borg first; rocks become targets only after
+ * the last cube falls. The field is clear when this yields nothing.
+ * @returns {Generator<Asteroid>} Current priority combat targets.
+ */
+function* priorityTargets() {
+    let liveCube = false;
+    for (const cube of borgCubes) {
+        if (!cube.alive) continue;
+        liveCube = true;
+        yield cube;
     }
+    if (!liveCube) yield* asteroids;
+}
+
+/**
+ * A helper hull position on a ring around a point, kept inside the arena.
+ * Helpers spawn facing the ring's center.
+ * @param {number} centerX Ring center x.
+ * @param {number} centerY Ring center y.
+ * @param {number} angle Bearing from the center in radians.
+ * @param {number} distance Ring radius in CSS pixels.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {Vector2} Spawn position.
+ */
+function spawnPositionAround(centerX, centerY, angle, distance, width, height) {
+    return {
+        x: constrainPosition(
+            centerX + Math.cos(angle) * distance,
+            STARSHIP_RADIUS,
+            width,
+        ),
+        y: constrainPosition(
+            centerY + Math.sin(angle) * distance,
+            STARSHIP_RADIUS,
+            height,
+        ),
+    };
+}
+
+/**
+ * Free space around a spawn candidate: the gap to the nearest body surface.
+ * Spawners keep the candidate with the largest clearance.
+ * @param {number} x Candidate center x.
+ * @param {number} y Candidate center y.
+ * @returns {number} Distance to the closest ship, rock or cube surface.
+ */
+function spawnClearance(x, y) {
+    let clearance = Infinity;
+    for (const body of allBodies()) {
+        clearance = Math.min(
+            clearance,
+            Math.hypot(x - body.x, y - body.y) - body.radius,
+        );
+    }
+    return clearance;
+}
+
+/** @returns {Generator<Starship | Asteroid>} Every body in the arena, ships first. */
+function* allBodies() {
+    yield* starships;
+    yield* physicalTargets();
 }
 
 /**
@@ -1007,6 +1138,94 @@ class ShipControls {
     autopilotAttackRoll = 1;
     autoGunnerEnabled = false;
     autoGunnerBurstActive = false;
+
+    /**
+     * Forget turn edge state so the next press ramps from rest and automated
+     * turns wait for a fresh reaction delay.
+     * @returns {void}
+     */
+    resetTurnState() {
+        this.autopilotTurnDirection = 0;
+        this.autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
+        this.manualTurnControl.reset();
+    }
+
+    /**
+     * Clear every input source. Used for pause, focus loss, and life
+     * transitions so no stale held key can survive a state boundary.
+     * @returns {void}
+     */
+    clearInputs() {
+        this.resetTurnState();
+        this.manualPressedKeys.clear();
+        this.autopilotPressedKeys.clear();
+        this.autoGunnerPressedKeys.clear();
+        this.wallAvoidancePressedKeys.clear();
+        this.wallAvoidanceActive = false;
+        this.turnTargetAngle = undefined;
+        this.pressedKeys.clear();
+    }
+
+    /**
+     * Hand both helm and gunnery to automation, as every helper flies.
+     * @returns {void}
+     */
+    enableAutomation() {
+        this.autopilotEnabled = true;
+        this.autoGunnerEnabled = true;
+    }
+
+    /**
+     * Toggle autopilot and reset the flight input edge state. Held manual
+     * helm keys are released; a held fire key keeps firing.
+     * @param {number} heading Current hull heading to hold initially.
+     * @returns {void}
+     */
+    toggleAutopilot(heading) {
+        this.autopilotEnabled = !this.autopilotEnabled;
+        // The manual wall safeguard must not retain priority after helm takeover.
+        this.wallAvoidanceActive = false;
+        this.wallAvoidancePressedKeys.clear();
+        this.autopilotDesiredAngle = heading;
+        this.autopilotEscapeTarget = undefined;
+        this.autopilotAttackTimeRemaining = 0;
+        this.autopilotAttackRoll = 1;
+        this.autopilotDecisionTime = this.autopilotEnabled
+            ? AUTOPILOT_UPDATE_INTERVAL
+            : 0;
+        this.resetTurnState();
+        for (const key of this.manualPressedKeys) {
+            if (key !== FIRE_KEY) this.manualPressedKeys.delete(key);
+        }
+        this.autopilotPressedKeys.clear();
+    }
+
+    /**
+     * Toggle automatic firing without changing helm or manual input state.
+     * @returns {void}
+     */
+    toggleAutoGunner() {
+        this.autoGunnerEnabled = !this.autoGunnerEnabled;
+        this.autoGunnerBurstActive = false;
+        this.autoGunnerPressedKeys.clear();
+    }
+
+    /**
+     * Manual helm overrides only piloting; manual fire overrides only gunnery.
+     * This lets the player fly with automatic shots or fire during autopilot.
+     * @param {string} controlKey Manual flight or firing control supplied.
+     * @returns {void}
+     */
+    takeManualControl(controlKey) {
+        if (controlKey === FIRE_KEY) {
+            this.autoGunnerEnabled = false;
+            this.autoGunnerBurstActive = false;
+            this.autoGunnerPressedKeys.clear();
+        } else {
+            this.autopilotEnabled = false;
+            this.autopilotPressedKeys.clear();
+        }
+    }
 }
 
 /**
@@ -1222,6 +1441,39 @@ class Starship {
     }
 
     /**
+     * @param {Vector2} start Swept pulse segment start.
+     * @param {Vector2} end Swept pulse segment end.
+     * @returns {number | undefined} Normalized first hit along the segment.
+     */
+    projectileHitParameter(start, end) {
+        return this.alive
+            ? segmentCircleIntersectionParameter(start, end, this)
+            : undefined;
+    }
+
+    /**
+     * Projectile hook: the shield deflects the pulse, which transfers its
+     * impulse as weapon damage credited to the firing faction.
+     * @param {Bullet} bullet Pulse at the contact point.
+     * @param {Vector2} hitPoint World contact position.
+     * @returns {ProjectileHit} Deflection normal and this hull.
+     */
+    receiveProjectile(bullet, hitPoint) {
+        const normal = circleNormalAtPoint(
+            this,
+            hitPoint,
+            bullet.velocityX,
+            bullet.velocityY,
+        );
+        const impulse = applyProjectileContact(this, bullet, normal, hitPoint);
+        this.applyWeaponDamage(contactImpulseMagnitude(impulse), bullet.source);
+        if (impulse.normalImpulse > COLLISION_EPSILON) {
+            empSound.playRandom();
+        }
+        return {normal, bodies: [this]};
+    }
+
+    /**
      * Body-contact hook for the shared collision pass: take damage credited to
      * the other body's faction, credit ramming against rocks, then apply the
      * one-time heading adjustment from this ship's side of the impulse.
@@ -1262,35 +1514,29 @@ class Starship {
         const accelerates =
             !decelerates && (keys.has("ArrowUp") || keys.has("KeyW"));
 
-        if (accelerates !== decelerates) {
-            if (accelerates) {
-                const acceleration = MOVEMENT_RESPONSIVENESS * deltaTime;
-                this.velocityX += Math.cos(this.angle) * acceleration;
-                this.velocityY += Math.sin(this.angle) * acceleration;
+        if (accelerates) {
+            const acceleration = MOVEMENT_RESPONSIVENESS * deltaTime;
+            this.velocityX += Math.cos(this.angle) * acceleration;
+            this.velocityY += Math.sin(this.angle) * acceleration;
 
-                const acceleratedSpeed = Math.hypot(
-                    this.velocityX,
-                    this.velocityY,
+            const acceleratedSpeed = Math.hypot(this.velocityX, this.velocityY);
+
+            if (acceleratedSpeed > MAX_SPEED) {
+                const speedRatio = MAX_SPEED / acceleratedSpeed;
+                this.velocityX *= speedRatio;
+                this.velocityY *= speedRatio;
+            }
+        } else if (decelerates) {
+            const currentSpeed = Math.hypot(this.velocityX, this.velocityY);
+
+            if (currentSpeed > COLLISION_EPSILON) {
+                const deceleration = Math.min(
+                    currentSpeed,
+                    MOVEMENT_RESPONSIVENESS * deltaTime,
                 );
-
-                if (acceleratedSpeed > MAX_SPEED) {
-                    const speedRatio = MAX_SPEED / acceleratedSpeed;
-                    this.velocityX *= speedRatio;
-                    this.velocityY *= speedRatio;
-                }
-            } else {
-                const currentSpeed = Math.hypot(this.velocityX, this.velocityY);
-
-                if (currentSpeed > COLLISION_EPSILON) {
-                    const deceleration = Math.min(
-                        currentSpeed,
-                        MOVEMENT_RESPONSIVENESS * deltaTime,
-                    );
-                    const speedRatio =
-                        (currentSpeed - deceleration) / currentSpeed;
-                    this.velocityX *= speedRatio;
-                    this.velocityY *= speedRatio;
-                }
+                const speedRatio = (currentSpeed - deceleration) / currentSpeed;
+                this.velocityX *= speedRatio;
+                this.velocityY *= speedRatio;
             }
         }
     }
@@ -1345,6 +1591,20 @@ let alertRecoveryTime = 0;
 // Bridge-local history observes only the player's hull and resets each field.
 let alertHullLossRate = 0;
 let alertPreviousHullState = SHIP_MAX_STATE;
+
+/**
+ * Start observing a hull afresh: a new field or a captain transfer is not
+ * fresh damage, and the next red alert may sound again.
+ * @param {number} hullState Current hull of the newly observed ship.
+ * @returns {void}
+ */
+function resetAlert(hullState) {
+    redAlertSoundPlayed = false;
+    alertLevel = 0;
+    alertRecoveryTime = 0;
+    alertHullLossRate = 0;
+    alertPreviousHullState = hullState;
+}
 /**
  * One round state instead of independent pause/failure/win flags, so impossible
  * combinations cannot arise and only `animate` gates the simulation step.
@@ -1840,6 +2100,69 @@ class Asteroid {
     }
 
     /**
+     * Cheap bounding-box rejection precedes the exact polygon sweep.
+     * @param {Vector2} start Swept pulse segment start.
+     * @param {Vector2} end Swept pulse segment end.
+     * @returns {number | undefined} Normalized first hit along the segment.
+     */
+    projectileHitParameter(start, end) {
+        if (
+            Math.max(start.x, end.x) < this.x - this.radius ||
+            Math.min(start.x, end.x) > this.x + this.radius ||
+            Math.max(start.y, end.y) < this.y - this.radius ||
+            Math.min(start.y, end.y) > this.y + this.radius
+        ) {
+            return undefined;
+        }
+        return segmentPolygonIntersectionParameter(
+            start,
+            end,
+            this.collisionPolygon(),
+        );
+    }
+
+    /**
+     * @param {Bullet} bullet Pulse at the contact point.
+     * @param {Vector2} hitPoint World contact position.
+     * @returns {Vector2} Surface normal facing the incoming pulse.
+     */
+    projectileNormal(bullet, hitPoint) {
+        return polygonNormalAtPoint(
+            this.collisionPolygon(),
+            hitPoint,
+            bullet.velocityX,
+            bullet.velocityY,
+        );
+    }
+
+    /**
+     * Projectile hook: the pulse pushes the rock and always cuts it along its
+     * incoming direction. Starfleet hits count toward the blaster tally.
+     * @param {Bullet} bullet Pulse at the contact point.
+     * @param {Vector2} hitPoint World contact position.
+     * @returns {ProjectileHit} Ricochet normal and the resulting fragments.
+     */
+    receiveProjectile(bullet, hitPoint) {
+        const normal = this.projectileNormal(bullet, hitPoint);
+        const incomingDirection = normalizedVector(
+            bullet.velocityX,
+            bullet.velocityY,
+        );
+        const response = applyContactImpulse(this, bullet, normal, hitPoint);
+        if (bullet.source === "starfleet") {
+            recordAsteroidDamage(response, "blasters");
+        }
+        const bodies = fragmentAsteroidAtImpact(
+            this,
+            hitPoint,
+            incomingDirection,
+            response,
+            "phaser",
+        );
+        return {normal, bodies};
+    }
+
+    /**
      * Body-contact hook for the shared collision pass. Equal and opposite
      * impulses have the same magnitude, so one strong contact cuts both rocks
      * of a pair regardless of mass; each piece keeps its post-impact motion.
@@ -2044,19 +2367,7 @@ class BorgCube extends Asteroid {
         let position = positions[0];
         let bestClearance = -Infinity;
         for (const candidate of positions) {
-            let clearance = Infinity;
-            for (const ship of starships) {
-                clearance = Math.min(
-                    clearance,
-                    Math.hypot(candidate.x - ship.x, candidate.y - ship.y) - ship.radius,
-                );
-            }
-            for (const rock of physicalTargets()) {
-                clearance = Math.min(
-                    clearance,
-                    Math.hypot(candidate.x - rock.x, candidate.y - rock.y) - rock.radius,
-                );
-            }
+            const clearance = spawnClearance(candidate.x, candidate.y);
             if (clearance > bestClearance) {
                 position = candidate;
                 bestClearance = clearance;
@@ -2144,6 +2455,23 @@ class BorgCube extends Asteroid {
             );
         }
         return bodyKineticEnergy(this);
+    }
+
+    /**
+     * Projectile hook: live shields absorb any pulse after taking the hit; an
+     * intact wreck is solid and deflects pulses like a vessel hull.
+     * @param {Bullet} bullet Pulse at the contact point.
+     * @param {Vector2} hitPoint World contact position.
+     * @returns {ProjectileHit | undefined} Deflection, or none when absorbed.
+     */
+    receiveProjectile(bullet, hitPoint) {
+        if (this.alive) {
+            this.hitPhaser(hitPoint);
+            return undefined;
+        }
+        const normal = this.projectileNormal(bullet, hitPoint);
+        applyProjectileContact(this, bullet, normal, hitPoint);
+        return {normal, bodies: [this]};
     }
 
     /** @returns {number} Combined hull and face-shield reserve fraction. */
@@ -2452,12 +2780,14 @@ class BorgCube extends Asteroid {
                 );
 
         }
+        let adaptation = 0;
+        let burst = -Infinity;
+        for (const face of this.faces) {
+            adaptation += face.adaptation;
+            burst = Math.max(burst, face.burst);
+        }
         const powerUsed =
-            this.faces.reduce(
-                (sum, face) => sum + face.adaptation * BORG_REINFORCEMENT_POWER,
-                0,
-            ) +
-            Math.max(...this.faces.map((face) => face.burst)) * BORG_BURST_POWER;
+            adaptation * BORG_REINFORCEMENT_POWER + burst * BORG_BURST_POWER;
         this.recovery = 0;
         for (const face of this.faces) {
             if (face.quiet > BORG_REPAIR_DELAY && face.shield < BORG_FACE_SHIELD) {
@@ -2641,17 +2971,13 @@ class BorgCube extends Asteroid {
             const y = rock.y - this.y;
             const vx = rock.velocityX - this.velocityX;
             const vy = rock.velocityY - this.velocityY;
-            const velocitySquared = vx * vx + vy * vy;
-            const time =
-                velocitySquared > COLLISION_EPSILON
-                    ? Math.max(
-                        0,
-                        Math.min(
-                            BORG_AVOIDANCE_LOOKAHEAD,
-                            -(x * vx + y * vy) / velocitySquared,
-                        ),
-                    )
-                    : 0;
+            const time = closestApproachTimeWithin(
+                x,
+                y,
+                vx,
+                vy,
+                BORG_AVOIDANCE_LOOKAHEAD,
+            );
             const futureX = x + vx * time;
             const futureY = y + vy * time;
             const distance = Math.hypot(futureX, futureY);
@@ -3268,10 +3594,9 @@ function updateBorgFleetTactics(width, height) {
  * @returns {void}
  */
 function updateStarfleetTactics(width, height) {
-    const liveCubes = borgCubes.filter((cube) => cube.alive);
     starfleetTactics.update(
         starships.filter((ship) => ship.alive && ship.controls.autopilotEnabled),
-        liveCubes.length > 0 ? liveCubes : asteroids,
+        [...priorityTargets()],
         width,
         height,
     );
@@ -3664,40 +3989,28 @@ function configureHelpingFleet(width, height) {
     );
 
     playerShip.reset(centerX, centerY);
-    clearPressedKeys(playerShip);
+    playerShip.controls.clearInputs();
 
     for (let helperIndex = 0; helperIndex < helperCount; helperIndex += 1) {
         const helper = starships[helperIndex + 1];
         const angle =
             -Math.PI / 2 + (helperIndex * Math.PI * 2) / Math.max(1, helperCount);
-        helper.reset(
-            constrainPosition(
-                centerX + Math.cos(angle) * safeDistance,
-                helper.radius,
-                width,
-            ),
-            constrainPosition(
-                centerY + Math.sin(angle) * safeDistance,
-                helper.radius,
-                height,
-            ),
-            wrapAngle(angle + Math.PI),
+        const position = spawnPositionAround(
+            centerX,
+            centerY,
+            angle,
+            safeDistance,
+            width,
+            height,
         );
-        helper.controls.autopilotEnabled = true;
-        helper.controls.autoGunnerEnabled = true;
+        helper.reset(position.x, position.y, wrapAngle(angle + Math.PI));
+        helper.controls.enableAutomation();
         syncPressedKeys(helper);
     }
 }
 
 function updateBullets(deltaTime) {
-    for (
-        let bulletIndex = bullets.length - 1;
-        bulletIndex >= 0;
-        bulletIndex -= 1
-    ) {
-        const bullet = bullets[bulletIndex];
-        bullet.update(deltaTime);
-    }
+    for (const bullet of bullets) bullet.update(deltaTime);
 }
 
 /**
@@ -3794,82 +4107,33 @@ function syncPressedKeys(ship) {
 }
 
 /**
- * Clear all input sources. This is used for pause, focus loss, and life
- * transitions so no stale held key can survive a state boundary.
- * @param {Starship} ship Hull and independent controller being operated.
- * @returns {void}
- */
-function clearPressedKeys(ship) {
-    ship.controls.autopilotTurnDirection = 0;
-    ship.controls.autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
-    ship.controls.manualTurnControl.reset();
-    ship.controls.manualPressedKeys.clear();
-    ship.controls.autopilotPressedKeys.clear();
-    ship.controls.autoGunnerPressedKeys.clear();
-    ship.controls.wallAvoidancePressedKeys.clear();
-    ship.controls.wallAvoidanceActive = false;
-    ship.controls.turnTargetAngle = undefined;
-    ship.controls.pressedKeys.clear();
-}
-
-/**
  * Return the corresponding automated control to the player.
  * @param {Starship} ship Hull and independent controller being operated.
  * @param {string} controlKey Manual flight or firing control supplied.
  * @returns {void}
  */
 function disableAutomationForManualInput(ship, controlKey) {
-    // Manual helm overrides only piloting; manual fire overrides only gunnery.
-    // This lets the player fly with automatic shots or fire during autopilot.
-    if (controlKey === FIRE_KEY) {
-        ship.controls.autoGunnerEnabled = false;
-        ship.controls.autoGunnerBurstActive = false;
-        ship.controls.autoGunnerPressedKeys.clear();
-    } else {
-        ship.controls.autopilotEnabled = false;
-        ship.controls.autopilotPressedKeys.clear();
-    }
+    ship.controls.takeManualControl(controlKey);
     syncPressedKeys(ship);
 }
 
 /**
- * Toggle autopilot and reset the flight input edge state. T itself is a mode
- * control, not one of the simulated gameplay inputs, so it is never added to
- * either held-key set.
+ * T itself is a mode control, not one of the simulated gameplay inputs, so it
+ * is never added to either held-key set.
  * @param {Starship} ship Hull and independent controller being operated.
  * @returns {void}
  */
 function toggleAutopilot(ship) {
-    ship.controls.autopilotEnabled = !ship.controls.autopilotEnabled;
-    // The manual wall safeguard must not retain priority after helm takeover.
-    ship.controls.wallAvoidanceActive = false;
-    ship.controls.wallAvoidancePressedKeys.clear();
-    ship.controls.autopilotDesiredAngle = ship.angle;
-    ship.controls.autopilotEscapeTarget = undefined;
-    ship.controls.autopilotAttackTimeRemaining = 0;
-    ship.controls.autopilotAttackRoll = 1;
-    ship.controls.autopilotDecisionTime = ship.controls.autopilotEnabled
-        ? AUTOPILOT_UPDATE_INTERVAL
-        : 0;
-    ship.controls.autopilotTurnDirection = 0;
-    ship.controls.autopilotTurnTimeRemaining = AUTOPILOT_TURN_REACTION_SECONDS;
-    ship.controls.manualTurnControl.reset();
-    for (const key of ship.controls.manualPressedKeys) {
-        if (key !== FIRE_KEY) ship.controls.manualPressedKeys.delete(key);
-    }
-    ship.controls.autopilotPressedKeys.clear();
+    ship.controls.toggleAutopilot(ship.angle);
     syncPressedKeys(ship);
 }
 
 /**
- * Toggle automatic firing without changing helm or manual input state.
  * @param {Starship} ship Hull and independent controller being operated.
  * @returns {void}
  */
 function toggleAutoGunner(ship) {
-    ship.controls.autoGunnerEnabled = !ship.controls.autoGunnerEnabled;
-    ship.controls.autoGunnerBurstActive = false;
-    ship.controls.autoGunnerPressedKeys.clear();
+    ship.controls.toggleAutoGunner();
     syncPressedKeys(ship);
 }
 
@@ -3991,11 +4255,13 @@ function linearInterceptTime(
 ) {
     const x = target.x - originX;
     const y = target.y - originY;
-    const muzzle = launchOffset;
     const a = target.velocityX ** 2 + target.velocityY ** 2 - approachSpeed ** 2;
     const b =
-        2 * (x * target.velocityX + y * target.velocityY - muzzle * approachSpeed);
-    const c = x ** 2 + y ** 2 - muzzle ** 2;
+        2 *
+        (x * target.velocityX +
+            y * target.velocityY -
+            launchOffset * approachSpeed);
+    const c = x ** 2 + y ** 2 - launchOffset ** 2;
     let time = 0;
     if (c > 0) {
         if (Math.abs(a) <= COLLISION_EPSILON) {
@@ -4072,20 +4338,17 @@ function autoGunnerHasShot(ship) {
     const directionX = Math.cos(ship.angle);
     const directionY = Math.sin(ship.angle);
     const muzzle = STARSHIP_RADIUS + BULLET_HALF_LENGTH;
-    const mustFightBorg = borgCubes.some((cube) => cube.alive);
-    for (const asteroid of combatTargets()) {
-        // Asteroid shots become eligible only after the last live cube falls.
-        if (mustFightBorg && !(asteroid instanceof BorgCube)) continue;
+    for (const asteroid of priorityTargets()) {
         const x = asteroid.x - ship.x - directionX * muzzle;
         const y = asteroid.y - ship.y - directionY * muzzle;
         const velocityX = asteroid.velocityX - directionX * BULLET_SPEED;
         const velocityY = asteroid.velocityY - directionY * BULLET_SPEED;
-        const velocitySquared = velocityX ** 2 + velocityY ** 2;
-        if (velocitySquared <= COLLISION_EPSILON) {
-            continue;
-        }
-        const time = -(x * velocityX + y * velocityY) / velocitySquared;
-        if (time < 0 || time > AUTOPILOT_MAX_LOOKAHEAD_SECONDS) {
+        const time = closestApproachTime(x, y, velocityX, velocityY);
+        if (
+            time === undefined ||
+            time < 0 ||
+            time > AUTOPILOT_MAX_LOOKAHEAD_SECONDS
+        ) {
             continue;
         }
         const clearance =
@@ -4134,18 +4397,13 @@ function autopilotThreat(ship, ramTarget = undefined) {
         const relativeVelocityY = asteroid.velocityY - ship.velocityY;
         const distance = Math.hypot(relativeX, relativeY);
         const safeDistance = STARSHIP_RADIUS + asteroid.radius + safeMargin;
-        const velocitySquared = relativeVelocityX ** 2 + relativeVelocityY ** 2;
-        const closestTime =
-            velocitySquared > COLLISION_EPSILON
-                ? Math.max(
-                    0,
-                    Math.min(
-                        AUTOPILOT_MAX_LOOKAHEAD_SECONDS,
-                        -(relativeX * relativeVelocityX + relativeY * relativeVelocityY) /
-                        velocitySquared,
-                    ),
-                )
-                : 0;
+        const closestTime = closestApproachTimeWithin(
+            relativeX,
+            relativeY,
+            relativeVelocityX,
+            relativeVelocityY,
+            AUTOPILOT_MAX_LOOKAHEAD_SECONDS,
+        );
         const futureX = relativeX + relativeVelocityX * closestTime;
         const futureY = relativeY + relativeVelocityY * closestTime;
         const futureDistance = Math.hypot(futureX, futureY);
@@ -4338,11 +4596,11 @@ function autopilotAttackProbability(ship) {
         (shieldRatio - AUTOPILOT_ATTACK_MIN_SHIELD_RATIO) /
         (1 - AUTOPILOT_ATTACK_MIN_SHIELD_RATIO),
     );
-    const probability =
+    return (
         AUTOPILOT_ATTACK_PROBABILITY *
         availableShield ** AUTOPILOT_ATTACK_SHIELD_EXPONENT *
-        Math.sqrt(hullRatio);
-    return probability;
+        Math.sqrt(hullRatio)
+    );
 }
 
 /**
@@ -4366,7 +4624,7 @@ function autopilotCanApproach(ship) {
 function autopilotCanRam(ship, target) {
     return (
         target !== undefined &&
-        !(target instanceof BorgCube) &&
+        target.fragmentsOnContact &&
         ship.controls.autopilotAttackRoll <
         autopilotAttackProbability(ship) * AUTOPILOT_RAM_PROBABILITY_RATIO
     );
@@ -4518,7 +4776,7 @@ function updateAutopilotInput(ship, deltaTime, width, height) {
             }
         } else if (target !== undefined) {
             const closePass =
-                !(target instanceof BorgCube) && autopilotCanApproach(ship);
+                target.fragmentsOnContact && autopilotCanApproach(ship);
             const cruiseSpeed = closePass
                 ? AUTOPILOT_CLOSE_SPEED
                 : AUTOPILOT_CRUISE_SPEED;
@@ -4767,14 +5025,18 @@ function gameplayHeightForViewport(viewportHeight) {
     return Math.max(0, viewportHeight - LCARS_CONSOLE_HEIGHT);
 }
 
+/**
+ * Keep a body's center at least one radius inside [0, extent]; an extent too
+ * small for the body centers it instead.
+ * @param {number} position Proposed center coordinate.
+ * @param {number} radius Body radius in CSS pixels.
+ * @param {number} extent Arena extent along this axis.
+ * @returns {number} Constrained center coordinate.
+ */
 function constrainPosition(position, radius, extent) {
-    return constrainPositionToRange(position, radius, extent - radius, extent);
-}
-
-function constrainPositionToRange(position, minimum, maximum, extent) {
-    return maximum <= minimum
+    return extent - radius <= radius
         ? extent / 2
-        : Math.min(Math.max(position, minimum), maximum);
+        : Math.min(Math.max(position, radius), extent - radius);
 }
 
 /**
@@ -4847,9 +5109,12 @@ function updateAlert(ship, deltaTime) {
             alertRecoveryTime = 0;
         }
     }
-    if (alertLevel !== previousLevel && alertLevel > 0) {
-        if (alertLevel === 2 && !ship.controls.autopilotEnabled)
-            toggleAutopilot(ship);
+    if (
+        alertLevel === 2 &&
+        previousLevel !== 2 &&
+        !ship.controls.autopilotEnabled
+    ) {
+        toggleAutopilot(ship);
     }
     if (alertLevel === 1 && previousLevel !== 1) {
         yellowAlertSound.playRandom();
@@ -4883,11 +5148,7 @@ function restartGame(width, height, advanceFleet, nextPhase) {
     fieldAsteroidDamage.ramming = 0;
     fieldAsteroidDamage.blasters = 0;
     configureHelpingFleet(width, height);
-    redAlertSoundPlayed = false;
-    alertLevel = 0;
-    alertRecoveryTime = 0;
-    alertHullLossRate = 0;
-    alertPreviousHullState = SHIP_MAX_STATE;
+    resetAlert(SHIP_MAX_STATE);
     roundPhase = nextPhase;
     shipFailureTimeRemaining = 0;
     bullets.length = 0;
@@ -4915,7 +5176,7 @@ function beginShipFailure() {
     shipFailureTimeRemaining = SHIP_FAILURE_DISPLAY_SECONDS;
     defeatSound.playRandom();
     for (const ship of starships) {
-        clearPressedKeys(ship);
+        ship.controls.clearInputs();
         ship.phaserShotCooldown = 0;
     }
 }
@@ -4941,7 +5202,7 @@ function beginWin() {
     }
     bullets.length = 0;
     for (const ship of starships) {
-        clearPressedKeys(ship);
+        ship.controls.clearInputs();
         ship.phaserShotCooldown = 0;
     }
 }
@@ -5111,6 +5372,36 @@ function drawStatusBars(width) {
     return barX;
 }
 
+const ALERT_FONT = `700 21px ${LCARS_FONT_FAMILY}`;
+/** @type {Map<string, number>} Widths of the fixed console legends. */
+const alertTextWidths = new Map();
+void document.fonts.ready.then(() => alertTextWidths.clear());
+
+/**
+ * Legend texts and their font never change, so measure each once instead of
+ * several times per frame. Measures with the caller's font already set.
+ * @param {string} text Console legend in ALERT_FONT.
+ * @returns {number} Rendered width in CSS pixels.
+ */
+function alertTextWidth(text) {
+    let width = alertTextWidths.get(text);
+    if (width === undefined) {
+        width = context.measureText(text).width;
+        alertTextWidths.set(text, width);
+    }
+    return width;
+}
+
+/**
+ * @param {number} index Zero-based console lane.
+ * @returns {number} Lane center y in CSS pixels.
+ */
+function alertLaneY(index) {
+    return (
+        LCARS_CONSOLE_TOP + (STATUS_BARS_HEIGHT * (index + 0.5)) / ALERT_LANE_COUNT
+    );
+}
+
 /**
  * Split spare console space into danger and positive automatic-helm lanes.
  * Dim blinking text stays readable between pulses, including while paused.
@@ -5163,18 +5454,12 @@ function drawAlert(controlRightX, statusBarsLeft) {
     ];
 
     context.save();
-    context.font = `700 21px ${LCARS_FONT_FAMILY}`;
+    context.font = ALERT_FONT;
     context.textAlign = "right";
     context.textBaseline = "middle";
     // Ghost legends share the danger row like overlapping old LCD segments.
     // Paint all ghosts first so an inactive legend cannot dim an active one.
     // Both LCD lanes share the right edge beside the health bars.
-    /**
-     * @param {number} index Zero-based console lane.
-     * @returns {number} Lane center y in CSS pixels.
-     */
-    const laneY = (index) =>
-        LCARS_CONSOLE_TOP + (STATUS_BARS_HEIGHT * (index + 0.5)) / lanes.length;
     // Reserve the left half-lane only when both legends fit; compact consoles
     // prioritize the active emergency cue without overlapping right-side text.
     const leftLanes = [
@@ -5189,42 +5474,16 @@ function drawAlert(controlRightX, statusBarsLeft) {
             color: LCARS_BARLEY,
         },
     ];
-    const leftLegends = [
-        {
-            text: "AUTOPILOT",
-            color: LCARS_BLUEY,
-            opacity: AUTO_LCD_SILHOUETTE_OPACITY,
-            index: 0,
-        },
-        {
-            text: "AUTO-GUNNER",
-            color: LCARS_BLUEY,
-            opacity: AUTO_LCD_SILHOUETTE_OPACITY,
-            index: 0,
-        },
-        {
-            text: "AUTO FULL",
-            color: LCARS_BLUEY,
-            opacity: AUTO_LCD_SILHOUETTE_OPACITY,
-            index: 0,
-        },
-        {
-            text: "COLLISION COURSE",
-            color: LCARS_BARLEY,
-            opacity: ALERT_LCD_SILHOUETTE_OPACITY,
-            index: 1,
-        },
-    ];
-    for (const legend of leftLegends) {
-        if (context.measureText(legend.text).width > availableWidth) continue;
+    for (const legend of ALERT_LEFT_LEGENDS) {
+        if (alertTextWidth(legend.text) > availableWidth) continue;
         context.textAlign = "left";
         context.fillStyle = legend.color;
         context.globalAlpha = legend.opacity;
-        context.fillText(legend.text, alertLeft, laneY(legend.index));
+        context.fillText(legend.text, alertLeft, alertLaneY(legend.index));
     }
     for (const [index, lane] of leftLanes.entries()) {
-        const leftWidth = context.measureText(lane.text).width;
-        const rightWidth = context.measureText(lanes[index].text).width;
+        const leftWidth = alertTextWidth(lane.text);
+        const rightWidth = alertTextWidth(lanes[index].text);
         if (
             leftWidth > availableWidth ||
             (lanes[index].visible &&
@@ -5254,35 +5513,21 @@ function drawAlert(controlRightX, statusBarsLeft) {
         context.textAlign = "left";
         context.fillStyle = lane.color;
         context.globalAlpha = lane.active ? 1 : ALERT_LCD_SILHOUETTE_OPACITY;
-        context.fillText(lane.text, alertLeft, laneY(index));
+        context.fillText(lane.text, alertLeft, alertLaneY(index));
         context.textAlign = "right";
     }
-    const legends = [
-        { text: "RED ALERT", color: LCARS_MARS, index: 0 },
-        { text: "YELLOW ALERT", color: LCARS_BARLEY, index: 0 },
-        {
-            text: "OVERHEATING",
-            color: LCARS_BUTTERSCOTCH,
-            opacity: OVERHEATING_LCD_SILHOUETTE_OPACITY,
-            index: 1,
-        },
-    ];
-    for (const legend of legends) {
-        if (context.measureText(legend.text).width > availableWidth) continue;
+    for (const legend of ALERT_RIGHT_LEGENDS) {
+        if (alertTextWidth(legend.text) > availableWidth) continue;
         context.fillStyle = legend.color;
-        context.globalAlpha =
-            legend.opacity ?? ALERT_LCD_SILHOUETTE_OPACITY;
-        context.fillText(legend.text, alertRight, laneY(legend.index));
+        context.globalAlpha = legend.opacity;
+        context.fillText(legend.text, alertRight, alertLaneY(legend.index));
     }
     for (const [index, lane] of lanes.entries()) {
-        if (
-            !lane.visible ||
-            context.measureText(lane.text).width > availableWidth
-        )
+        if (!lane.visible || alertTextWidth(lane.text) > availableWidth)
             continue;
         context.fillStyle = lane.color;
         context.globalAlpha = lane.blinking && !blinkIsBright ? 0.18 : 1;
-        context.fillText(lane.text, alertRight, laneY(index));
+        context.fillText(lane.text, alertRight, alertLaneY(index));
     }
     context.restore();
 }
@@ -5764,6 +6009,26 @@ function drawGame(width, height) {
 }
 
 /**
+ * Add four L-shaped corner brackets around a square to the current path.
+ * @param {number} centerX Square center x.
+ * @param {number} centerY Square center y.
+ * @param {number} half Half the square's side length.
+ * @param {number} length Length of each bracket arm.
+ * @returns {void}
+ */
+function traceCornerBrackets(centerX, centerY, half, length) {
+    for (const signX of [-1, 1]) {
+        for (const signY of [-1, 1]) {
+            const cornerX = centerX + signX * half;
+            const cornerY = centerY + signY * half;
+            context.moveTo(cornerX - signX * length, cornerY);
+            context.lineTo(cornerX, cornerY);
+            context.lineTo(cornerX, cornerY - signY * length);
+        }
+    }
+}
+
+/**
  * Lavender brackets identify helper assignments, including a lone helper, so
  * the player can support the fleet without enabling automatic controls.
  * @param {number} width Arena width in CSS pixels.
@@ -5784,6 +6049,7 @@ function drawStarfleetFocus(width, height) {
             continue;
         groups.set(ship.fleetTarget, (groups.get(ship.fleetTarget) ?? 0) + 1);
     }
+    if (groups.size === 0) return;
     context.save();
     context.beginPath();
     context.rect(0, 0, width, height);
@@ -5797,18 +6063,7 @@ function drawStarfleetFocus(width, height) {
     for (const [target, count] of groups) {
         const radius = target.radius + BORG_FOCUS_LOCK_BRACKET_PADDING;
         context.beginPath();
-        for (const x of [-1, 1])
-            for (const y of [-1, 1]) {
-                context.moveTo(
-                    target.x + x * (radius - 9),
-                    target.y + y * radius,
-                );
-                context.lineTo(target.x + x * radius, target.y + y * radius);
-                context.lineTo(
-                    target.x + x * radius,
-                    target.y + y * (radius - 9),
-                );
-            }
+        traceCornerBrackets(target.x, target.y, radius, 9);
         context.stroke();
         const label = `STARFLEET ×${count}`;
         const halfWidth = context.measureText(label).width / 2 + 4;
@@ -5861,7 +6116,8 @@ function drawBorgFocusLock(width, height) {
         const cornerLength = 9;
 
         // 1. Poisonous Borg green telemetry laser beams converging from focusing cubes
-        context.strokeStyle = BORG_FOCUS_LOCK_BEAM;
+        context.strokeStyle = BORG_FOCUS_LOCK_COLOR;
+        context.globalAlpha = BORG_FOCUS_LOCK_BEAM_ALPHA;
         context.lineWidth = 1.5;
         context.setLineDash([4, 6]);
         context.lineDashOffset = -animTime * 36;
@@ -5874,10 +6130,12 @@ function drawBorgFocusLock(width, height) {
         context.setLineDash([]);
 
         // 2. Faint toxic green scanning aura behind the targeted ship
-        context.fillStyle = `rgba(119, 255, 136, ${0.06 + pulse * 0.05})`;
+        context.fillStyle = BORG_FOCUS_LOCK_COLOR;
+        context.globalAlpha = 0.06 + pulse * 0.05;
         context.beginPath();
         context.arc(ship.x, ship.y, radius, 0, Math.PI * 2);
         context.fill();
+        context.globalAlpha = 1;
 
         // 3. Rotating segmented cybernetic reticle ring
         const rotationAngle = animTime * BORG_FOCUS_LOCK_ROTATION_SPEED;
@@ -5896,22 +6154,7 @@ function drawBorgFocusLock(width, height) {
         context.lineWidth = 2.5;
         const halfBox = radius + 3;
         context.beginPath();
-        // Top-Left corner
-        context.moveTo(ship.x - halfBox, ship.y - halfBox + cornerLength);
-        context.lineTo(ship.x - halfBox, ship.y - halfBox);
-        context.lineTo(ship.x - halfBox + cornerLength, ship.y - halfBox);
-        // Top-Right corner
-        context.moveTo(ship.x + halfBox - cornerLength, ship.y - halfBox);
-        context.lineTo(ship.x + halfBox, ship.y - halfBox);
-        context.lineTo(ship.x + halfBox, ship.y - halfBox + cornerLength);
-        // Bottom-Right corner
-        context.moveTo(ship.x + halfBox, ship.y + halfBox - cornerLength);
-        context.lineTo(ship.x + halfBox, ship.y + halfBox);
-        context.lineTo(ship.x + halfBox - cornerLength, ship.y + halfBox);
-        // Bottom-Left corner
-        context.moveTo(ship.x - halfBox + cornerLength, ship.y + halfBox);
-        context.lineTo(ship.x - halfBox, ship.y + halfBox);
-        context.lineTo(ship.x - halfBox, ship.y + halfBox - cornerLength);
+        traceCornerBrackets(ship.x, ship.y, halfBox, cornerLength);
         context.stroke();
 
         // 5. Poisonous Borg HUD telemetry lock badge
@@ -6424,69 +6667,46 @@ function drawPauseHelp(width, height) {
 }
 
 /**
- * Move one scalar body coordinate without allocating a result object. This is
- * the hot path used by every moving body on every frame; the loop retains the
- * defensive multi-bounce behavior for tiny viewports.
- * @param {PhysicsBody} body Body whose coordinate and velocity are updated.
+ * Move one ship coordinate without allocating a result object. This is the
+ * hot path used by every ship on every frame; the loop retains the defensive
+ * multi-bounce behavior for tiny viewports. Each wall touch goes through the
+ * shared contact solver, which owns the velocity response.
+ * @param {Starship} ship Hull whose coordinate is updated.
  * @param {"x"|"y"} positionProperty Coordinate property to advance.
- * @param {"velocityX"|"velocityY"} velocityProperty Matching velocity property.
  * @param {number} displacement Signed coordinate displacement.
  * @param {number} minimum Inclusive lower coordinate bound.
  * @param {number} maximum Inclusive upper coordinate bound.
- * @param {number} [bounceCoefficient] Normal velocity multiplier without a callback.
- * @param {(normal: Vector2) => void} [onCollision] Contact handler for each wall hit.
  * @returns {void}
  */
-function advanceAndReflect(
-    body,
-    positionProperty,
-    velocityProperty,
-    displacement,
-    minimum,
-    maximum,
-    bounceCoefficient = 1,
-    onCollision,
-) {
+function advanceShipAxis(ship, positionProperty, displacement, minimum, maximum) {
     if (maximum <= minimum) {
-        body[positionProperty] = (minimum + maximum) / 2;
+        ship[positionProperty] = (minimum + maximum) / 2;
         return;
     }
 
-    let nextPosition = body[positionProperty] + displacement;
-    let directionMultiplier = 1;
-
+    const horizontal = positionProperty === "x";
+    let nextPosition = ship[positionProperty] + displacement;
     while (nextPosition < minimum || nextPosition > maximum) {
         if (nextPosition < minimum) {
             nextPosition = minimum + (minimum - nextPosition);
-            directionMultiplier *= -1;
-            body[positionProperty] = minimum;
-            if (onCollision === undefined) {
-                body[velocityProperty] *= bounceCoefficient;
-            } else {
-                onCollision(
-                    positionProperty === "x" ? {x: -1, y: 0} : {x: 0, y: -1},
-                );
-            }
+            ship[positionProperty] = minimum;
+            resolveShipWallContact(
+                ship,
+                horizontal ? WALL_NORMAL_LEFT : WALL_NORMAL_TOP,
+            );
         }
 
         if (nextPosition > maximum) {
             nextPosition = maximum - (nextPosition - maximum);
-            directionMultiplier *= -1;
-            body[positionProperty] = maximum;
-            if (onCollision === undefined) {
-                body[velocityProperty] *= bounceCoefficient;
-            } else {
-                onCollision(
-                    positionProperty === "x" ? { x: 1, y: 0 } : { x: 0, y: 1 },
-                );
-            }
+            ship[positionProperty] = maximum;
+            resolveShipWallContact(
+                ship,
+                horizontal ? WALL_NORMAL_RIGHT : WALL_NORMAL_BOTTOM,
+            );
         }
     }
 
-    body[positionProperty] = nextPosition;
-    if (onCollision === undefined) {
-        body[velocityProperty] *= directionMultiplier;
-    }
+    ship[positionProperty] = nextPosition;
 }
 
 /**
@@ -6556,6 +6776,37 @@ function applyShipCollisionAngleAdjustment(angularImpulse, ship) {
 }
 
 /**
+ * Push a rock out of one wall and apply the static-wall contact impulse at its
+ * deepest vertex; energy lost to the wall becomes sparks.
+ * @param {Asteroid} asteroid Rock touching the wall.
+ * @param {Vector2} normal Normal pointing from the rock toward the wall.
+ * @param {number} penetration Nonnegative overlap depth in CSS pixels.
+ * @returns {boolean} Whether the rock moved or received an impulse.
+ */
+function resolveAsteroidWallContact(asteroid, normal, penetration) {
+    if (penetration > 0) {
+        asteroid.x -= normal.x * penetration;
+        asteroid.y -= normal.y * penetration;
+    }
+
+    asteroid.collisionPolygon();
+    const contactPoint = supportPoint(asteroid.worldVertices, normal);
+    const beforeEnergy = bodyKineticEnergy(asteroid);
+    const response = applyContactImpulse(
+        asteroid,
+        STATIC_WALL_BODY,
+        normal,
+        contactPoint,
+    );
+
+    emitSparksAt(
+        contactPoint,
+        interactionKineticEnergyLoss(beforeEnergy, bodyKineticEnergy(asteroid)),
+    );
+    return penetration > 0 || response.normalImpulse > COLLISION_EPSILON;
+}
+
+/**
  * @param {Asteroid} asteroid
  * @param {number} width
  * @param {number} height
@@ -6574,45 +6825,40 @@ function resolveAsteroidWallCollisions(asteroid, width, height) {
         const bounds = asteroid.worldBounds;
         let changed = false;
 
-        const resolveWall = (normal, penetration) => {
-            if (penetration > 0) {
-                asteroid.x -= normal.x * penetration;
-                asteroid.y -= normal.y * penetration;
-                changed = true;
-            }
-
-            asteroid.collisionPolygon();
-            const contactPoint = supportPoint(asteroid.worldVertices, normal);
-            const beforeEnergy = bodyKineticEnergy(asteroid);
-            const response = applyContactImpulse(
-                asteroid,
-                STATIC_WALL_BODY,
-                normal,
-                contactPoint,
-            );
-            const afterEnergy = bodyKineticEnergy(asteroid);
-
-            emitSparksAt(
-                contactPoint,
-                interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
-            );
-            changed ||= response.normalImpulse > COLLISION_EPSILON;
-        };
-
         if (bounds.minimumX <= COLLISION_EPSILON) {
-            resolveWall({x: -1, y: 0}, Math.max(0, -bounds.minimumX));
+            changed =
+                resolveAsteroidWallContact(
+                    asteroid,
+                        WALL_NORMAL_LEFT,
+                    Math.max(0, -bounds.minimumX),
+                ) || changed;
         }
 
         if (bounds.maximumX >= width - COLLISION_EPSILON) {
-            resolveWall({x: 1, y: 0}, Math.max(0, bounds.maximumX - width));
+            changed =
+                resolveAsteroidWallContact(
+                    asteroid,
+                    WALL_NORMAL_RIGHT,
+                    Math.max(0, bounds.maximumX - width),
+                ) || changed;
         }
 
         if (bounds.minimumY <= COLLISION_EPSILON) {
-            resolveWall({x: 0, y: -1}, Math.max(0, -bounds.minimumY));
+            changed =
+                resolveAsteroidWallContact(
+                    asteroid,
+                    WALL_NORMAL_TOP,
+                    Math.max(0, -bounds.minimumY),
+                ) || changed;
         }
 
         if (bounds.maximumY >= height - COLLISION_EPSILON) {
-            resolveWall({x: 0, y: 1}, Math.max(0, bounds.maximumY - height));
+            changed =
+                resolveAsteroidWallContact(
+                    asteroid,
+                    WALL_NORMAL_BOTTOM,
+                    Math.max(0, bounds.maximumY - height),
+                ) || changed;
         }
 
         if (!changed) {
@@ -6641,6 +6887,38 @@ function cross2D(firstX, firstY, secondX, secondY) {
  */
 function clamp01(value) {
     return Math.max(0, Math.min(1, value));
+}
+
+/**
+ * Time at which two constant-velocity bodies are nearest, from relative
+ * position r and velocity v: t = -(r·v)/|v|².
+ * https://en.wikipedia.org/wiki/Closest_point_of_approach
+ * @param {number} x Relative position x.
+ * @param {number} y Relative position y.
+ * @param {number} velocityX Relative velocity x.
+ * @param {number} velocityY Relative velocity y.
+ * @returns {number | undefined} Unclamped time, or none without relative motion.
+ */
+function closestApproachTime(x, y, velocityX, velocityY) {
+    const speedSquared = velocityX ** 2 + velocityY ** 2;
+    return speedSquared > COLLISION_EPSILON
+        ? -(x * velocityX + y * velocityY) / speedSquared
+        : undefined;
+}
+
+/**
+ * Closest approach limited to a forward lookahead window; bodies without
+ * relative motion are judged where they are now.
+ * @param {number} x Relative position x.
+ * @param {number} y Relative position y.
+ * @param {number} velocityX Relative velocity x.
+ * @param {number} velocityY Relative velocity y.
+ * @param {number} lookahead Latest time considered, in seconds.
+ * @returns {number} Time in [0, lookahead].
+ */
+function closestApproachTimeWithin(x, y, velocityX, velocityY, lookahead) {
+    const time = closestApproachTime(x, y, velocityX, velocityY) ?? 0;
+    return Math.max(0, Math.min(lookahead, time));
 }
 
 function wrapAngle(angle) {
@@ -7647,6 +7925,18 @@ function emitSparksAt(contactPoint, kineticEnergyLoss) {
     }
 }
 
+/** @type {Set<PhysicsBody>} Reused per-bullet set of bodies already struck. */
+const struckBodies = new Set();
+
+/**
+ * Sweep every pulse against bodies and walls. Bodies answer through
+ * `projectileHitParameter` and `receiveProjectile`, so this loop knows nothing
+ * about shields, wrecks or fragmentation. Ships are tested first and win exact
+ * ties; bodies win ties against walls.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {void}
+ */
 function resolveBulletCollisions(width, height) {
     for (
         let bulletIndex = bullets.length - 1;
@@ -7656,8 +7946,7 @@ function resolveBulletCollisions(width, height) {
         const bullet = bullets[bulletIndex];
         let segmentStart = {x: bullet.previousX, y: bullet.previousY};
         let segmentEnd = {x: bullet.x, y: bullet.y};
-        const ignoredAsteroids = new Set();
-        const ignoredShips = new Set();
+        struckBodies.clear();
 
         // A single animation step can contain more than one collision after a
         // bounce. Rebuild the remaining swept segment after every interaction so
@@ -7667,33 +7956,18 @@ function resolveBulletCollisions(width, height) {
             interactionIndex < 16;
             interactionIndex += 1
         ) {
-            const bulletMinimumX = Math.min(segmentStart.x, segmentEnd.x);
-            const bulletMaximumX = Math.max(segmentStart.x, segmentEnd.x);
-            const bulletMinimumY = Math.min(segmentStart.y, segmentEnd.y);
-            const bulletMaximumY = Math.max(segmentStart.y, segmentEnd.y);
-            let hitTarget = undefined;
-            let nearestHitParameter = Infinity;
-
-            for (const asteroid of physicalTargets()) {
-                if (
-                    ignoredAsteroids.has(asteroid) ||
-                    bulletMaximumX < asteroid.x - asteroid.radius ||
-                    bulletMinimumX > asteroid.x + asteroid.radius ||
-                    bulletMaximumY < asteroid.y - asteroid.radius ||
-                    bulletMinimumY > asteroid.y + asteroid.radius
-                ) {
-                    continue;
-                }
-
-                const hitParameter = segmentPolygonIntersectionParameter(
+            /** @type {Starship | Asteroid | undefined} */
+            let target = undefined;
+            let targetParameter = Infinity;
+            for (const body of allBodies()) {
+                if (struckBodies.has(body)) continue;
+                const parameter = body.projectileHitParameter(
                     segmentStart,
                     segmentEnd,
-                    asteroid.collisionPolygon(),
                 );
-
-                if (hitParameter !== undefined && hitParameter < nearestHitParameter) {
-                    nearestHitParameter = hitParameter;
-                    hitTarget = asteroid;
+                if (parameter !== undefined && parameter < targetParameter) {
+                    target = body;
+                    targetParameter = parameter;
                 }
             }
 
@@ -7703,42 +7977,17 @@ function resolveBulletCollisions(width, height) {
                 width,
                 height,
             );
-            let ship = undefined;
-            let shipHitParameter = undefined;
-            for (const candidate of starships) {
-                if (!candidate.alive || ignoredShips.has(candidate)) continue;
-                const parameter = segmentCircleIntersectionParameter(
-                    segmentStart,
-                    segmentEnd,
-                    candidate,
-                );
-                if (
-                    parameter !== undefined &&
-                    parameter < (shipHitParameter ?? Infinity)
-                ) {
-                    ship = candidate;
-                    shipHitParameter = parameter;
-                }
-            }
-            const shipIsFirst =
-                shipHitParameter !== undefined &&
-                shipHitParameter < nearestHitParameter &&
-                shipHitParameter <= (wallHit?.parameter ?? Infinity);
-            const asteroidIsFirst =
-                hitTarget !== undefined &&
-                !shipIsFirst &&
-                nearestHitParameter <= (wallHit?.parameter ?? Infinity);
-            const bodyIsFirst = asteroidIsFirst || shipIsFirst;
+            const bodyIsFirst =
+                target !== undefined &&
+                targetParameter <= (wallHit?.parameter ?? Infinity);
 
             if (!bodyIsFirst && wallHit === undefined) {
                 break;
             }
 
-            const hitParameter = asteroidIsFirst
-                ? nearestHitParameter
-                : shipIsFirst
-                    ? shipHitParameter
-                    : wallHit.parameter;
+            const hitParameter = bodyIsFirst
+                ? targetParameter
+                : wallHit.parameter;
             const hitPoint = {
                 x: segmentStart.x + (segmentEnd.x - segmentStart.x) * hitParameter,
                 y: segmentStart.y + (segmentEnd.y - segmentStart.y) * hitParameter,
@@ -7749,127 +7998,43 @@ function resolveBulletCollisions(width, height) {
                     segmentEnd.y - segmentStart.y,
                 ) *
                 (1 - hitParameter);
-            // Vessel hits never alter the vessel's motion.
             const canReflect = bullet.reflectionCount < bullet.maxReflections;
 
-            let normal = bodyIsFirst ? undefined : wallHit.normal;
+            let normal = undefined;
             let interactionBeforeEnergy = bodyKineticEnergy(bullet);
             let interactionAfterEnergy = interactionBeforeEnergy;
-            let removedEnergy = 0;
 
-            if (
-                asteroidIsFirst &&
-                hitTarget instanceof BorgCube &&
-                hitTarget.alive
-            ) {
-                hitTarget.hitPhaser(hitPoint);
-                // Live cube shields consume either faction's pulse after damage.
-                // Starfleet pulses can still ricochet from rocks, ships and walls.
-                bullets.splice(bulletIndex, 1);
-                break;
-            } else if (asteroidIsFirst) {
-                const asteroid = hitTarget;
+            if (bodyIsFirst) {
                 bullet.x = hitPoint.x;
                 bullet.y = hitPoint.y;
-                const beforeEnergy =
-                    bodyKineticEnergy(asteroid) + bodyKineticEnergy(bullet);
-                interactionBeforeEnergy = beforeEnergy;
-
-                normal = polygonNormalAtPoint(
-                    asteroid.collisionPolygon(),
-                    hitPoint,
-                    bullet.velocityX,
-                    bullet.velocityY,
-                );
-                const incomingDirection = normalizedVector(
-                    bullet.velocityX,
-                    bullet.velocityY,
-                );
-                const response =
-                    asteroid instanceof BorgCube
-                        ? applyProjectileContact(
-                              asteroid,
-                              bullet,
-                              normal,
-                              hitPoint,
-                          )
-                        : applyContactImpulse(
-                              asteroid,
-                              bullet,
-                              normal,
-                              hitPoint,
-                          );
-                if (!(asteroid instanceof BorgCube) && bullet.source === "starfleet")
-                    recordAsteroidDamage(response, "blasters");
+                interactionBeforeEnergy += bodyKineticEnergy(target);
+                const hit = target.receiveProjectile(bullet, hitPoint);
+                if (hit === undefined) {
+                    // Absorbed outright: no ricochet and no spark burst.
+                    bullets.splice(bulletIndex, 1);
+                    break;
+                }
+                normal = hit.normal;
                 bullet.syncAngle();
                 if (canReflect) {
                     bullet.recordReflection();
                 }
-                // Wrecks remain solid; rocks fragment on contact. Only Starfleet
-                // pulses can continue along the reflected path.
-                const fragments =
-                    asteroid instanceof BorgCube
-                        ? [asteroid]
-                        : fragmentAsteroidAtImpact(
-                            asteroid,
-                            hitPoint,
-                            incomingDirection,
-                            response,
-                            "phaser",
-                        );
-                const afterEnergy = fragments.reduce(
-                    (energy, fragment) => energy + bodyKineticEnergy(fragment),
-                    bodyKineticEnergy(bullet),
-                );
-                interactionAfterEnergy = afterEnergy;
-                for (const fragment of fragments) {
-                    ignoredAsteroids.add(fragment);
+                interactionAfterEnergy = bodyKineticEnergy(bullet);
+                for (const body of hit.bodies) {
+                    interactionAfterEnergy += bodyKineticEnergy(body);
+                    struckBodies.add(body);
                 }
-            } else if (shipIsFirst) {
-                bullet.x = hitPoint.x;
-                bullet.y = hitPoint.y;
-                const beforeEnergy =
-                    bodyKineticEnergy(ship) + bodyKineticEnergy(bullet);
-                interactionBeforeEnergy = beforeEnergy;
-
-                normal = circleNormalAtPoint(
-                    ship,
-                    hitPoint,
-                    bullet.velocityX,
-                    bullet.velocityY,
-                );
-                const bulletImpulse = applyProjectileContact(
-                    ship,
-                    bullet,
-                    normal,
-                    hitPoint,
-                );
-                ship.applyWeaponDamage(
-                    contactImpulseMagnitude(bulletImpulse),
-                    bullet.source,
-                );
-                if (bulletImpulse.normalImpulse > COLLISION_EPSILON) {
-                    empSound.playRandom();
-                }
-                bullet.syncAngle();
-
-                if (canReflect) {
-                    bullet.recordReflection();
-                }
-
-                const afterEnergy = bodyKineticEnergy(ship) + bodyKineticEnergy(bullet);
-                interactionAfterEnergy = afterEnergy;
-                ignoredShips.add(ship);
+            } else {
+                normal = wallHit.normal;
             }
 
             if (!canReflect) {
-                removedEnergy += bodyKineticEnergy(bullet);
                 emitSparksAt(
                     hitPoint,
                     interactionKineticEnergyLoss(
                         interactionBeforeEnergy,
                         interactionAfterEnergy,
-                        removedEnergy,
+                        bodyKineticEnergy(bullet),
                     ),
                 );
                 bullets.splice(bulletIndex, 1);
@@ -7885,7 +8050,7 @@ function resolveBulletCollisions(width, height) {
                 interactionKineticEnergyLoss(
                     interactionBeforeEnergy,
                     interactionAfterEnergy,
-                    removedEnergy,
+                    0,
                 ),
             );
             const direction = normalizedVector(
@@ -8618,29 +8783,23 @@ function updateGame(deltaTime, width, height) {
 
     for (const ship of starships) {
         if (!ship.alive) continue;
-        // The ship is a dynamic rigid body just like an asteroid. The wall callback
-        // sends each shield contact through the shared normal/friction solver so a
+        // The ship is a dynamic rigid body just like an asteroid. Each wall
+        // touch sends the shield contact through the shared normal/friction solver so a
         // tangential impact changes the ship's heading instead of only
         // reflecting its center-of-mass velocity.
-        advanceAndReflect(
+        advanceShipAxis(
             ship,
             "x",
-            "velocityX",
             ship.velocityX * deltaTime,
             STARSHIP_RADIUS,
             width - STARSHIP_RADIUS,
-            BOUNCINESS,
-            (normal) => resolveShipWallContact(ship, normal),
         );
-        advanceAndReflect(
+        advanceShipAxis(
             ship,
             "y",
-            "velocityY",
             ship.velocityY * deltaTime,
             STARSHIP_RADIUS,
             height - STARSHIP_RADIUS,
-            BOUNCINESS,
-            (normal) => resolveShipWallContact(ship, normal),
         );
 
         updateAutoGunnerFiring(ship);
@@ -8651,8 +8810,7 @@ function updateGame(deltaTime, width, height) {
     resolveBodyCollisions();
     if (
         starships.some((ship) => ship.alive) &&
-        asteroids.length === 0 &&
-        !borgCubes.some((cube) => cube.alive)
+        priorityTargets().next().done
     ) {
         beginWin();
     }
@@ -8671,23 +8829,17 @@ function handoffCaptain() {
     const destination = nearestStarship(departing);
     if (!destination) return false;
 
-    destination.controls.autopilotEnabled = true;
-    destination.controls.autoGunnerEnabled = true;
+    destination.controls.enableAutomation();
     destination.controls.manualPressedKeys.clear();
     for (const key of departing.controls.manualPressedKeys) {
         destination.controls.manualPressedKeys.add(key);
     }
-    clearPressedKeys(departing);
+    departing.controls.clearInputs();
     captainTransport = new CaptainTransport(departing, destination);
     captainTransportSound.playRandom();
     playerShip = destination;
     syncPressedKeys(destination);
-    // Observe the receiving hull afresh; changing hulls is not fresh damage.
-    alertLevel = 0;
-    alertRecoveryTime = 0;
-    alertHullLossRate = 0;
-    alertPreviousHullState = destination.hullState;
-    redAlertSoundPlayed = false;
+    resetAlert(destination.hullState);
     return true;
 }
 
@@ -8761,36 +8913,24 @@ function animate(frameTime) {
  */
 function spawnDeveloperFriendly(width, height) {
     const helper = new Starship(0, 0);
-    const bodies = [...starships, ...borgCubes, ...asteroids];
     let bestClearance = -Infinity;
     for (let index = 0; index < DEVELOPER_SPAWN_CANDIDATES; index += 1) {
         const angle = (index * Math.PI * 2) / DEVELOPER_SPAWN_CANDIDATES;
-        const x = constrainPosition(
-            playerShip.x + Math.cos(angle) * HELPER_SPAWN_DISTANCE,
-            helper.radius,
+        const position = spawnPositionAround(
+            playerShip.x,
+            playerShip.y,
+            angle,
+            HELPER_SPAWN_DISTANCE,
             width,
-        );
-        const y = constrainPosition(
-            playerShip.y + Math.sin(angle) * HELPER_SPAWN_DISTANCE,
-            helper.radius,
             height,
         );
-        const clearance = bodies.reduce(
-            (nearest, body) =>
-                Math.min(
-                    nearest,
-                    Math.hypot(x - body.x, y - body.y) -
-                        body.radius - helper.radius,
-                ),
-            Infinity,
-        );
+        const clearance = spawnClearance(position.x, position.y);
         if (clearance > bestClearance) {
             bestClearance = clearance;
-            helper.reset(x, y, wrapAngle(angle + Math.PI));
+            helper.reset(position.x, position.y, wrapAngle(angle + Math.PI));
         }
     }
-    helper.controls.autopilotEnabled = true;
-    helper.controls.autoGunnerEnabled = true;
+    helper.controls.enableAutomation();
     syncPressedKeys(helper);
     starships.push(helper);
 }
@@ -8875,7 +9015,7 @@ document.addEventListener("keydown", (event) => {
                 // A pause freezes gameplay input as well as simulation time. Requiring
                 // a fresh Space press after resuming avoids a held key firing
                 // unexpectedly.
-                for (const ship of starships) clearPressedKeys(ship);
+                for (const ship of starships) ship.controls.clearInputs();
             }
         }
 
@@ -8918,7 +9058,7 @@ document.addEventListener("keyup", (event) => {
 });
 
 window.addEventListener("blur", () => {
-    for (const ship of starships) clearPressedKeys(ship);
+    for (const ship of starships) ship.controls.clearInputs();
 });
 
 /**
