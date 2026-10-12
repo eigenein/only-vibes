@@ -3,7 +3,13 @@ const canvas = document.querySelector("#game-canvas");
 // needs browser-page transparency. An opaque buffer avoids unnecessary
 // compositing work. Browser power policies can still limit the
 // animation callback rate independently of how inexpensive drawing is.
-const context = canvas.getContext("2d", {alpha: false});
+/** The visible frame's 2D context. */
+const screenContext = canvas.getContext("2d", {alpha: false});
+// Painters draw through this binding. It normally targets the screen; a
+// CachedLayer retargets it while baking, so one set of painter functions
+// serves both live drawing and pre-rendered layers.
+/** @type {CanvasRenderingContext2D} */
+let context = screenContext;
 
 /** @typedef {{ x: number, y: number }} Vector2 */
 /**
@@ -31,6 +37,11 @@ const context = canvas.getContext("2d", {alpha: false});
  * @property {number} tangentImpulse
  * @property {number} firstAngularImpulse
  * @property {number} secondAngularImpulse
+ */
+/**
+ * Who dealt hull damage, for achievement attribution. Rocks and walls are
+ * "environment" and never attribute a loss.
+ * @typedef {"starfleet" | "borg" | "environment"} DamageCause
  */
 
 // Keep keyboard control available after the player clicks the play field.
@@ -473,37 +484,54 @@ const BORG_HULL_FRACTURES = Object.freeze([
 // The shared algorithm accepts per-faction constants so each side can tune
 // its cooperation tendency independently.
 
-// --- Borg focus constants ---
-// Borg cubes coordinate in groups of 2 or more but spread across multiple
-// targets when the fleet is large enough to maintain coverage.
-const BORG_FOCUS_GROUP_MIN_SIZE = 2;
-// Nearby teamwork can justify about 12% of a field diagonal in extra travel;
-// distant cubes favor their own local targets instead of crossing the field.
-const BORG_FOCUS_SYNERGY_BONUS = 0.6;
-const BORG_FOCUS_MULTI_GROUP_BONUS = 0.8;
-const BORG_FOCUS_OVERSATURATION_PENALTY = 0.6;
-const BORG_FOCUS_DISTANCE_WEIGHT = 5.2;
-const BORG_FOCUS_VULNERABILITY_WEIGHT = 0.35;
-const BORG_FOCUS_HYSTERESIS_BONUS = 0.05;
-// Zero preserves Borg's existing flat group reward and willingness to split.
-const BORG_FOCUS_COHESION_WEIGHT = 0;
+/**
+ * Per-faction tuning for the shared focus-fire algorithm.
+ * @typedef {Object} FleetTacticsConfig
+ * @property {number} groupMinSize Attackers needed before a target counts as a focus group.
+ * @property {number} synergyBonus Flat reward once a group reaches the minimum size.
+ * @property {number} multiGroupBonus Reward for maintaining two or more focus groups.
+ * @property {number} oversaturationPenalty Per-attacker cost beyond three on one target.
+ * @property {number} distanceWeight Cost per arena diagonal of travel to a target.
+ * @property {number} vulnerabilityWeight Reward for a target's depleted reserves.
+ * @property {number} hysteresisBonus Minimum gain to switch, preventing target flicker.
+ * @property {number} cohesionWeight Reward per attacker pair sharing a target.
+ */
 
-// --- Starfleet focus constants ---
+// Borg cubes coordinate in groups of 2 or more but spread across multiple
+// targets when the fleet is large enough to maintain coverage. Nearby teamwork
+// can justify about 12% of a field diagonal in extra travel; distant cubes
+// favor their own local targets instead of crossing the field. Zero cohesion
+// preserves the flat group reward and willingness to split.
+/** @type {Readonly<FleetTacticsConfig>} */
+const BORG_TACTICS = Object.freeze({
+    groupMinSize: 2,
+    synergyBonus: 0.6,
+    multiGroupBonus: 0.8,
+    oversaturationPenalty: 0.6,
+    distanceWeight: 5.2,
+    vulnerabilityWeight: 0.35,
+    hysteresisBonus: 0.05,
+    cohesionWeight: 0,
+});
+
 // Starfleet helpers favor cooperation through a stronger group bonus, no
 // oversaturation penalty, and no extra reward for maintaining multiple groups.
 // The lower distance weight lets helpers travel farther to join a focus group.
 // Each helper pair sharing a target earns cohesion, so larger groups keep
-// attracting helpers. Distance can still justify separate engagements.
-const STARFLEET_FOCUS_GROUP_MIN_SIZE = 2;
-const STARFLEET_FOCUS_SYNERGY_BONUS = 2.0;
-const STARFLEET_FOCUS_MULTI_GROUP_BONUS = 0;
-const STARFLEET_FOCUS_OVERSATURATION_PENALTY = 0;
-const STARFLEET_FOCUS_DISTANCE_WEIGHT = 3.6;
-const STARFLEET_FOCUS_VULNERABILITY_WEIGHT = 0.35;
-const STARFLEET_FOCUS_HYSTERESIS_BONUS = 0.02;
-// Per-pair reward: joining a pair gains twice this value; merging two pairs
-// gains this value minus the flat synergy bonus lost by the departing pair.
-const STARFLEET_FOCUS_COHESION_WEIGHT = 2.4;
+// attracting helpers; joining a pair gains twice the cohesion weight, merging
+// two pairs gains it minus the departing pair's flat synergy bonus. Distance
+// can still justify separate engagements.
+/** @type {Readonly<FleetTacticsConfig>} */
+const STARFLEET_TACTICS = Object.freeze({
+    groupMinSize: 2,
+    synergyBonus: 2.0,
+    multiGroupBonus: 0,
+    oversaturationPenalty: 0,
+    distanceWeight: 3.6,
+    vulnerabilityWeight: 0.35,
+    hysteresisBonus: 0.02,
+    cohesionWeight: 2.4,
+});
 const BORG_FOCUS_LOCK_ROTATION_SPEED = 0.85;
 const BORG_FOCUS_LOCK_BRACKET_PADDING = 12;
 const BORG_FOCUS_LOCK_COLOR = BORG_GREEN;
@@ -923,6 +951,23 @@ function isLiveTarget(target) {
 // screen. Starting any new field clears them; a Set prevents duplicate unlocks.
 /** @type {Set<string>} */
 const roundAchievements = new Set();
+
+/**
+ * The single place where hull losses earn achievements, so every damage path
+ * (weapons, rams, future sources) is attributed identically. Any vessel lost
+ * to the Borg, live cube or wreck, earns Wolf 359; Friendly Fire requires
+ * Starfleet to destroy a helper hull rather than the captain's own.
+ * @param {Starship} ship Hull that has just been destroyed.
+ * @param {DamageCause} cause Party that dealt the final damage.
+ * @returns {void}
+ */
+function recordVesselLoss(ship, cause) {
+    if (cause === "borg") {
+        roundAchievements.add("wolf-359");
+    } else if (cause === "starfleet" && ship !== playerShip) {
+        roundAchievements.add("friendly-fire");
+    }
+}
 // Asteroids have no health pool: compare the impulse-based impact damage
 // delivered directly to them by each weapon in this field. Wall impacts,
 // asteroid-to-asteroid contacts, and damage received by the ship do not count.
@@ -1040,6 +1085,14 @@ class Starship {
         return clamp01(this.hullState / SHIP_MAX_STATE);
     }
 
+    /** @returns {number} Combined hull and shield reserve, for Borg targeting. */
+    get reserveRatio() {
+        return (
+            (this.hullState + this.shieldState) /
+            (SHIP_MAX_STATE + SHIELD_MAX_STATE)
+        );
+    }
+
     /** @returns {void} Launch a pulse without changing the firing ship's motion. */
     emitBullet() {
         const directionX = Math.cos(this.angle);
@@ -1090,19 +1143,21 @@ class Starship {
     /**
      * Absorb an impact using the shield charge before contact.
      * @param {number} collisionMomentum Contact impulse magnitude.
+     * @param {DamageCause} cause Party credited if the hull is lost.
      * @returns {void}
      */
-    applyCollisionDamage(collisionMomentum) {
-        this.applyImpactDamage(collisionMomentum, false);
+    applyCollisionDamage(collisionMomentum, cause) {
+        this.applyImpactDamage(collisionMomentum, false, cause);
     }
 
     /**
      * Apply a discrete weapon hit independently of the scrape protection budget.
      * @param {number} collisionMomentum Projectile contact impulse magnitude.
+     * @param {DamageCause} cause Party credited if the hull is lost.
      * @returns {void}
      */
-    applyWeaponDamage(collisionMomentum) {
-        this.applyImpactDamage(collisionMomentum, true);
+    applyWeaponDamage(collisionMomentum, cause) {
+        this.applyImpactDamage(collisionMomentum, true, cause);
     }
 
     /**
@@ -1111,10 +1166,12 @@ class Starship {
      * weapon hits neither use nor reduce it, even during a physical collision.
      * @param {number} collisionMomentum Finite, nonnegative contact impulse.
      * @param {boolean} weapon Whether this is a discrete projectile impact.
+     * @param {DamageCause} cause Party credited if the hull is lost.
      * @returns {void}
      */
-    applyImpactDamage(collisionMomentum, weapon) {
+    applyImpactDamage(collisionMomentum, weapon, cause) {
         if (this.spawnImmunityRemaining > 0) return;
+        const wasAlive = this.alive;
         const safeCollisionMomentum = Number.isFinite(collisionMomentum)
             ? Math.max(0, collisionMomentum)
             : 0;
@@ -1144,7 +1201,50 @@ class Starship {
 
         if (this.hullState <= COLLISION_EPSILON) {
             this.hullState = 0;
+            // Attribute only the alive-to-dead transition, once per hull.
+            if (wasAlive) recordVesselLoss(this, cause);
         }
+    }
+
+    /** @returns {DamageCause} Credited when this hull destroys another. */
+    get faction() {
+        return "starfleet";
+    }
+
+    /** @returns {boolean} Destroyed hulls leave the physical simulation. */
+    get collides() {
+        return this.alive;
+    }
+
+    /** @returns {boolean} Hulls never shatter; they absorb contact as damage. */
+    get fragmentsOnContact() {
+        return false;
+    }
+
+    /**
+     * Body-contact hook for the shared collision pass: take damage credited to
+     * the other body's faction, credit ramming against rocks, then apply the
+     * one-time heading adjustment from this ship's side of the impulse.
+     * @param {PhysicsBody & {faction: DamageCause, fragmentsOnContact: boolean}} other Contacting body.
+     * @param {ContactResponse} response Solved contact impulse.
+     * @param {CollisionManifold} manifold Contact geometry.
+     * @param {number} angularImpulse This body's side of the angular impulse.
+     * @returns {number} Kinetic energy of this body after the contact.
+     */
+    absorbContact(other, response, manifold, angularImpulse) {
+        this.applyCollisionDamage(
+            contactImpulseMagnitude(response),
+            other.faction,
+        );
+        if (
+            other.fragmentsOnContact &&
+            response.normalImpulse > COLLISION_EPSILON
+        ) {
+            recordAsteroidDamage(response, "ramming");
+            empSound.playRandom();
+        }
+        applyShipCollisionAngleAdjustment(angularImpulse, this);
+        return bodyKineticEnergy(this);
     }
 
     /**
@@ -1245,15 +1345,36 @@ let alertRecoveryTime = 0;
 // Bridge-local history observes only the player's hull and resets each field.
 let alertHullLossRate = 0;
 let alertPreviousHullState = SHIP_MAX_STATE;
-let shipFailureActive = false;
+/**
+ * One round state instead of independent pause/failure/win flags, so impossible
+ * combinations cannot arise and only `animate` gates the simulation step.
+ * - "playing": the world advances.
+ * - "paused": simulation time stops while rendering stays alive, so the player
+ *   can inspect a frozen collision and resume without a time jump.
+ * - "failed": the fleet is destroyed; the retry countdown runs.
+ * - "won": the field is clear; the result waits for the player.
+ * @typedef {"playing" | "paused" | "failed" | "won"} RoundPhase
+ */
+// Starting paused gives the player the controls before any movement begins.
+/** @type {RoundPhase} */
+let roundPhase = "paused";
+
+/** @returns {boolean} Whether the round shows a result instead of combat. */
+function roundOver() {
+    return roundPhase === "failed" || roundPhase === "won";
+}
+
+/**
+ * The result screen holds the world like a pause: the pause control reads as
+ * engaged and cosmetic cues freeze until the player continues.
+ * @returns {boolean} Whether the pause control is engaged.
+ */
+function pauseEngaged() {
+    return roundPhase === "paused" || roundPhase === "won";
+}
 let shipFailureTimeRemaining = 0;
-let gameWon = false;
 let previousFrameTime = undefined;
 let asteroidsGenerated = false;
-// Pausing stops simulation time while leaving the render loop alive, so the
-// player can inspect a frozen collision result and resume without a time jump.
-// Starting paused gives the player the controls before any movement begins.
-let gamePaused = true;
 let viewportWidth = 0;
 let viewportHeight = 0;
 const phraseMetricsCache = new Map();
@@ -1694,6 +1815,53 @@ class Asteroid {
         return true;
     }
 
+    /**
+     * Rocks have no rechargeable reserves, so distance and group scoring decide
+     * their assignments without an invented vulnerability advantage.
+     * @returns {number} Remaining reserve fraction.
+     */
+    get reserveRatio() {
+        return 1;
+    }
+
+    /** @returns {DamageCause} Rocks are environmental hazards. */
+    get faction() {
+        return "environment";
+    }
+
+    /** @returns {boolean} A rock replaced by its fragments is out of the pass. */
+    get collides() {
+        return !this.removed;
+    }
+
+    /** @returns {boolean} Whether strong body contacts cut this body. */
+    get fragmentsOnContact() {
+        return true;
+    }
+
+    /**
+     * Body-contact hook for the shared collision pass. Equal and opposite
+     * impulses have the same magnitude, so one strong contact cuts both rocks
+     * of a pair regardless of mass; each piece keeps its post-impact motion.
+     * @param {PhysicsBody} other Contacting body.
+     * @param {ContactResponse} response Solved contact impulse.
+     * @param {CollisionManifold} manifold Contact geometry.
+     * @returns {number} Kinetic energy of the retained rock or its fragments.
+     */
+    absorbContact(other, response, manifold) {
+        let energy = 0;
+        for (const fragment of fragmentAsteroidAtImpact(
+            this,
+            manifold.contactPoint,
+            manifold.normal,
+            response,
+            "body",
+        )) {
+            energy += bodyKineticEnergy(fragment);
+        }
+        return energy;
+    }
+
     get mass() {
         return this.massValue;
     }
@@ -1943,6 +2111,46 @@ class BorgCube extends Asteroid {
     /** @returns {boolean} Whether the cube can still attack or receive damage. */
     get alive() {
         return this.hull > 0;
+    }
+
+    /** @returns {DamageCause} Credited when a cube or wreck destroys a hull. */
+    get faction() {
+        return "borg";
+    }
+
+    /** @returns {boolean} Both live cubes and intact wrecks stay physical. */
+    get collides() {
+        return true;
+    }
+
+    /** @returns {boolean} Cubes are never cut; contacts damage the hull instead. */
+    get fragmentsOnContact() {
+        return false;
+    }
+
+    /**
+     * Body-contact hook for the shared collision pass. Collective contacts
+     * separate hulls and transfer momentum but never consume shields or hull.
+     * @param {PhysicsBody & {faction: DamageCause}} other Contacting body.
+     * @param {ContactResponse} response Solved contact impulse.
+     * @param {CollisionManifold} manifold Contact geometry.
+     * @returns {number} Kinetic energy of this body after the contact.
+     */
+    absorbContact(other, response, manifold) {
+        if (other.faction !== "borg") {
+            this.hitBody(
+                contactImpulseMagnitude(response),
+                manifold.contactPoint,
+            );
+        }
+        return bodyKineticEnergy(this);
+    }
+
+    /** @returns {number} Combined hull and face-shield reserve fraction. */
+    get reserveRatio() {
+        let shields = 0;
+        for (const face of this.faces) shields += face.shield;
+        return (this.hull + shields) / (BORG_HULL + 4 * BORG_FACE_SHIELD);
     }
 
     /**
@@ -2402,7 +2610,7 @@ class BorgCube extends Asteroid {
             const focusGroup = borgCubes.filter(
                 (cube) => cube.alive && cube.targetStarship === opponent,
             );
-            if (focusGroup.length >= BORG_FOCUS_GROUP_MIN_SIZE) {
+            if (focusGroup.length >= BORG_TACTICS.groupMinSize) {
                 const groupIndex = focusGroup.indexOf(this);
                 if (groupIndex >= 0) {
                     const spreadAngle =
@@ -2876,243 +3084,180 @@ function updateBorgHealthTransfers(deltaTime) {
     }
 }
 
-/** @type {number} Round-robin cursor distributing adaptation across live cubes. */
-let borgTacticsCubeIndex = 0;
-
 /**
- * Score one cube's current opportunity using live distance and target reserves.
- * @param {BorgCube} cube Cube considering a target.
- * @param {Starship} target Eligible target.
- * @param {number} arenaDiagonal Positive distance normalization scale.
- * @returns {number} Local tactical value, excluding collective group bonuses.
+ * Shared fleet assignment algorithm. One attacker reconsiders its target per
+ * simulation step rather than searching for a global optimum: only the two
+ * affected groups need rescoring, so work grows linearly with fleet size.
+ * Local optima are intentional. Invalid targets are repaired immediately.
+ * Factions differ only in tuning and in where an attacker stores its target;
+ * targets expose `reserveRatio` so scoring needs no type checks.
+ * @template A, T
  */
-function scoreBorgTarget(cube, target, arenaDiagonal) {
-    const healthRatio =
-        ((target.hullState ?? SHIP_MAX_STATE) +
-            (target.shieldState ?? SHIELD_MAX_STATE)) /
-        (SHIP_MAX_STATE + SHIELD_MAX_STATE);
-    return (
-        -(Math.hypot(cube.x - target.x, cube.y - target.y) / arenaDiagonal) *
-            BORG_FOCUS_DISTANCE_WEIGHT +
-        (1 - clamp01(healthRatio)) *
-            BORG_FOCUS_VULNERABILITY_WEIGHT
-    );
+class FleetTactics {
+    /** Round-robin cursor distributing adaptation across attackers. */
+    index = 0;
+    /** @type {Map<T, number>} Reused per-step assignment counts. */
+    counts = new Map();
+
+    /**
+     * @param {Readonly<FleetTacticsConfig>} config Faction tuning.
+     * @param {(attacker: A) => T | undefined} getTarget Read an assignment.
+     * @param {(attacker: A, target: T | undefined) => void} setTarget Store an assignment.
+     */
+    constructor(config, getTarget, setTarget) {
+        this.config = config;
+        this.getTarget = getTarget;
+        this.setTarget = setTarget;
+    }
+
+    /**
+     * Local opportunity from travel distance and the target's depleted reserves.
+     * @param {A & Vector2} attacker Attacker considering a target.
+     * @param {T & Vector2 & {reserveRatio: number}} target Eligible target.
+     * @param {number} diagonal Positive arena diagonal.
+     * @returns {number} Value excluding collective group terms.
+     */
+    scoreTarget(attacker, target, diagonal) {
+        return (
+            -(Math.hypot(attacker.x - target.x, attacker.y - target.y) /
+                diagonal) *
+                this.config.distanceWeight +
+            (1 - clamp01(target.reserveRatio)) * this.config.vulnerabilityWeight
+        );
+    }
+
+    /**
+     * Group formation, pairwise cohesion, and optional overcrowding costs.
+     * Shared pairs are counted directly; no pair enumeration or fleet search.
+     * @param {number} count Attackers assigned to the target.
+     * @param {number} targetCount Eligible targets.
+     * @returns {number} Group contribution to the collective tactical score.
+     */
+    scoreGroup(count, targetCount) {
+        const config = this.config;
+        return (
+            (count >= config.groupMinSize ? config.synergyBonus : 0) +
+            (config.cohesionWeight * count * (count - 1)) / 2 -
+            (targetCount > 1
+                ? Math.max(0, count - 3) * config.oversaturationPenalty
+                : 0)
+        );
+    }
+
+    /**
+     * Repair invalid assignments, then let one attacker adapt.
+     * @param {A[]} attackers Eligible attackers, in fleet order.
+     * @param {T[]} targets Eligible targets, in world order.
+     * @param {number} width Arena width in CSS pixels.
+     * @param {number} height Arena height in CSS pixels.
+     * @returns {void}
+     */
+    update(attackers, targets, width, height) {
+        const {groupMinSize, hysteresisBonus, multiGroupBonus} = this.config;
+        const counts = this.counts;
+        counts.clear();
+        for (const target of targets) counts.set(target, 0);
+        for (const attacker of attackers) {
+            const target = this.getTarget(attacker);
+            if (!target || !counts.has(target)) {
+                // Spread emergency replacements across eligible targets.
+                // Ordinary adaptation subsequently assembles groups.
+                this.setTarget(
+                    attacker,
+                    targets.length > 0
+                        ? targets[this.index % targets.length]
+                        : undefined,
+                );
+                this.index += 1;
+            }
+            const assignedTarget = this.getTarget(attacker);
+            if (assignedTarget) {
+                counts.set(assignedTarget, (counts.get(assignedTarget) ?? 0) + 1);
+            }
+        }
+        if (attackers.length === 0 || targets.length === 0) {
+            this.index = 0;
+            return;
+        }
+        const attacker = attackers[this.index % attackers.length];
+        this.index = (this.index + 1) % attackers.length;
+        const currentTarget = this.getTarget(attacker);
+        if (!currentTarget) return;
+        const currentCount = counts.get(currentTarget) ?? 0;
+        let focusGroupCount = 0;
+        for (const count of counts.values()) {
+            if (count >= groupMinSize) focusGroupCount += 1;
+        }
+        const diagonal = Math.max(1, Math.hypot(width, height));
+        const currentScore = this.scoreTarget(attacker, currentTarget, diagonal);
+        const leaveGain =
+            this.scoreGroup(currentCount - 1, targets.length) -
+            this.scoreGroup(currentCount, targets.length);
+        let bestGain = hysteresisBonus;
+        let bestTarget = currentTarget;
+        for (const target of targets) {
+            if (target === currentTarget) continue;
+            const targetCount = counts.get(target) ?? 0;
+            const nextGroupCount =
+                focusGroupCount -
+                (currentCount === groupMinSize ? 1 : 0) +
+                (targetCount === groupMinSize - 1 ? 1 : 0);
+            const coverageGain =
+                targets.length > 1 && attackers.length >= 4
+                    ? (Number(nextGroupCount >= 2) -
+                          Number(focusGroupCount >= 2)) *
+                      multiGroupBonus
+                    : 0;
+            const gain =
+                this.scoreTarget(attacker, target, diagonal) -
+                currentScore +
+                leaveGain +
+                this.scoreGroup(targetCount + 1, targets.length) -
+                this.scoreGroup(targetCount, targets.length) +
+                coverageGain;
+            if (gain > bestGain) {
+                bestGain = gain;
+                bestTarget = target;
+            }
+        }
+        this.setTarget(attacker, bestTarget);
+    }
 }
 
-/**
- * Score group formation, pairwise cohesion, and optional overcrowding costs.
- * @param {number} count Attackers assigned to the target.
- * @param {number} targetCount Eligible targets.
- * @param {number} groupMinSize Minimum group size for synergy.
- * @param {number} synergyBonus Bonus applied when the group meets the minimum size.
- * @param {number} oversaturationPenalty Per-attacker penalty beyond the saturation threshold.
- * @param {number} cohesionWeight Reward per attacker pair sharing this target.
- * @returns {number} Group contribution to the collective tactical score.
- */
-function scoreFocusGroup(
-    count,
-    targetCount,
-    groupMinSize,
-    synergyBonus,
-    oversaturationPenalty,
-    cohesionWeight,
-) {
-    // Count shared attacker pairs directly; no pair enumeration or fleet search.
-    return (
-        (count >= groupMinSize ? synergyBonus : 0) +
-        (cohesionWeight * count * (count - 1)) / 2 -
-        (targetCount > 1 ? Math.max(0, count - 3) * oversaturationPenalty : 0)
-    );
-}
+/** @type {FleetTactics<BorgCube, Starship>} Collective Borg assignments. */
+const borgTactics = new FleetTactics(
+    BORG_TACTICS,
+    (cube) => cube.targetStarship,
+    (cube, target) => {
+        cube.targetStarship = target;
+    },
+);
+
+// Every automated helm prioritizes live Borg, then coordinates rock clearing.
+// A manually piloted ship does not promise fire to an automatic focus group.
+/** @type {FleetTactics<Starship, Asteroid>} Automated Starfleet assignments. */
+const starfleetTactics = new FleetTactics(
+    STARFLEET_TACTICS,
+    (ship) => ship.fleetTarget,
+    (ship, target) => {
+        ship.fleetTarget = target;
+    },
+);
 
 /**
- * Value of a single Borg focus group; excessive concentration leaves other threats free.
- * @param {number} count Cubes assigned to the target.
- * @param {number} shipCount Eligible enemy ships.
- * @returns {number} Group contribution to the collective tactical score.
- */
-function scoreBorgFocusGroup(count, shipCount) {
-    return scoreFocusGroup(
-        count,
-        shipCount,
-        BORG_FOCUS_GROUP_MIN_SIZE,
-        BORG_FOCUS_SYNERGY_BONUS,
-        BORG_FOCUS_OVERSATURATION_PENALTY,
-        BORG_FOCUS_COHESION_WEIGHT,
-    );
-}
-
-/**
- * Value of a single Starfleet focus group using the shared cooperation formula.
- * @param {number} count Helpers assigned to the target.
- * @param {number} targetCount Eligible targets.
- * @returns {number} Group contribution to the tactical score.
- */
-function scoreStarfleetFocusGroup(count, targetCount) {
-    return scoreFocusGroup(
-        count,
-        targetCount,
-        STARFLEET_FOCUS_GROUP_MIN_SIZE,
-        STARFLEET_FOCUS_SYNERGY_BONUS,
-        STARFLEET_FOCUS_OVERSATURATION_PENALTY,
-        STARFLEET_FOCUS_COHESION_WEIGHT,
-    );
-}
-
-/**
- * Adapt one cube's assignment per simulation step rather than searching for a
- * global optimum. Only the two affected groups need rescoring, so work grows
- * linearly with fleet size. Local optima are intentional: Borg adapt gradually.
- * Invalid targets are repaired immediately, including during spawn protection.
+ * Borg adapt gradually against ships that have left spawn protection.
  * @param {number} width Arena width in CSS pixels.
  * @param {number} height Arena height in CSS pixels.
  * @returns {void}
  */
 function updateBorgFleetTactics(width, height) {
-    const state = {index: borgTacticsCubeIndex};
-    updateFleetTactics(
+    borgTactics.update(
         borgCubes.filter((cube) => cube.alive),
         starships.filter(
             (ship) => ship.alive && ship.spawnImmunityRemaining <= 0,
         ),
-        state,
-        (cube) => cube.targetStarship,
-        (cube, target) => {
-            cube.targetStarship = target;
-        },
-        scoreBorgTarget,
-        scoreBorgFocusGroup,
-        BORG_FOCUS_GROUP_MIN_SIZE,
-        BORG_FOCUS_HYSTERESIS_BONUS,
-        BORG_FOCUS_MULTI_GROUP_BONUS,
         width,
         height,
-    );
-    borgTacticsCubeIndex = state.index;
-}
-
-/**
- * Shared fleet assignment algorithm. Only faction eligibility, target storage,
- * scoring callbacks, and focus-group constants are adapters; the gain
- * calculation and round-robin adaptation are identical for both sides.
- * @template A, T
- * @param {A[]} liveCubes Eligible attackers, in fleet order.
- * @param {T[]} liveShips Eligible targets, in world order.
- * @param {{index: number}} state Independent round-robin cursor.
- * @param {(attacker: A) => T | undefined} getTarget Read an assignment.
- * @param {(attacker: A, target: T | undefined) => void} setTarget Store an assignment.
- * @param {(attacker: A, target: T, diagonal: number) => number} scoreTarget Local opportunity score.
- * @param {(count: number, targetCount: number) => number} scoreFocusGroupCallback Group scoring callback.
- * @param {number} groupMinSize Minimum group size for synergy.
- * @param {number} hysteresisBonus Staying-bonus threshold that prevents target flicker.
- * @param {number} multiGroupBonus Bonus for maintaining two or more focus groups.
- * @param {number} width Arena width in CSS pixels.
- * @param {number} height Arena height in CSS pixels.
- * @returns {void}
- */
-function updateFleetTactics(
-    liveCubes,
-    liveShips,
-    state,
-    getTarget,
-    setTarget,
-    scoreTarget,
-    scoreFocusGroupCallback,
-    groupMinSize,
-    hysteresisBonus,
-    multiGroupBonus,
-    width,
-    height,
-) {
-    /** @type {Map<T, number>} Live assignment counts for each eligible target. */
-    const counts = new Map(liveShips.map((ship) => [ship, 0]));
-    for (const cube of liveCubes) {
-        if (!getTarget(cube) || !counts.has(getTarget(cube))) {
-            // Spread emergency replacements across eligible ships. Ordinary
-            // adaptation subsequently assembles groups using live opportunities.
-            setTarget(
-                cube,
-                liveShips.length > 0
-                    ? liveShips[state.index % liveShips.length]
-                    : undefined,
-            );
-            state.index += 1;
-        }
-        const assignedTarget = getTarget(cube);
-        if (assignedTarget) {
-            counts.set(assignedTarget, (counts.get(assignedTarget) ?? 0) + 1);
-        }
-    }
-    if (liveCubes.length === 0 || liveShips.length === 0) {
-        state.index = 0;
-        return;
-    }
-    const cube = liveCubes[state.index % liveCubes.length];
-    state.index = (state.index + 1) % liveCubes.length;
-    const currentTarget = getTarget(cube);
-    if (!currentTarget) return;
-    const currentCount = counts.get(currentTarget) ?? 0;
-    const focusGroupCount = [...counts.values()].filter(
-        (count) => count >= groupMinSize,
-    ).length;
-    const arenaDiagonal = Math.max(1, Math.hypot(width, height));
-    const currentScore = scoreTarget(cube, currentTarget, arenaDiagonal);
-    let bestGain = hysteresisBonus;
-    let bestTarget = currentTarget;
-    for (const target of liveShips) {
-        if (target === currentTarget) continue;
-        const targetCount = counts.get(target) ?? 0;
-        const nextGroupCount =
-            focusGroupCount -
-            (currentCount === groupMinSize ? 1 : 0) +
-            (targetCount === groupMinSize - 1 ? 1 : 0);
-        const coverageGain =
-            liveShips.length > 1 && liveCubes.length >= 4
-                ? (Number(nextGroupCount >= 2) - Number(focusGroupCount >= 2)) *
-                  multiGroupBonus
-                : 0;
-        const gain =
-            scoreTarget(cube, target, arenaDiagonal) -
-            currentScore +
-            scoreFocusGroupCallback(currentCount - 1, liveShips.length) -
-            scoreFocusGroupCallback(currentCount, liveShips.length) +
-            scoreFocusGroupCallback(targetCount + 1, liveShips.length) -
-            scoreFocusGroupCallback(targetCount, liveShips.length) +
-            coverageGain;
-        if (gain > bestGain) {
-            bestGain = gain;
-            bestTarget = target;
-        }
-    }
-    setTarget(cube, bestTarget);
-}
-
-// Every automated helm prioritizes live Borg, then coordinates rock clearing.
-// A manually piloted ship does not promise fire to an automatic focus group.
-/** @type {{index: number}} Independent round-robin cursor for automated Starfleet assignments. */
-const starfleetTacticsState = {index: 0};
-
-/**
- * Apply Starfleet distance and vulnerability weights to enemy reserves.
- * @param {Starship} ship Attacking helper.
- * @param {Asteroid | BorgCube} target Live cube or asteroid after the Borg fleet is defeated.
- * @param {number} diagonal Positive arena diagonal.
- * @returns {number} Local opportunity value.
- */
-function scoreStarfleetTarget(ship, target, diagonal) {
-    // Rocks have no rechargeable reserves; distance and group scoring decide
-    // their assignments without inventing a hull-based vulnerability advantage.
-    const healthRatio =
-        target instanceof BorgCube
-            ? (target.hull +
-                  target.faces.reduce((sum, face) => sum + face.shield, 0)) /
-              (BORG_HULL + 4 * BORG_FACE_SHIELD)
-            : 1;
-    return (
-        -(Math.hypot(ship.x - target.x, ship.y - target.y) / diagonal) *
-            STARFLEET_FOCUS_DISTANCE_WEIGHT +
-        (1 - clamp01(healthRatio)) *
-            STARFLEET_FOCUS_VULNERABILITY_WEIGHT
     );
 }
 
@@ -3124,19 +3269,9 @@ function scoreStarfleetTarget(ship, target, diagonal) {
  */
 function updateStarfleetTactics(width, height) {
     const liveCubes = borgCubes.filter((cube) => cube.alive);
-    updateFleetTactics(
+    starfleetTactics.update(
         starships.filter((ship) => ship.alive && ship.controls.autopilotEnabled),
         liveCubes.length > 0 ? liveCubes : asteroids,
-        starfleetTacticsState,
-        (ship) => ship.fleetTarget,
-        (ship, target) => {
-            ship.fleetTarget = target;
-        },
-        scoreStarfleetTarget,
-        scoreStarfleetFocusGroup,
-        STARFLEET_FOCUS_GROUP_MIN_SIZE,
-        STARFLEET_FOCUS_HYSTERESIS_BONUS,
-        STARFLEET_FOCUS_MULTI_GROUP_BONUS,
         width,
         height,
     );
@@ -3150,7 +3285,7 @@ class Bullet {
      * @param {number} options.angle World launch heading in radians.
      * @param {number} [options.mass] Positive physical mass retained through ricochets.
      * @param {number} [options.lineWidth] Painted pulse thickness in CSS pixels.
-     * @param {"starship"|"borg"} [options.source] Origin for attribution.
+     * @param {"starfleet"|"borg"} [options.source] Origin for attribution.
      * @param {number} [options.maxReflections] Ricochets allowed before the pulse is consumed.
      * @param {string | undefined} [options.materialColor] Launch color; undefined uses the Starfleet gradient.
      */
@@ -3160,7 +3295,7 @@ class Bullet {
                     angle,
                     mass = BULLET_MASS,
                     lineWidth = BULLET_LINE_WIDTH,
-                    source = "starship",
+                    source = "starfleet",
                     maxReflections = MAX_BULLET_REFLECTIONS,
                     materialColor = undefined,
                 }) {
@@ -3749,7 +3884,7 @@ function toggleAutoGunner(ship) {
 function setAutopilotInput(ship, keys) {
     ship.controls.autopilotPressedKeys.clear();
 
-    if (ship.controls.autopilotEnabled && !shipFailureActive && !gameWon) {
+    if (ship.controls.autopilotEnabled) {
         for (const key of keys) {
             ship.controls.autopilotPressedKeys.add(key);
         }
@@ -4251,12 +4386,7 @@ function autopilotCanRam(ship, target) {
  * @returns {void}
  */
 function updateAutopilotInput(ship, deltaTime, width, height) {
-    if (
-        !ship.controls.autopilotEnabled ||
-        gamePaused ||
-        shipFailureActive ||
-        gameWon
-    ) {
+    if (!ship.controls.autopilotEnabled) {
         ship.controls.autopilotDecisionTime = 0;
         setAutopilotInput(ship, []);
         return;
@@ -4448,12 +4578,7 @@ function updateAutopilotInput(ship, deltaTime, width, height) {
  * @returns {void}
  */
 function updateAutoGunnerFiring(ship) {
-    if (
-        !ship.controls.autoGunnerEnabled ||
-        gamePaused ||
-        shipFailureActive ||
-        gameWon
-    ) {
+    if (!ship.controls.autoGunnerEnabled) {
         ship.controls.autoGunnerPressedKeys.clear();
         syncPressedKeys(ship);
         return;
@@ -4487,9 +4612,7 @@ function updateAutoGunnerFiring(ship) {
  * @returns {void}
  */
 function tryFireBullet(ship) {
-    if (gamePaused || shipFailureActive || gameWon) {
-        return;
-    }
+    if (roundPhase !== "playing") return;
     ship.tryFire();
 }
 
@@ -4501,17 +4624,83 @@ function tryFireBullet(ship) {
  * @returns {void}
  */
 function updateBulletFiring(ship, deltaTime) {
-    if (
-        gamePaused ||
-        shipFailureActive ||
-        gameWon ||
-        !Number.isFinite(deltaTime)
-    ) {
-        return;
-    }
+    if (!Number.isFinite(deltaTime)) return;
     ship.coolWeapon(deltaTime);
     if (ship.controls.pressedKeys.has(FIRE_KEY)) tryFireBullet(ship);
 }
+
+/**
+ * A pre-rendered, device-pixel-sharp picture of drawing that rarely changes.
+ * Each frame costs one drawImage; the painter runs again only when the caller's
+ * state key, the size, or the pixel ratio changes, or after invalidate().
+ * Re-rasterizing large text and many small shapes every frame is the dominant
+ * cost of static scenery and LCARS chrome; a texture blit is far cheaper.
+ */
+class CachedLayer {
+    #canvas = document.createElement("canvas");
+    #context = this.#canvas.getContext("2d");
+    /** @type {string | undefined} State key of the baked picture. */
+    #key = undefined;
+
+    /** @returns {void} Force the next draw to repaint, e.g. after fonts load. */
+    invalidate() {
+        this.#key = undefined;
+    }
+
+    /**
+     * Blit the layer at the current origin, baking it first when stale.
+     * @param {string} key Everything the painter's output depends on.
+     * @param {number} width Layer width in CSS pixels.
+     * @param {number} height Layer height in CSS pixels.
+     * @param {() => void} paint Draws through `context` in layer space.
+     * @returns {void}
+     */
+    draw(key, width, height, paint) {
+        if (width <= 0 || height <= 0) return;
+        const pixelRatio = window.devicePixelRatio || 1;
+        const fullKey = `${width}x${height}@${pixelRatio}|${key}`;
+        if (fullKey !== this.#key) {
+            const bufferWidth = Math.round(width * pixelRatio);
+            const bufferHeight = Math.round(height * pixelRatio);
+            if (
+                this.#canvas.width !== bufferWidth ||
+                this.#canvas.height !== bufferHeight
+            ) {
+                // Reallocate only on resize; this also resets context state.
+                this.#canvas.width = bufferWidth;
+                this.#canvas.height = bufferHeight;
+            } else {
+                // Frequent state changes (button presses) reuse the bitmap.
+                // Painters balance save/restore, so clearing is sufficient.
+                this.#context.setTransform(1, 0, 0, 1, 0, 0);
+                this.#context.clearRect(0, 0, bufferWidth, bufferHeight);
+            }
+            this.#context.setTransform(pixelRatio, 0, 0, pixelRatio, 0, 0);
+            context = this.#context;
+            try {
+                paint();
+            } finally {
+                context = screenContext;
+            }
+            this.#key = fullKey;
+        }
+        context.drawImage(this.#canvas, 0, 0, width, height);
+    }
+}
+
+// Arena scenery: black field, starfield, background phrase and danger walls.
+const sceneryLayer = new CachedLayer();
+// The flight-control button row, repainted only when a button changes.
+const flightControlsLayer = new CachedLayer();
+// The pause veil and help panel are fully static for a given size.
+const pauseHelpLayer = new CachedLayer();
+
+// Web fonts swap in after first paint; repaint every layer with real glyphs.
+void document.fonts.ready.then(() => {
+    for (const layer of [sceneryLayer, flightControlsLayer, pauseHelpLayer]) {
+        layer.invalidate();
+    }
+});
 
 /**
  * The drawing buffer follows the displayed size and device pixel ratio so
@@ -4548,6 +4737,8 @@ function resizeCanvas() {
     // next draw lazily rebuilds this presentation-only cache once.
     dangerWallGradients = undefined;
     starfieldPaths = createStarfieldPaths(width, gameplayHeight);
+    // New star positions are not part of the scenery key.
+    sceneryLayer.invalidate();
 
     if (previousFrameTime === undefined) {
         for (const ship of starships) {
@@ -4676,13 +4867,15 @@ function updateAlert(ship, deltaTime) {
  * starting fleet, instead of leaving the player inside the fatal collision.
  * @param {number} width Viewport width in CSS pixels.
  * @param {number} height Viewport height in CSS pixels.
+ * @param {boolean} advanceFleet Whether a won field grows the next fleet.
+ * @param {RoundPhase} nextPhase Phase the new field starts in.
  * @returns {void}
  */
-function restartGame(width, height) {
+function restartGame(width, height, advanceFleet, nextPhase) {
     // Only victory advances the next fleet. Friendly losses and developer-spawned
     // helpers do not affect its steady one-ship growth. Cubes include wrecks and
     // developer-spawned bodies; retries preserve both configured starting counts.
-    if (gameWon) {
+    if (advanceFleet) {
         roundStartingFleet.friendlies += 1;
         roundStartingFleet.cubes = borgCubes.length + 1;
     }
@@ -4695,9 +4888,8 @@ function restartGame(width, height) {
     alertRecoveryTime = 0;
     alertHullLossRate = 0;
     alertPreviousHullState = SHIP_MAX_STATE;
-    shipFailureActive = false;
+    roundPhase = nextPhase;
     shipFailureTimeRemaining = 0;
-    gameWon = false;
     bullets.length = 0;
     sparks.length = 0;
     captainTransport = undefined;
@@ -4706,8 +4898,8 @@ function restartGame(width, height) {
     asteroids.length = 0;
     asteroidsGenerated = false;
     borgCubes.length = 0;
-    borgTacticsCubeIndex = 0;
-    starfleetTacticsState.index = 0;
+    borgTactics.index = 0;
+    starfleetTactics.index = 0;
     generateAsteroids(width, height);
 }
 
@@ -4717,11 +4909,9 @@ function restartGame(width, height) {
  * @returns {void}
  */
 function beginShipFailure() {
-    if (shipFailureActive) {
-        return;
-    }
+    if (roundPhase !== "playing") return;
 
-    shipFailureActive = true;
+    roundPhase = "failed";
     shipFailureTimeRemaining = SHIP_FAILURE_DISPLAY_SECONDS;
     defeatSound.playRandom();
     for (const ship of starships) {
@@ -4739,20 +4929,12 @@ function beginShipFailure() {
  * @returns {void}
  */
 function beginWin() {
-    if (
-        gameWon ||
-        shipFailureActive ||
-        asteroids.length > 0 ||
-        borgCubes.some((cube) => cube.alive)
-    ) {
-        return;
-    }
+    if (roundPhase !== "playing") return;
 
-    gameWon = true;
+    roundPhase = "won";
     if (fieldAsteroidDamage.ramming > fieldAsteroidDamage.blasters) {
         roundAchievements.add("rammer");
     }
-    gamePaused = true;
     winSound.playRandom();
     for (const bullet of bullets) {
         emitSparksAt({x: bullet.x, y: bullet.y}, bodyKineticEnergy(bullet));
@@ -4773,9 +4955,7 @@ function beginWin() {
  * @returns {void}
  */
 function updateShipFailure(deltaTime, width, height) {
-    if (!shipFailureActive || !Number.isFinite(deltaTime)) {
-        return;
-    }
+    if (!Number.isFinite(deltaTime)) return;
 
     shipFailureTimeRemaining = Math.max(
         0,
@@ -4783,7 +4963,7 @@ function updateShipFailure(deltaTime, width, height) {
     );
 
     if (shipFailureTimeRemaining <= 0) {
-        restartGame(width, height);
+        restartGame(width, height, false, "playing");
     }
 }
 
@@ -5108,6 +5288,27 @@ function drawAlert(controlRightX, statusBarsLeft) {
 }
 
 /**
+ * Paint the static arena behind all bodies. It is opaque, so the baked layer
+ * fully replaces the previous frame's playfield.
+ * @param {number} width Arena width in CSS pixels.
+ * @param {number} height Arena height in CSS pixels.
+ * @returns {void}
+ */
+function drawScenery(width, height) {
+    context.save();
+    context.fillStyle = LCARS_BLACK;
+    context.fillRect(0, 0, width, height);
+    context.globalAlpha = STARFIELD_OPACITY;
+    context.fillStyle = LCARS_BLUEY;
+    context.fill(starfieldPaths[0]);
+    context.fillStyle = LCARS_ALMOND_CREME;
+    context.fill(starfieldPaths[1]);
+    context.restore();
+    drawPhraseBackground(width, height);
+    drawDangerWalls(width, height);
+}
+
+/**
  * Draw the simulator identity and active alert as a quiet arena background.
  * The alert shares the title opacity and stays steady to avoid distracting
  * flashes behind moving hazards; the console carries the urgent red blink.
@@ -5372,7 +5573,7 @@ class CaptainTransport {
  * @returns {void}
  */
 function updateCaptainTransport(deltaTime) {
-    if (gamePaused || !captainTransport) return;
+    if (pauseEngaged() || !captainTransport) return;
     captainTransport.elapsed += Math.max(0, deltaTime);
     if (captainTransport.elapsed >= CAPTAIN_TRANSPORT_SECONDS) {
         captainTransport = undefined;
@@ -5519,15 +5720,10 @@ function drawGame(width, height) {
     context.fillRect(0, 0, width, height);
     context.save();
     context.translate(0, LCARS_CONSOLE_HEIGHT);
-    context.save();
-    context.globalAlpha = STARFIELD_OPACITY;
-    context.fillStyle = LCARS_BLUEY;
-    context.fill(starfieldPaths[0]);
-    context.fillStyle = LCARS_ALMOND_CREME;
-    context.fill(starfieldPaths[1]);
-    context.restore();
-    drawPhraseBackground(width, playfieldHeight);
-    drawDangerWalls(width, playfieldHeight);
+    // Only the alert line of the phrase changes between resizes.
+    sceneryLayer.draw(String(alertLevel), width, playfieldHeight, () =>
+        drawScenery(width, playfieldHeight),
+    );
 
     // Asteroids are drawn after the background so the player remains visually
     // legible when the two shapes overlap. The phrase itself is never a physics
@@ -5550,12 +5746,14 @@ function drawGame(width, height) {
     drawSparks();
     captainTransport?.draw(width, playfieldHeight);
 
-    if (shipFailureActive) {
+    if (roundPhase === "failed") {
         drawShipFailure(width, playfieldHeight);
-    } else if (gameWon) {
+    } else if (roundPhase === "won") {
         drawWinScreen(width, playfieldHeight);
-    } else if (gamePaused) {
-        drawPauseHelp(width, playfieldHeight);
+    } else if (roundPhase === "paused") {
+        pauseHelpLayer.draw("", width, playfieldHeight, () =>
+            drawPauseHelp(width, playfieldHeight),
+        );
     }
     context.restore();
 
@@ -5573,7 +5771,7 @@ function drawGame(width, height) {
  * @returns {void}
  */
 function drawStarfleetFocus(width, height) {
-    if (shipFailureActive || gameWon) return;
+    if (roundOver()) return;
     /** @type {Map<Asteroid, number>} Helper counts for visible live targets. */
     const groups = new Map();
     for (const ship of starships) {
@@ -5632,9 +5830,7 @@ function drawStarfleetFocus(width, height) {
  * @returns {void}
  */
 function drawBorgFocusLock(width, height) {
-    if (shipFailureActive || gameWon) {
-        return;
-    }
+    if (roundOver()) return;
 
     const liveCubes = borgCubes.filter((cube) => cube.alive);
     if (liveCubes.length === 0) {
@@ -5843,7 +6039,6 @@ function drawFlightControls(width) {
     );
     const desiredKeyWidth = FLIGHT_CONTROL_KEY_WIDTH;
     const buttonHeight = STATUS_BARS_HEIGHT;
-    let buttonX = LCARS_FRAME_MARGIN;
     const controls = [
         [
             AUTOPILOT_TOGGLE_KEY_LABEL,
@@ -5858,7 +6053,7 @@ function drawFlightControls(width) {
             LCARS_BARLEY,
             playerShip.controls.autoGunnerEnabled,
         ],
-        [PAUSE_KEY_LABEL, "PAUSE", LCARS_BUTTERSCOTCH, gamePaused],
+        [PAUSE_KEY_LABEL, "PAUSE", LCARS_BUTTERSCOTCH, pauseEngaged()],
         [
             "W⏶",
             "THRUST",
@@ -5909,21 +6104,36 @@ function drawFlightControls(width) {
             FLIGHT_CONTROL_GAP * (controls.length - 1)),
     );
 
-    for (const [title, detail, color, active] of controls) {
-        drawFlightControlButton(
-            buttonX,
-            LCARS_CONSOLE_TOP,
-            desiredKeyWidth * rowScale,
-            buttonHeight,
-            title,
-            detail,
-            color,
-            active,
-        );
-        buttonX += desiredKeyWidth * rowScale + FLIGHT_CONTROL_GAP * rowScale;
-    }
+    const buttonWidth = desiredKeyWidth * rowScale;
+    const pitch = buttonWidth + FLIGHT_CONTROL_GAP * rowScale;
+    // Buttons change only on input, toggles, or a new heat label.
+    flightControlsLayer.draw(
+        `${rowScale}|${controls.join("|")}`,
+        width,
+        LCARS_CONSOLE_TOP + buttonHeight,
+        () => {
+            let buttonX = LCARS_FRAME_MARGIN;
+            for (const [title, detail, color, active] of controls) {
+                drawFlightControlButton(
+                    buttonX,
+                    LCARS_CONSOLE_TOP,
+                    buttonWidth,
+                    buttonHeight,
+                    title,
+                    detail,
+                    color,
+                    active,
+                );
+                buttonX += pitch;
+            }
+        },
+    );
 
-    return buttonX - FLIGHT_CONTROL_GAP * rowScale;
+    return (
+        LCARS_FRAME_MARGIN +
+        controls.length * pitch -
+        FLIGHT_CONTROL_GAP * rowScale
+    );
 }
 
 /**
@@ -6312,7 +6522,10 @@ function resolveShipWallContact(ship, normal) {
     );
 
     if (response.normalImpulse > COLLISION_EPSILON) {
-        ship.applyCollisionDamage(contactImpulseMagnitude(response));
+        ship.applyCollisionDamage(
+            contactImpulseMagnitude(response),
+            "environment",
+        );
         empSound.playRandom();
     }
     applyShipCollisionAngleAdjustment(response.firstAngularImpulse, ship);
@@ -7586,7 +7799,7 @@ function resolveBulletCollisions(width, height) {
                               normal,
                               hitPoint,
                           );
-                if (!(asteroid instanceof BorgCube) && bullet.source === "starship")
+                if (!(asteroid instanceof BorgCube) && bullet.source === "starfleet")
                     recordAsteroidDamage(response, "blasters");
                 bullet.syncAngle();
                 if (canReflect) {
@@ -7631,16 +7844,10 @@ function resolveBulletCollisions(width, height) {
                     normal,
                     hitPoint,
                 );
-                ship.applyWeaponDamage(contactImpulseMagnitude(bulletImpulse));
-                // Attribute lethal weapon hits: any vessel lost to Borg fire earns
-                // Wolf 359, while friendly-fire badges require losing a helper.
-                if (!ship.alive) {
-                    if (bullet.source === "borg") {
-                        roundAchievements.add("wolf-359");
-                    } else if (ship !== playerShip) {
-                        roundAchievements.add("friendly-fire");
-                    }
-                }
+                ship.applyWeaponDamage(
+                    contactImpulseMagnitude(bulletImpulse),
+                    bullet.source,
+                );
                 if (bulletImpulse.normalImpulse > COLLISION_EPSILON) {
                     empSound.playRandom();
                 }
@@ -8172,280 +8379,60 @@ function resolveCollision(firstBody, secondBody, existingManifold) {
 }
 
 /**
- * Resolve both rocks before cutting either one. Equal and opposite impulses
- * have the same magnitude, so one sufficiently strong contact splits both
- * rocks, regardless of their masses. Each inherits its own post-impact motion.
- * @param {Asteroid} firstAsteroid First rock in the contact pair.
- * @param {Asteroid} secondAsteroid Second rock in the contact pair.
- * @param {Set<Asteroid>} fragmentedAsteroids Parents excluded from later contacts.
+ * One broad phase for every physical body. Contact effects live on the bodies
+ * (`absorbContact`): ships take damage credited to the other faction, rocks
+ * fragment, cubes take hull damage except from each other. Iterate a stable
+ * snapshot so replacing a rock never skips unrelated bodies or recursively
+ * shatters fresh fragments; pieces made here join next frame's pass with their
+ * solved motion. Ships come first, so ship contacts keep the ship as the first
+ * body, and cubes precede rocks.
  * @returns {void}
  */
-function resolveAsteroidPairCollision(
-    firstAsteroid,
-    secondAsteroid,
-    fragmentedAsteroids,
-) {
-    const manifold = collisionManifold(firstAsteroid, secondAsteroid);
-
-    if (manifold === undefined) {
-        return;
+function resolveBodyCollisions() {
+    const bodies = [...starships, ...borgCubes, ...asteroids];
+    for (let first = 0; first < bodies.length; first += 1) {
+        const body = bodies[first];
+        for (let second = first + 1; second < bodies.length; second += 1) {
+            // A body may be destroyed or replaced by an earlier contact.
+            if (!body.collides) break;
+            const other = bodies[second];
+            if (!other.collides || !bodiesMayOverlap(body, other)) continue;
+            resolveBodyContact(body, other);
+        }
     }
+}
 
-    const beforeEnergy =
-        bodyKineticEnergy(firstAsteroid) + bodyKineticEnergy(secondAsteroid);
-    const response = resolveCollision(firstAsteroid, secondAsteroid, manifold);
-
-    if (response !== undefined) {
-        const firstFragments = fragmentAsteroidAtImpact(
-            firstAsteroid,
-            manifold.contactPoint,
-            manifold.normal,
+/**
+ * Solve one contact through the shared impulse model, let each body absorb its
+ * side, and turn energy lost to removed rock material into sparks.
+ * @param {Starship | Asteroid} first First body of the pair.
+ * @param {Starship | Asteroid} second Second body of the pair.
+ * @returns {void}
+ */
+function resolveBodyContact(first, second) {
+    const manifold = collisionManifold(first, second);
+    if (manifold === undefined) return;
+    const beforeEnergy = bodyKineticEnergy(first) + bodyKineticEnergy(second);
+    const response = resolveCollision(first, second, manifold);
+    if (response === undefined) return;
+    const afterEnergy =
+        first.absorbContact(
+            second,
             response,
-            "body",
-        );
-        const secondFragments = fragmentAsteroidAtImpact(
-            secondAsteroid,
-            manifold.contactPoint,
-            manifold.normal,
+            manifold,
+            response.firstAngularImpulse,
+        ) +
+        second.absorbContact(
+            first,
             response,
-            "body",
+            manifold,
+            response.secondAngularImpulse,
         );
-        if (!firstFragments.includes(firstAsteroid)) {
-            fragmentedAsteroids.add(firstAsteroid);
-        }
-        if (!secondFragments.includes(secondAsteroid)) {
-            fragmentedAsteroids.add(secondAsteroid);
-        }
-        const afterEnergy =
-            firstFragments.reduce(
-                (energy, fragment) => energy + bodyKineticEnergy(fragment),
-                0,
-            ) +
-            secondFragments.reduce(
-                (energy, fragment) => energy + bodyKineticEnergy(fragment),
-                0,
-            );
+    if (first.fragmentsOnContact || second.fragmentsOnContact) {
         emitSparksAt(
             manifold.contactPoint,
             interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
         );
-    }
-}
-
-/**
- * Resolve a stable list of parents so replacing either member of a pair never
- * skips unrelated rocks or recursively shatters fresh fragments. Pieces made
- * in this pass join body contacts next frame with the already-solved motion.
- * @returns {void}
- */
-function resolveAsteroidCollisions() {
-    const contactAsteroids = asteroids.slice();
-    const fragmentedAsteroids = new Set();
-
-    for (
-        let firstIndex = 0;
-        firstIndex < contactAsteroids.length;
-        firstIndex += 1
-    ) {
-        const firstAsteroid = contactAsteroids[firstIndex];
-
-        for (
-            let secondIndex = firstIndex + 1;
-            secondIndex < contactAsteroids.length;
-            secondIndex += 1
-        ) {
-            if (fragmentedAsteroids.has(firstAsteroid)) {
-                break;
-            }
-            const secondAsteroid = contactAsteroids[secondIndex];
-
-            if (
-                fragmentedAsteroids.has(secondAsteroid) ||
-                !bodiesMayOverlap(firstAsteroid, secondAsteroid)
-            ) {
-                continue;
-            }
-
-            resolveAsteroidPairCollision(
-                firstAsteroid,
-                secondAsteroid,
-                fragmentedAsteroids,
-            );
-        }
-    }
-
-    for (const ship of starships) {
-        if (!ship.alive) continue;
-        for (
-            let asteroidIndex = contactAsteroids.length - 1;
-            asteroidIndex >= 0;
-            asteroidIndex -= 1
-        ) {
-            const asteroid = contactAsteroids[asteroidIndex];
-            if (
-                asteroid.removed ||
-                fragmentedAsteroids.has(asteroid) ||
-                !bodiesMayOverlap(ship, asteroid)
-            ) {
-                continue;
-            }
-
-            const manifold = collisionManifold(ship, asteroid);
-
-            if (manifold === undefined) {
-                continue;
-            }
-
-            const beforeEnergy =
-                bodyKineticEnergy(ship) + bodyKineticEnergy(asteroid);
-            const response = resolveCollision(ship, asteroid, manifold);
-
-            if (response !== undefined) {
-                ship.applyCollisionDamage(contactImpulseMagnitude(response));
-                if (response.normalImpulse > COLLISION_EPSILON) {
-                    recordAsteroidDamage(response, "ramming");
-                    empSound.playRandom();
-                }
-                const fragments = fragmentAsteroidAtImpact(
-                    asteroid,
-                    manifold.contactPoint,
-                    manifold.normal,
-                    response,
-                    "body",
-                );
-                const afterEnergy = fragments.reduce(
-                    (energy, fragment) => energy + bodyKineticEnergy(fragment),
-                    bodyKineticEnergy(ship),
-                );
-                // Removed material joins the sparks for every impact source.
-                emitSparksAt(
-                    manifold.contactPoint,
-                    interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
-                );
-                applyShipCollisionAngleAdjustment(
-                    response.firstAngularImpulse,
-                    ship,
-                );
-            }
-        }
-    }
-
-    // Both rock and cube contacts consume one parent snapshot. Children created
-    // by either kind of physical contact join the next frame's body pass.
-    resolveBorgCollisions(
-        contactAsteroids.filter((rock) => !rock.removed),
-    );
-}
-
-/**
- * Keep cube contacts on the same impulse and fragmentation paths as rocks.
- * Hull damage uses actual normal contact response; fresh fragments wait until
- * the next body pass. Both the live cube and its intact wreck stay physical.
- * @param {Asteroid[]} [contactAsteroids] Surviving parents from the shared pass.
- * @returns {void}
- */
-function resolveBorgCollisions(contactAsteroids = asteroids.slice()) {
-    for (let first = 0; first < borgCubes.length; first += 1) {
-        const cube = borgCubes[first];
-        for (let second = first + 1; second < borgCubes.length; second += 1) {
-            const other = borgCubes[second];
-            if (!bodiesMayOverlap(cube, other)) continue;
-            const manifold = collisionManifold(cube, other);
-            if (manifold === undefined) continue;
-            // Collective contacts still separate solid hulls and transfer momentum,
-            // but never consume shields, hull health, or contact damage budgets.
-            resolveCollision(cube, other, manifold);
-        }
-    }
-    for (const cube of borgCubes) {
-        for (const ship of starships) {
-            if (!ship.alive) continue;
-            const shipManifold = bodiesMayOverlap(ship, cube)
-                ? collisionManifold(ship, cube)
-                : undefined;
-            if (shipManifold !== undefined) {
-                const response = resolveCollision(ship, cube, shipManifold);
-                if (response !== undefined) {
-                    const impulse = contactImpulseMagnitude(response);
-                    ship.applyCollisionDamage(impulse);
-                    // Cube hulls remain dangerous after defeat, so any lethal
-                    // vessel collision with a live cube or wreck qualifies.
-                    if (!ship.alive) {
-                        roundAchievements.add("wolf-359");
-                    }
-                    applyShipCollisionAngleAdjustment(
-                        response.firstAngularImpulse,
-                        ship,
-                    );
-                    cube.hitBody(impulse, shipManifold.contactPoint);
-                }
-            }
-        }
-        for (const rock of contactAsteroids) {
-            if (rock.removed || !bodiesMayOverlap(cube, rock)) continue;
-            const manifold = collisionManifold(cube, rock);
-            if (manifold === undefined) continue;
-            const beforeEnergy = bodyKineticEnergy(cube) + bodyKineticEnergy(rock);
-            const response = resolveCollision(cube, rock, manifold);
-            if (response === undefined) continue;
-            cube.hitBody(
-                contactImpulseMagnitude(response),
-                manifold.contactPoint,
-            );
-            const fragments = fragmentAsteroidAtImpact(
-                rock,
-                manifold.contactPoint,
-                manifold.normal,
-                response,
-                "body",
-            );
-            const afterEnergy = fragments.reduce(
-                (energy, fragment) => energy + bodyKineticEnergy(fragment),
-                bodyKineticEnergy(cube),
-            );
-            emitSparksAt(
-                manifold.contactPoint,
-                interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
-            );
-        }
-    }
-}
-
-/**
- * Friendly hulls remain physical. Apply the same impulse and damage model to
- * both ships without treating their contact as asteroid fragmentation.
- * @returns {void}
- */
-function resolveStarshipCollisions() {
-    for (let first = 0; first < starships.length; first += 1) {
-        const ship = starships[first];
-        if (!ship.alive) continue;
-        for (let second = first + 1; second < starships.length; second += 1) {
-            const other = starships[second];
-            if (!other.alive || !bodiesMayOverlap(ship, other)) continue;
-            const manifold = collisionManifold(ship, other);
-            if (manifold === undefined) continue;
-            const response = resolveCollision(ship, other, manifold);
-            if (response === undefined) continue;
-            const impulse = contactImpulseMagnitude(response);
-            ship.applyCollisionDamage(impulse);
-            other.applyCollisionDamage(impulse);
-            if (
-                (ship !== playerShip && !ship.alive) ||
-                (other !== playerShip && !other.alive)
-            ) {
-                roundAchievements.add("friendly-fire");
-            }
-            applyShipCollisionAngleAdjustment(
-                response.firstAngularImpulse,
-                ship,
-            );
-            applyShipCollisionAngleAdjustment(
-                response.secondAngularImpulse,
-                other,
-            );
-            if (!ship.alive) break;
-        }
     }
 }
 
@@ -8661,8 +8648,7 @@ function updateGame(deltaTime, width, height) {
     }
     updateBullets(deltaTime);
     resolveBulletCollisions(width, height);
-    resolveAsteroidCollisions();
-    resolveStarshipCollisions();
+    resolveBodyCollisions();
     if (
         starships.some((ship) => ship.alive) &&
         asteroids.length === 0 &&
@@ -8746,9 +8732,9 @@ function animate(frameTime) {
     const height = viewportHeight;
     const gameplayHeight = gameplayHeightForViewport(height);
     generateAsteroids(width, gameplayHeight);
-    if (shipFailureActive) {
+    if (roundPhase === "failed") {
         updateShipFailure(deltaTime, width, gameplayHeight);
-    } else if (!gamePaused) {
+    } else if (roundPhase === "playing") {
         updateGame(deltaTime, width, gameplayHeight);
         // Advance protection only after active simulation, including contacts.
         for (const ship of starships) {
@@ -8830,9 +8816,14 @@ document.addEventListener("keydown", (event) => {
         unlockSound();
         // Explicit retry follows the defeat path even on a victory screen:
         // preserve starting fleet counts instead of advancing to the next round.
-        // Keep the current pause state so a paused retry stays inspectable.
-        gameWon = false;
-        restartGame(viewportWidth, gameplayHeightForViewport(viewportHeight));
+        // Keep the current pause state so a paused retry stays inspectable;
+        // the result screen counts as paused.
+        restartGame(
+            viewportWidth,
+            gameplayHeightForViewport(viewportHeight),
+            false,
+            pauseEngaged() ? "paused" : "playing",
+        );
         return;
     }
 
@@ -8843,7 +8834,7 @@ document.addEventListener("keydown", (event) => {
         event.code === DEVELOPER_FRIENDLY_SPAWN_KEY
     ) {
         event.preventDefault();
-        if (event.repeat || gameWon || shipFailureActive) return;
+        if (event.repeat || roundOver()) return;
         const height = gameplayHeightForViewport(viewportHeight);
         if (event.code === DEVELOPER_BORG_SPAWN_KEY) {
             borgCubes.push(new BorgCube(viewportWidth, height));
@@ -8871,15 +8862,16 @@ document.addEventListener("keydown", (event) => {
 
     if (event.code === PAUSE_KEY && !event.repeat) {
         unlockSound();
-        if (gameWon) {
+        if (roundPhase === "won") {
             restartGame(
                 viewportWidth,
                 gameplayHeightForViewport(viewportHeight),
+                true,
+                "playing",
             );
-            gamePaused = false;
-        } else if (!shipFailureActive) {
-            gamePaused = !gamePaused;
-            if (gamePaused) {
+        } else if (roundPhase !== "failed") {
+            roundPhase = roundPhase === "paused" ? "playing" : "paused";
+            if (roundPhase === "paused") {
                 // A pause freezes gameplay input as well as simulation time. Requiring
                 // a fresh Space press after resuming avoids a held key firing
                 // unexpectedly.
@@ -8891,7 +8883,7 @@ document.addEventListener("keydown", (event) => {
         return;
     }
 
-    if (shipFailureActive) {
+    if (roundPhase === "failed") {
         event.preventDefault();
         return;
     }
@@ -8904,7 +8896,7 @@ document.addEventListener("keydown", (event) => {
 
         disableAutomationForManualInput(playerShip, controlKey);
 
-        if (gamePaused) {
+        if (roundPhase !== "playing") {
             return;
         }
 
