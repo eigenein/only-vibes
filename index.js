@@ -506,7 +506,7 @@ const STARFLEET_FOCUS_HYSTERESIS_BONUS = 0.02;
 const STARFLEET_FOCUS_COHESION_WEIGHT = 2.4;
 const BORG_FOCUS_LOCK_ROTATION_SPEED = 0.85;
 const BORG_FOCUS_LOCK_BRACKET_PADDING = 12;
-const BORG_FOCUS_LOCK_COLOR = "#77ff88";
+const BORG_FOCUS_LOCK_COLOR = BORG_GREEN;
 const BORG_FOCUS_LOCK_ACCENT = "#b4ffbe";
 const BORG_FOCUS_LOCK_BEAM = "rgba(119, 255, 136, 0.35)";
 
@@ -650,6 +650,12 @@ const RESTART_KEY = "KeyR";
 const RESTART_KEY_LABEL = "R";
 const FIRE_KEY = "Space";
 const FIRE_KEY_LABEL = "SPACE";
+// Helm key groups: WASD and arrows are equivalent. Shared Sets keep the
+// per-frame input merge allocation-free and give one place to rebind keys.
+/** @type {ReadonlySet<string>} Keys that turn the hull. */
+const STEERING_KEYS = new Set(["KeyA", "KeyD", "ArrowLeft", "ArrowRight"]);
+/** @type {ReadonlySet<string>} Keys that thrust or brake. */
+const THROTTLE_KEYS = new Set(["KeyW", "KeyS", "ArrowUp", "ArrowDown"]);
 
 // INSTRUCTION: Pause help must contain controls only. Never add gameplay rules,
 // strategy, progression, achievements, or other explanatory text to this screen.
@@ -898,7 +904,7 @@ function* physicalTargets() {
 /** @returns {Generator<Asteroid>} Live bodies available for combat targeting. */
 function* combatTargets() {
     for (const body of physicalTargets()) {
-        if (!(body instanceof BorgCube) || body.alive) yield body;
+        if (body.alive) yield body;
     }
 }
 
@@ -908,7 +914,8 @@ function* combatTargets() {
  */
 function isLiveTarget(target) {
     return (
-        asteroids.includes(target) || (borgCubes.includes(target) && target.alive)
+        target.alive &&
+        (asteroids.includes(target) || borgCubes.includes(target))
     );
 }
 
@@ -1021,6 +1028,16 @@ class Starship {
     /** @returns {boolean} Whether the hull can still participate in combat. */
     get alive() {
         return this.hullState > COLLISION_EPSILON;
+    }
+
+    /** @returns {number} Shield reserve as a clamped fraction of capacity. */
+    get shieldRatio() {
+        return clamp01(this.shieldState / SHIELD_MAX_STATE);
+    }
+
+    /** @returns {number} Hull reserve as a clamped fraction of capacity. */
+    get hullRatio() {
+        return clamp01(this.hullState / SHIP_MAX_STATE);
     }
 
     /** @returns {void} Launch a pulse without changing the firing ship's motion. */
@@ -1561,10 +1578,7 @@ function asteroidColorForDensity(density) {
     const densityRange = ASTEROID_MAX_DENSITY - ASTEROID_MIN_DENSITY;
     const densityRatio =
         densityRange > 0
-            ? Math.max(
-                0,
-                Math.min(1, (density - ASTEROID_MIN_DENSITY) / densityRange),
-            )
+            ? clamp01((density - ASTEROID_MIN_DENSITY) / densityRange)
             : 0.5;
     const hue =
         ASTEROID_MIN_COLOR_HUE +
@@ -1632,6 +1646,9 @@ class Asteroid {
         this.y = y;
         this.velocityX = velocityX;
         this.velocityY = velocityY;
+        // Set once the rock is replaced by its fragments, so contact passes
+        // over a parent snapshot can skip it in O(1) instead of scanning.
+        this.removed = false;
         this.density = density;
         // Density is immutable for the lifetime of a body, so its presentation
         // color is likewise immutable and does not need rebuilding every frame.
@@ -1642,16 +1659,16 @@ class Asteroid {
             x: this.x + vertex.x,
             y: this.y + vertex.y,
         }));
-        this.surfaceAreaValue = polygonArea(this.localVertices);
-        this.massValue = this.density * this.surfaceAreaValue + additionalMass;
+        const surfaceArea = polygonArea(this.localVertices);
+        this.massValue = this.density * surfaceArea + additionalMass;
         // A uniform polygon's mass moment of inertia comes directly from its
         // vertices. Scaling the unit-density value by mass/area also treats any
         // absorbed mass as material spread through the fragment, keeping the
         // parallel-axis relationship exact when a parent asteroid is cut.
         this.momentOfInertiaValue =
-            this.surfaceAreaValue > COLLISION_EPSILON
+            surfaceArea > COLLISION_EPSILON
                 ? polygonMassMomentOfInertia(this.localVertices) *
-                (this.massValue / this.surfaceAreaValue)
+                (this.massValue / surfaceArea)
                 : (this.massValue * this.radius ** 2) / 2;
         // Translation does not change edge normals, so cache these axes once per
         // asteroid instead of rebuilding them during every SAT collision test.
@@ -1668,12 +1685,17 @@ class Asteroid {
         this.collisionPolygon();
     }
 
-    get mass() {
-        return this.massValue;
+    /**
+     * Rocks have no health pool: they stay targetable until removed from the
+     * field. Derived bodies with a hull override this.
+     * @returns {boolean} Whether the body can still be engaged.
+     */
+    get alive() {
+        return true;
     }
 
-    get surfaceArea() {
-        return this.surfaceAreaValue;
+    get mass() {
+        return this.massValue;
     }
 
     get momentOfInertia() {
@@ -1915,13 +1937,23 @@ class BorgCube extends Asteroid {
         this.targetStarship = undefined;
         this.fireAngle = 0;
         this.muzzleFlash = 0;
-        this.wreckTexture = undefined;
-        this.texture = this.createTexture();
+        this.texture = BorgCube.skin(true);
     }
 
     /** @returns {boolean} Whether the cube can still attack or receive damage. */
     get alive() {
         return this.hull > 0;
+    }
+
+    /**
+     * Keep the fleet-assigned target while it lives, else engage the closest
+     * surviving hull so a destroyed assignment never stalls the cube.
+     * @returns {Starship | undefined} Opponent, or none when the fleet is destroyed.
+     */
+    currentOpponent() {
+        return this.targetStarship && this.targetStarship.alive
+            ? this.targetStarship
+            : nearestStarship(this);
     }
 
     /**
@@ -1959,13 +1991,31 @@ class BorgCube extends Asteroid {
         super.keepInside(width, height);
     }
 
+    /** @type {Map<boolean, HTMLCanvasElement>} Shared skins keyed by power state. */
+    static #skins = new Map();
+
     /**
-     * Bake layered greebles once: raised metal plates, trenches, conduits and
-     * green machinery. All relief remains inside the physical square silhouette.
-     * @param {boolean} [powered] Whether the machinery's green lights are on.
+     * The skin is deterministic, so every cube shares one baked canvas per
+     * power state. Baking lazily avoids a mid-fight hitch on later defeats.
+     * @param {boolean} powered Whether the machinery's green lights are on.
      * @returns {HTMLCanvasElement} Cached opaque hull skin.
      */
-    createTexture(powered = true) {
+    static skin(powered) {
+        let texture = BorgCube.#skins.get(powered);
+        if (texture === undefined) {
+            texture = BorgCube.#createTexture(powered);
+            BorgCube.#skins.set(powered, texture);
+        }
+        return texture;
+    }
+
+    /**
+     * Bake layered greebles: raised metal plates, trenches, conduits and green
+     * machinery. All relief remains inside the physical square silhouette.
+     * @param {boolean} powered Whether the machinery's green lights are on.
+     * @returns {HTMLCanvasElement} Opaque hull skin.
+     */
+    static #createTexture(powered) {
         const texture = document.createElement("canvas");
         texture.width = BORG_TEXTURE_SIZE;
         texture.height = BORG_TEXTURE_SIZE;
@@ -2142,7 +2192,7 @@ class BorgCube extends Asteroid {
         if (!this.alive) {
             // Defeat is a single transition. Keep the body's pose and momentum;
             // only powered systems stop. The wreck is never fragmented or removed.
-            this.wreckTexture = this.createTexture(false);
+            this.texture = BorgCube.skin(false);
             this.fireCharge = 0;
             this.fireCooldown = 0;
             this.muzzleFlash = 0;
@@ -2254,11 +2304,7 @@ class BorgCube extends Asteroid {
     aimAtTarget(delay) {
         const originX = this.x + this.velocityX * delay;
         const originY = this.y + this.velocityY * delay;
-        const targetShip =
-            this.targetStarship && this.targetStarship.alive
-                ? this.targetStarship
-                : nearestStarship(this);
-        const recipient = targetShip;
+        const recipient = this.currentOpponent();
         if (recipient === undefined) return this.rotation;
         const target = {
             x: recipient.x + recipient.velocityX * delay,
@@ -2311,6 +2357,8 @@ class BorgCube extends Asteroid {
                 mass: BORG_BULLET_MASS,
                 lineWidth: BORG_BULLET_LINE_WIDTH,
                 source: "borg",
+                // Borg pulses are consumed immediately after impact.
+                maxReflections: 0,
                 materialColor: BORG_GREEN,
             });
             bullets.push(bullet);
@@ -2323,10 +2371,7 @@ class BorgCube extends Asteroid {
         if (this.fireCooldown > 0) return;
         // At contact distance the ordinary body collision supplies the threat;
         // avoid spawning a shot inside the ship's shield circle.
-        const opponent =
-            this.targetStarship && this.targetStarship.alive
-                ? this.targetStarship
-                : nearestStarship(this);
+        const opponent = this.currentOpponent();
         if (
             opponent === undefined ||
             Math.hypot(opponent.x - this.x, opponent.y - this.y) <=
@@ -2350,10 +2395,7 @@ class BorgCube extends Asteroid {
      * @returns {void}
      */
     navigate(width, height, deltaTime) {
-        const opponent =
-            this.targetStarship && this.targetStarship.alive
-                ? this.targetStarship
-                : nearestStarship(this);
+        const opponent = this.currentOpponent();
         let pursuitX = (opponent?.x ?? this.x) - this.x;
         let pursuitY = (opponent?.y ?? this.y) - this.y;
         if (opponent !== undefined) {
@@ -2504,7 +2546,7 @@ class BorgCube extends Asteroid {
         context.rotate(this.rotation);
         const half = this.half;
         context.drawImage(
-            this.wreckTexture ?? this.texture,
+            this.texture,
             -half,
             -half,
             half * 2,
@@ -2693,7 +2735,7 @@ class BorgCube extends Asteroid {
      * @returns {void}
      */
     drawHullDamage() {
-        const damage = Math.max(0, Math.min(1, 1 - this.hull / BORG_HULL));
+        const damage = clamp01(1 - this.hull / BORG_HULL);
         if (damage <= 0) return;
         const half = this.half;
         context.save();
@@ -2702,7 +2744,7 @@ class BorgCube extends Asteroid {
         context.beginPath();
         context.rect(-half, -half, half * 2, half * 2);
         context.clip();
-        context.fillStyle = "#000000";
+        context.fillStyle = LCARS_BLACK;
         context.globalAlpha = damage * 0.28;
         context.fillRect(-half, -half, half * 2, half * 2);
         context.globalAlpha = 1;
@@ -2711,9 +2753,8 @@ class BorgCube extends Asteroid {
         for (let index = 0; index < cellCount; index += 1) {
             // Seven is coprime to sixteen: failure visits each cell exactly once
             // in a scattered order instead of resembling a left-to-right HUD bar.
-            const severity = Math.max(
-                0,
-                Math.min(1, damage * cellCount - ((index * 7) % cellCount)),
+            const severity = clamp01(
+                damage * cellCount - ((index * 7) % cellCount),
             );
             if (severity <= 0) continue;
             const x =
@@ -2853,7 +2894,7 @@ function scoreBorgTarget(cube, target, arenaDiagonal) {
     return (
         -(Math.hypot(cube.x - target.x, cube.y - target.y) / arenaDiagonal) *
             BORG_FOCUS_DISTANCE_WEIGHT +
-        (1 - Math.max(0, Math.min(1, healthRatio))) *
+        (1 - clamp01(healthRatio)) *
             BORG_FOCUS_VULNERABILITY_WEIGHT
     );
 }
@@ -3070,7 +3111,7 @@ function scoreStarfleetTarget(ship, target, diagonal) {
     return (
         -(Math.hypot(ship.x - target.x, ship.y - target.y) / diagonal) *
             STARFLEET_FOCUS_DISTANCE_WEIGHT +
-        (1 - Math.max(0, Math.min(1, healthRatio))) *
+        (1 - clamp01(healthRatio)) *
             STARFLEET_FOCUS_VULNERABILITY_WEIGHT
     );
 }
@@ -3107,20 +3148,20 @@ class Bullet {
      * @param {number} options.x World muzzle x position.
      * @param {number} options.y World muzzle y position.
      * @param {number} options.angle World launch heading in radians.
-     * @param {number} [options.speed] Launch speed in CSS pixels per second.
      * @param {number} [options.mass] Positive physical mass retained through ricochets.
      * @param {number} [options.lineWidth] Painted pulse thickness in CSS pixels.
-     * @param {"starship"|"borg"} [options.source] Origin for attribution and the Borg zero-ricochet rule.
+     * @param {"starship"|"borg"} [options.source] Origin for attribution.
+     * @param {number} [options.maxReflections] Ricochets allowed before the pulse is consumed.
      * @param {string | undefined} [options.materialColor] Launch color; undefined uses the Starfleet gradient.
      */
     constructor({
                     x,
                     y,
                     angle,
-                    speed = BULLET_SPEED,
                     mass = BULLET_MASS,
                     lineWidth = BULLET_LINE_WIDTH,
                     source = "starship",
+                    maxReflections = MAX_BULLET_REFLECTIONS,
                     materialColor = undefined,
                 }) {
         this.x = x;
@@ -3128,11 +3169,12 @@ class Bullet {
         this.angle = angle;
         this.previousX = x;
         this.previousY = y;
-        this.velocityX = Math.cos(angle) * speed;
-        this.velocityY = Math.sin(angle) * speed;
+        this.velocityX = Math.cos(angle) * BULLET_SPEED;
+        this.velocityY = Math.sin(angle) * BULLET_SPEED;
         this.mass = mass;
         this.lineWidth = lineWidth;
         this.source = source;
+        this.maxReflections = maxReflections;
         this.reflectionCount = 0;
         this.materialColor = materialColor;
         this.gradient = undefined;
@@ -3547,6 +3589,18 @@ function updateSparks(deltaTime) {
 }
 
 /**
+ * Manual helm input always outranks automated steering.
+ * @param {ShipControls} controls Controller whose held keys are inspected.
+ * @returns {boolean} Whether the pilot is holding a turn key.
+ */
+function isManuallySteering(controls) {
+    for (const key of controls.manualPressedKeys) {
+        if (STEERING_KEYS.has(key)) return true;
+    }
+    return false;
+}
+
+/**
  * Rebuild the effective held-key state from its independent input producers.
  * Keeping manual and autopilot keys separate lets a human input disable the
  * autopilot without allowing one producer to forge the other producer's
@@ -3561,10 +3615,7 @@ function syncPressedKeys(ship) {
     applyTurnInput(ship, ship.controls.manualTurnControl.advance(time));
     const controls = ship.controls;
     controls.pressedKeys.clear();
-    const steeringKeys = ["KeyA", "KeyD", "ArrowLeft", "ArrowRight"];
-    const manuallySteering = steeringKeys.some((key) =>
-        controls.manualPressedKeys.has(key),
-    );
+    const manuallySteering = isManuallySteering(controls);
     const automatedInput = controls.wallAvoidanceActive
         ? controls.wallAvoidancePressedKeys
         : controls.autopilotPressedKeys;
@@ -3581,13 +3632,13 @@ function syncPressedKeys(ship) {
             if (
                 controls.wallAvoidanceActive &&
                 input !== controls.wallAvoidancePressedKeys &&
-                ["KeyW", "KeyS", "ArrowUp", "ArrowDown"].includes(key)
+                THROTTLE_KEYS.has(key)
             )
                 continue;
             // Only the winning helm producer supplies turn keys. Brake and
             // thrust remain ordinary merged inputs; braking takes priority.
             if (
-                steeringKeys.includes(key) &&
+                STEERING_KEYS.has(key) &&
                 input !== controls.manualPressedKeys &&
                 (manuallySteering || input !== automatedInput)
             )
@@ -3715,12 +3766,7 @@ function setAutopilotInput(ship, keys) {
  * @returns {number}
  */
 function shortestAngleDifference(desiredAngle, currentAngle) {
-    const fullTurn = Math.PI * 2;
-    return (
-        ((((desiredAngle - currentAngle + Math.PI) % fullTurn) + fullTurn) %
-            fullTurn) -
-        Math.PI
-    );
+    return wrapAngle(desiredAngle - currentAngle + Math.PI) - Math.PI;
 }
 
 /**
@@ -3731,11 +3777,7 @@ function shortestAngleDifference(desiredAngle, currentAngle) {
  * @returns {number} Additional safe distance in CSS pixels.
  */
 function autopilotHealthSafetyMargin(ship) {
-    const shieldRatio = Math.max(
-        0,
-        Math.min(1, ship.shieldState / SHIELD_MAX_STATE),
-    );
-    const hullRatio = Math.max(0, Math.min(1, ship.hullState / SHIP_MAX_STATE));
+    const {shieldRatio, hullRatio} = ship;
     const shieldRecoveryRatio = Math.max(
         0,
         (AUTOPILOT_SHIELD_RECOVERY_THRESHOLD - shieldRatio) /
@@ -3796,7 +3838,6 @@ function applyAutopilotTurnInput(ship, input, deltaTime) {
  * Constant-velocity kinematics: https://en.wikipedia.org/wiki/Equations_of_motion
  * Solve |r + v*t| = launchOffset + approachSpeed*t. No future collision,
  * wall bounce, target rotation, or ship movement is predicted.
- * Unreachable targets have no marker rather than an incorrect firing cue.
  * @param {Pick<PhysicsBody, "x"|"y">} origin Firing hull; never an implicit player origin.
  * @param {Pick<PhysicsBody, "x"|"y"|"velocityX"|"velocityY">} target Moving target in world coordinates.
  * @param {number} [approachSpeed] Projectile or desired ship speed in pixels/second.
@@ -3982,10 +4023,8 @@ function autopilotThreat(ship, ramTarget = undefined) {
         // as soon as velocity points outward would make engagement brake the
         // escape and immediately send the ship back into the same heavy body.
         const isNearNow = distance <= safeDistance;
-        const isPredictedNear =
-            closingSpeed > 0 &&
-            futureDistance <= safeDistance &&
-            closestTime <= AUTOPILOT_MAX_LOOKAHEAD_SECONDS;
+        // The closest time is already clamped to the lookahead horizon.
+        const isPredictedNear = closingSpeed > 0 && futureDistance <= safeDistance;
 
         if (!isNearNow && !isPredictedNear) {
             continue;
@@ -4158,11 +4197,7 @@ function autopilotWallThreat(
  * @returns {number} Attack probability from zero to one.
  */
 function autopilotAttackProbability(ship) {
-    const shieldRatio = Math.max(
-        0,
-        Math.min(1, ship.shieldState / SHIELD_MAX_STATE),
-    );
-    const hullRatio = Math.max(0, Math.min(1, ship.hullState / SHIP_MAX_STATE));
+    const {shieldRatio, hullRatio} = ship;
     const availableShield = Math.max(
         0,
         (shieldRatio - AUTOPILOT_ATTACK_MIN_SHIELD_RATIO) /
@@ -5425,10 +5460,7 @@ function drawStarship(ship) {
     }
     // Share the HUD's animated charge so both indicators agree during impacts.
     // The whole rim changes together: missing arcs would imply a physical gap.
-    const shieldRatio = Math.max(
-        0,
-        Math.min(1, ship.displayedShieldState / SHIELD_MAX_STATE),
-    );
+    const shieldRatio = clamp01(ship.displayedShieldState / SHIELD_MAX_STATE);
     const healthy = shieldRatio > SHIELD_WARNING_RATIO;
     const colorFraction = healthy
         ? (shieldRatio - SHIELD_WARNING_RATIO) / (1 - SHIELD_WARNING_RATIO)
@@ -5809,14 +5841,7 @@ function drawFlightControls(width) {
         0,
         width - LCARS_FRAME_MARGIN * 2 - statusWidth - FLIGHT_CONTROL_GAP,
     );
-    const keyButtonCount = 9;
     const desiredKeyWidth = FLIGHT_CONTROL_KEY_WIDTH;
-    const rowScale = Math.min(
-        1,
-        rowWidth /
-        (desiredKeyWidth * keyButtonCount +
-            FLIGHT_CONTROL_GAP * (keyButtonCount - 1)),
-    );
     const buttonHeight = STATUS_BARS_HEIGHT;
     let buttonX = LCARS_FRAME_MARGIN;
     const controls = [
@@ -5875,6 +5900,14 @@ function drawFlightControls(width) {
             playerShip.controls.pressedKeys.has(FIRE_KEY),
         ],
     ];
+    // Scale the row from the actual button list so adding or removing a
+    // control can never leave room for a phantom button.
+    const rowScale = Math.min(
+        1,
+        rowWidth /
+        (desiredKeyWidth * controls.length +
+            FLIGHT_CONTROL_GAP * (controls.length - 1)),
+    );
 
     for (const [title, detail, color, active] of controls) {
         drawFlightControlButton(
@@ -5917,6 +5950,53 @@ function drawLCARSOverlayFrame(panelWidth, panelHeight, accent) {
 }
 
 /**
+ * Open a modal LCARS overlay: veil the whole viewport, then fit the panel
+ * inside a 16px margin (never upscaling) and draw its frame. On success the
+ * context stays saved, translated into panel space with centered text; the
+ * caller draws the content and restores.
+ * @param {number} width Viewport width in CSS pixels.
+ * @param {number} height Viewport height in CSS pixels.
+ * @param {number} panelWidth Unscaled panel width in CSS pixels.
+ * @param {number} panelHeight Unscaled panel height in CSS pixels.
+ * @param {number} backdropAlpha Opacity of the black viewport veil.
+ * @param {string} accent Primary state color for the frame.
+ * @returns {boolean} False when the viewport is too small for any panel; the
+ * context is then already restored.
+ */
+function beginLCARSOverlay(
+    width,
+    height,
+    panelWidth,
+    panelHeight,
+    backdropAlpha,
+    accent,
+) {
+    const scale = Math.max(
+        0,
+        Math.min(1, (width - 32) / panelWidth, (height - 32) / panelHeight),
+    );
+
+    context.save();
+    context.fillStyle = `rgba(0, 0, 0, ${backdropAlpha})`;
+    context.fillRect(0, 0, width, height);
+
+    if (scale === 0) {
+        context.restore();
+        return false;
+    }
+
+    context.translate(
+        (width - panelWidth * scale) / 2,
+        (height - panelHeight * scale) / 2,
+    );
+    context.scale(scale, scale);
+    drawLCARSOverlayFrame(panelWidth, panelHeight, accent);
+    context.textAlign = "center";
+    context.textBaseline = "middle";
+    return true;
+}
+
+/**
  * Explain why the current life ended while the field retry is delayed. The
  * status bars are drawn afterward so their animated drainage remains visible
  * above the failure treatment.
@@ -5929,33 +6009,16 @@ function drawShipFailure(width, height) {
         SHIP_FAILURE_PANEL_HEIGHT +
         Math.ceil(roundAchievements.size / ACHIEVEMENT_COLUMNS) *
             WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT;
-    const failureScale = Math.max(
-        0,
-        Math.min(
-            1,
-            (width - 32) / SHIP_FAILURE_PANEL_WIDTH,
-            (height - 32) / panelHeight,
-        ),
+    const opened = beginLCARSOverlay(
+        width,
+        height,
+        SHIP_FAILURE_PANEL_WIDTH,
+        panelHeight,
+        SHIP_FAILURE_BACKDROP_ALPHA,
+        LCARS_RED,
     );
+    if (!opened) return;
 
-    context.save();
-    context.fillStyle = `rgba(0, 0, 0, ${SHIP_FAILURE_BACKDROP_ALPHA})`;
-    context.fillRect(0, 0, width, height);
-
-    if (failureScale === 0) {
-        context.restore();
-        return;
-    }
-
-    const panelX = (width - SHIP_FAILURE_PANEL_WIDTH * failureScale) / 2;
-    const panelY = (height - panelHeight * failureScale) / 2;
-
-    context.translate(panelX, panelY);
-    context.scale(failureScale, failureScale);
-    drawLCARSOverlayFrame(SHIP_FAILURE_PANEL_WIDTH, panelHeight, LCARS_RED);
-
-    context.textAlign = "center";
-    context.textBaseline = "middle";
     context.fillStyle = LCARS_BUTTERSCOTCH;
     context.font = `700 42px ${LCARS_FONT_FAMILY}`;
     context.fillText("FLEET DESTROYED", SHIP_FAILURE_PANEL_WIDTH / 2, 82);
@@ -6067,40 +6130,20 @@ function drawRoundAchievements(panelWidth, y) {
  * @returns {void}
  */
 function drawWinScreen(width, height) {
-    const unlockedAchievements = ROUND_ACHIEVEMENTS.filter((achievement) =>
-        roundAchievements.has(achievement.id),
-    );
     const panelHeight =
         WIN_SCREEN_PANEL_HEIGHT +
-        Math.ceil(unlockedAchievements.length / ACHIEVEMENT_COLUMNS) *
+        Math.ceil(roundAchievements.size / ACHIEVEMENT_COLUMNS) *
         WIN_SCREEN_ACHIEVEMENT_ROW_HEIGHT;
-    const winScale = Math.max(
-        0,
-        Math.min(
-            1,
-            (width - 32) / WIN_SCREEN_PANEL_WIDTH,
-            (height - 32) / panelHeight,
-        ),
+    const opened = beginLCARSOverlay(
+        width,
+        height,
+        WIN_SCREEN_PANEL_WIDTH,
+        panelHeight,
+        WIN_SCREEN_BACKDROP_ALPHA,
+        LCARS_BLUEY,
     );
+    if (!opened) return;
 
-    context.save();
-    context.fillStyle = `rgba(0, 0, 0, ${WIN_SCREEN_BACKDROP_ALPHA})`;
-    context.fillRect(0, 0, width, height);
-
-    if (winScale === 0) {
-        context.restore();
-        return;
-    }
-
-    const panelX = (width - WIN_SCREEN_PANEL_WIDTH * winScale) / 2;
-    const panelY = (height - panelHeight * winScale) / 2;
-
-    context.translate(panelX, panelY);
-    context.scale(winScale, winScale);
-    drawLCARSOverlayFrame(WIN_SCREEN_PANEL_WIDTH, panelHeight, LCARS_BLUEY);
-
-    context.textAlign = "center";
-    context.textBaseline = "middle";
     context.fillStyle = LCARS_BARLEY;
     context.font = `700 46px ${LCARS_FONT_FAMILY}`;
     context.fillText(WIN_SCREEN_TITLE, WIN_SCREEN_PANEL_WIDTH / 2, 86);
@@ -6126,37 +6169,19 @@ function drawWinScreen(width, height) {
  */
 function drawPauseHelp(width, height) {
     // INSTRUCTION: Keep this screen strictly controls-only; never add gameplay text.
-    const helpScale = Math.max(
-        0,
-        Math.min(
-            1,
-            (width - 32) / HELP_PANEL_WIDTH,
-            (height - 32) / HELP_PANEL_HEIGHT,
-        ),
-    );
-    const panelWidth = HELP_PANEL_WIDTH * helpScale;
-    const panelHeight = HELP_PANEL_HEIGHT * helpScale;
-    const panelX = (width - panelWidth) / 2;
-    const panelY = (height - panelHeight) / 2;
-
-    context.save();
     // Keep the frozen phrase visible under both layers of the help treatment:
     // the screen veil dims motion behind it, while the panel remains readable
     // without turning the asteroid composition into an opaque black rectangle.
-    context.fillStyle = `rgba(0, 0, 0, ${PAUSE_BACKDROP_ALPHA})`;
-    context.fillRect(0, 0, width, height);
+    const opened = beginLCARSOverlay(
+        width,
+        height,
+        HELP_PANEL_WIDTH,
+        HELP_PANEL_HEIGHT,
+        PAUSE_BACKDROP_ALPHA,
+        LCARS_AFRICAN_VIOLET,
+    );
+    if (!opened) return;
 
-    if (helpScale === 0) {
-        context.restore();
-        return;
-    }
-
-    context.translate(panelX, panelY);
-    context.scale(helpScale, helpScale);
-    drawLCARSOverlayFrame(HELP_PANEL_WIDTH, HELP_PANEL_HEIGHT, LCARS_AFRICAN_VIOLET);
-
-    context.textAlign = "center";
-    context.textBaseline = "middle";
     context.fillStyle = LCARS_BARLEY;
     context.font = `800 32px ${LCARS_FONT_FAMILY}`;
     context.fillText("SIMULATION PAUSED", HELP_PANEL_WIDTH / 2, 82);
@@ -6290,7 +6315,7 @@ function resolveShipWallContact(ship, normal) {
         ship.applyCollisionDamage(contactImpulseMagnitude(response));
         empSound.playRandom();
     }
-    applyShipCollisionAngleAdjustment(response, ship);
+    applyShipCollisionAngleAdjustment(response.firstAngularImpulse, ship);
     return response;
 }
 
@@ -6299,13 +6324,13 @@ function resolveShipWallContact(ship, normal) {
  * angular momentum. The angular impulse still comes from the same friction
  * calculation, so greater contact momentum or friction produces a larger
  * heading adjustment.
- * @param {ContactResponse} response Contact response involving the ship.
+ * @param {number} angularImpulse Contact angular impulse on this ship's side.
  * @param {Starship} ship Hull receiving the one-time heading adjustment.
  * @returns {void}
  */
-function applyShipCollisionAngleAdjustment(response, ship) {
+function applyShipCollisionAngleAdjustment(angularImpulse, ship) {
     const uncappedAngleAdjustment =
-        (response.firstAngularImpulse / STARSHIP_COLLISION_TURN_INERTIA) *
+        (angularImpulse / STARSHIP_COLLISION_TURN_INERTIA) *
         SHIP_COLLISION_TURN_RESPONSE;
     const angleAdjustment = Math.max(
         -MAX_SHIP_COLLISION_TURN_ANGLE,
@@ -6393,6 +6418,16 @@ function normalizedVector(x, y, fallbackX = 1, fallbackY = 0) {
 
 function cross2D(firstX, firstY, secondX, secondY) {
     return firstX * secondY - firstY * secondX;
+}
+
+/**
+ * Clamp a ratio into the unit interval so damage, health and shield fractions
+ * stay meaningful when a reserve briefly overshoots or underflows.
+ * @param {number} value Ratio to clamp.
+ * @returns {number} Value limited to [0, 1].
+ */
+function clamp01(value) {
+    return Math.max(0, Math.min(1, value));
 }
 
 function wrapAngle(angle) {
@@ -6546,6 +6581,16 @@ function restoreAngularMomentumAfterPositionCorrection(
 }
 
 function polygonArea(vertices) {
+    return Math.abs(polygonSignedTwiceArea(vertices)) / 2;
+}
+
+/**
+ * Shoelace sum that keeps the winding sign, so callers can orient edge
+ * normals outward regardless of whether the outline is clockwise.
+ * @param {Vector2[]} vertices Closed polygon outline.
+ * @returns {number} Twice the area, signed by the outline winding.
+ */
+function polygonSignedTwiceArea(vertices) {
     let twiceArea = 0;
 
     for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
@@ -6559,7 +6604,7 @@ function polygonArea(vertices) {
         );
     }
 
-    return Math.abs(twiceArea) / 2;
+    return twiceArea;
 }
 
 /**
@@ -6837,7 +6882,7 @@ function segmentPolygonIntersectionParameter(start, end, vertices) {
     }
 
     return minimumParameter <= 1 + COLLISION_EPSILON
-        ? Math.min(1, Math.max(0, minimumParameter))
+        ? clamp01(minimumParameter)
         : undefined;
 }
 
@@ -7032,6 +7077,7 @@ function fragmentAsteroidAtImpact(
     const fragments = splitAsteroid(asteroid, hitPoint, cutDirection);
 
     asteroids.splice(asteroidIndex, 1, ...fragments);
+    asteroid.removed = true;
     return fragments;
 }
 
@@ -7075,20 +7121,9 @@ function polygonNormalAtPoint(
     incomingVelocityX,
     incomingVelocityY,
 ) {
-    let polygonTwiceArea = 0;
+    const polygonTwiceArea = polygonSignedTwiceArea(vertices);
     let nearestDistanceSquared = Infinity;
     let nearestNormal = {x: 1, y: 0};
-
-    for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
-        const firstVertex = vertices[vertexIndex];
-        const secondVertex = vertices[(vertexIndex + 1) % vertices.length];
-        polygonTwiceArea += cross2D(
-            firstVertex.x,
-            firstVertex.y,
-            secondVertex.x,
-            secondVertex.y,
-        );
-    }
 
     for (let vertexIndex = 0; vertexIndex < vertices.length; vertexIndex += 1) {
         const firstVertex = vertices[vertexIndex];
@@ -7101,19 +7136,9 @@ function polygonNormalAtPoint(
             continue;
         }
 
-        const pointAlongEdge = Math.min(
-            1,
-            Math.max(
-                0,
-                ((point.x - firstVertex.x) * edgeX +
-                    (point.y - firstVertex.y) * edgeY) /
-                edgeLength ** 2,
-            ),
-        );
-        const closestX = firstVertex.x + edgeX * pointAlongEdge;
-        const closestY = firstVertex.y + edgeY * pointAlongEdge;
+        const closest = closestPointOnSegment(point, firstVertex, secondVertex);
         const distanceSquared =
-            (point.x - closestX) ** 2 + (point.y - closestY) ** 2;
+            (point.x - closest.x) ** 2 + (point.y - closest.y) ** 2;
 
         if (distanceSquared < nearestDistanceSquared) {
             nearestDistanceSquared = distanceSquared;
@@ -7511,11 +7536,8 @@ function resolveBulletCollisions(width, height) {
                     segmentEnd.y - segmentStart.y,
                 ) *
                 (1 - hitParameter);
-            // Borg pulses are consumed immediately after impact; Starfleet
-            // pulses may ricochet. Vessel hits never alter the vessel's motion.
-            const canReflect =
-                bullet.source !== "borg" &&
-                bullet.reflectionCount < MAX_BULLET_REFLECTIONS;
+            // Vessel hits never alter the vessel's motion.
+            const canReflect = bullet.reflectionCount < bullet.maxReflections;
 
             let normal = bodyIsFirst ? undefined : wallHit.normal;
             let interactionBeforeEnergy = bodyKineticEnergy(bullet);
@@ -7925,14 +7947,10 @@ function closestPointOnSegment(point, firstPoint, secondPoint) {
         return firstPoint;
     }
 
-    const pointAlongSegment = Math.min(
-        1,
-        Math.max(
-            0,
-            ((point.x - firstPoint.x) * segmentX +
-                (point.y - firstPoint.y) * segmentY) /
+    const pointAlongSegment = clamp01(
+        ((point.x - firstPoint.x) * segmentX +
+            (point.y - firstPoint.y) * segmentY) /
             segmentLengthSquared,
-        ),
     );
 
     return {
@@ -8265,7 +8283,7 @@ function resolveAsteroidCollisions() {
         ) {
             const asteroid = contactAsteroids[asteroidIndex];
             if (
-                !asteroids.includes(asteroid) ||
+                asteroid.removed ||
                 fragmentedAsteroids.has(asteroid) ||
                 !bodiesMayOverlap(ship, asteroid)
             ) {
@@ -8304,7 +8322,10 @@ function resolveAsteroidCollisions() {
                     manifold.contactPoint,
                     interactionKineticEnergyLoss(beforeEnergy, afterEnergy),
                 );
-                applyShipCollisionAngleAdjustment(response, ship);
+                applyShipCollisionAngleAdjustment(
+                    response.firstAngularImpulse,
+                    ship,
+                );
             }
         }
     }
@@ -8312,7 +8333,7 @@ function resolveAsteroidCollisions() {
     // Both rock and cube contacts consume one parent snapshot. Children created
     // by either kind of physical contact join the next frame's body pass.
     resolveBorgCollisions(
-        contactAsteroids.filter((rock) => asteroids.includes(rock)),
+        contactAsteroids.filter((rock) => !rock.removed),
     );
 }
 
@@ -8352,13 +8373,16 @@ function resolveBorgCollisions(contactAsteroids = asteroids.slice()) {
                     if (!ship.alive) {
                         roundAchievements.add("wolf-359");
                     }
-                    applyShipCollisionAngleAdjustment(response, ship);
+                    applyShipCollisionAngleAdjustment(
+                        response.firstAngularImpulse,
+                        ship,
+                    );
                     cube.hitBody(impulse, shipManifold.contactPoint);
                 }
             }
         }
         for (const rock of contactAsteroids) {
-            if (!asteroids.includes(rock) || !bodiesMayOverlap(cube, rock)) continue;
+            if (rock.removed || !bodiesMayOverlap(cube, rock)) continue;
             const manifold = collisionManifold(cube, rock);
             if (manifold === undefined) continue;
             const beforeEnergy = bodyKineticEnergy(cube) + bodyKineticEnergy(rock);
@@ -8412,12 +8436,12 @@ function resolveStarshipCollisions() {
             ) {
                 roundAchievements.add("friendly-fire");
             }
-            applyShipCollisionAngleAdjustment(response, ship);
             applyShipCollisionAngleAdjustment(
-                {
-                    ...response,
-                    firstAngularImpulse: response.secondAngularImpulse,
-                },
+                response.firstAngularImpulse,
+                ship,
+            );
+            applyShipCollisionAngleAdjustment(
+                response.secondAngularImpulse,
                 other,
             );
             if (!ship.alive) break;
@@ -8482,11 +8506,6 @@ function updateWallAvoidance(ship, deltaTime, width, height) {
     const controls = ship.controls;
     controls.wallAvoidancePressedKeys.clear();
     const wall = autopilotWallThreat(ship, width, height, deltaTime);
-    if (controls.autopilotEnabled) {
-        controls.wallAvoidanceActive = false;
-        syncPressedKeys(ship);
-        return;
-    }
     if (!controls.wallAvoidanceActive && wall !== undefined) {
         const inwardSpeed =
             ship.velocityX * Math.cos(wall.desiredAngle) +
@@ -8558,9 +8577,7 @@ function applyTurnInput(ship, displacement) {
  */
 function applyFlightInput(ship, deltaTime) {
     const controls = ship.controls;
-    const manuallySteering = ["KeyA", "KeyD", "ArrowLeft", "ArrowRight"].some(
-        (key) => controls.manualPressedKeys.has(key),
-    );
+    const manuallySteering = isManuallySteering(controls);
     applyTurnInput(ship, controls.manualTurnControl.advance(performance.now()));
     if (!manuallySteering && !controls.wallAvoidanceActive) {
         ship.angle = wrapAngle(
@@ -8664,17 +8681,8 @@ function updateGame(deltaTime, width, height) {
  */
 function handoffCaptain() {
     const departing = playerShip;
-    /** @type {Starship | undefined} Nearest live receiving hull. */
-    let destination = undefined;
-    let nearestDistance = Infinity;
-    for (const ship of starships) {
-        if (!ship.alive) continue;
-        const distance = Math.hypot(ship.x - departing.x, ship.y - departing.y);
-        if (distance < nearestDistance) {
-            destination = ship;
-            nearestDistance = distance;
-        }
-    }
+    // The departing hull is already dead, so the helper skips it.
+    const destination = nearestStarship(departing);
     if (!destination) return false;
 
     destination.controls.autopilotEnabled = true;
@@ -8806,17 +8814,13 @@ function controlKeyForEvent(event) {
         return FIRE_KEY;
     }
 
-    if (event.key.startsWith("Arrow")) {
-        return ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(
-            event.key,
-        )
-            ? event.key
-            : undefined;
-    }
-
-    return ["KeyA", "KeyD", "KeyW", "KeyS"].includes(event.code)
-        ? event.code
-        : undefined;
+    // Arrows are matched by key, letters by physical code (layout-independent).
+    const arrow = event.key.startsWith("Arrow");
+    const key = arrow ? event.key : event.code;
+    const helmKey =
+        arrow === key.startsWith("Arrow") &&
+        (STEERING_KEYS.has(key) || THROTTLE_KEYS.has(key));
+    return helmKey ? key : undefined;
 }
 
 document.addEventListener("keydown", (event) => {
